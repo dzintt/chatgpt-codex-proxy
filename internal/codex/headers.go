@@ -37,10 +37,7 @@ func BuildHeaders(cfg config.Config, token string, opts HeaderOptions) http.Head
 	if opts.IncludeBeta {
 		headers.Set("OpenAI-Beta", cfg.OpenAIBeta)
 	}
-	headers.Set("User-Agent", strings.NewReplacer(
-		"{platform}", cfg.Platform,
-		"{arch}", cfg.Arch,
-	).Replace(cfg.UserAgentTemplate))
+	headers.Set("User-Agent", userAgent(cfg))
 	headers.Set("sec-ch-ua", fmt.Sprintf(`"Chromium";v="%s", "Not:A-Brand";v="24"`, cfg.ChromiumVersion))
 	headers.Set("sec-ch-ua-mobile", "?0")
 	headers.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, cfg.ClientHintPlatform))
@@ -110,4 +107,11 @@ func cookieHeader(cookies map[string]string) string {
 		pairs = append(pairs, fmt.Sprintf("%s=%s", key, cookies[key]))
 	}
 	return strings.Join(pairs, "; ")
+}
+
+func userAgent(cfg config.Config) string {
+	return strings.NewReplacer(
+		"{platform}", cfg.Platform,
+		"{arch}", cfg.Arch,
+	).Replace(cfg.UserAgentTemplate)
 }

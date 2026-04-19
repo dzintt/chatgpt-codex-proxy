@@ -198,7 +198,7 @@ func parseJWTClaims(token string) map[string]any {
 func (s *OAuthService) defaultHeaders() http.Header {
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
-	headers.Set("User-Agent", fmt.Sprintf("codex-proxy/0.1 (%s)", s.cfg.Platform))
+	headers.Set("User-Agent", userAgent(s.cfg))
 	return headers
 }
 
