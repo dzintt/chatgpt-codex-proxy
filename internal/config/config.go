@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -56,6 +58,8 @@ type Config struct {
 type slogLevel string
 
 func Load() (Config, error) {
+	_ = godotenv.Load()
+
 	dataDir := envOr("DATA_DIR", defaultDataDir)
 	if !filepath.IsAbs(dataDir) {
 		cwd, err := os.Getwd()
