@@ -47,6 +47,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	engine := gin.New()
 	engine.SetTrustedProxies(nil)
 	engine.Use(middleware.RequestID())
+	engine.Use(middleware.RequestLogger(logger, middleware.RequestLoggerOptions{
+		SkipPaths: map[string]struct{}{
+			"/health/live": {},
+		},
+	}))
 	engine.Use(middleware.Recovery(logger))
 
 	app := &App{

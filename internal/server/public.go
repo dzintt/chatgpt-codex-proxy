@@ -39,7 +39,8 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 
 	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
-		status, code, message := a.classifyUpstreamError("", err)
+		status, code, message := a.classifyUpstreamError(account.ID, err)
+		a.logUpstreamRequestFailure(c, "chat_completions", account.ID, status, code, err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
@@ -56,6 +57,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 	accumulator, err := a.collectEvents(account, normalized, stream)
 	if err != nil {
 		status, code, message := a.classifyUpstreamError(account.ID, err)
+		a.logUpstreamStreamFailure(c, "chat_completions", account.ID, "", err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
@@ -92,7 +94,9 @@ func (a *App) handleResponses(c *gin.Context) {
 	}
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
-		status, code, message := a.classifyUpstreamError(preferredID, err)
+		accountID := firstString(account.ID, preferredID)
+		status, code, message := a.classifyUpstreamError(accountID, err)
+		a.logUpstreamRequestFailure(c, "responses", accountID, status, code, err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
@@ -109,6 +113,7 @@ func (a *App) handleResponses(c *gin.Context) {
 	accumulator, err := a.collectEvents(account, normalized, stream)
 	if err != nil {
 		status, code, message := a.classifyUpstreamError(account.ID, err)
+		a.logUpstreamStreamFailure(c, "responses", account.ID, "", err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
@@ -195,11 +200,13 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			if err == io.EOF {
 				break
 			}
+			a.logUpstreamStreamFailure(c, "chat_completions", account.ID, accumulator.ResponseID, err)
 			writeSSE(c.Writer, "", translate.MustJSON(gin.H{"error": err.Error()}))
 			c.Writer.Flush()
 			return
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			a.logUpstreamStreamFailure(c, "chat_completions", account.ID, accumulator.ResponseID, upstreamErr)
 			writeSSE(c.Writer, "", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
 			c.Writer.Flush()
 			return
@@ -237,11 +244,13 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			if err == io.EOF {
 				break
 			}
+			a.logUpstreamStreamFailure(c, "responses", account.ID, accumulator.ResponseID, err)
 			writeSSE(c.Writer, "error", translate.MustJSON(gin.H{"error": err.Error()}))
 			c.Writer.Flush()
 			return
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			a.logUpstreamStreamFailure(c, "responses", account.ID, accumulator.ResponseID, upstreamErr)
 			writeSSE(c.Writer, "error", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
 			c.Writer.Flush()
 			return
