@@ -397,7 +397,3 @@ Upstream HTTP requests use `httpcloak` so the proxy can maintain the browser-lik
 ## Development Status
 
 This project is functional but still deliberately minimal. The core request path, account management, translation layer, and continuation flow are implemented. The main area that still benefits from ongoing validation is live upstream behavior, since the Codex backend is not a stable documented public API.
-
-## License
-
-No license file is included yet. Add one before distributing the project publicly.
