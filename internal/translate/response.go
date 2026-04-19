@@ -1,0 +1,310 @@
+package translate
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"chatgpt-codex-proxy/internal/codex"
+)
+
+type Accumulator struct {
+	Normalized  NormalizedRequest
+	ResponseID  string
+	Model       string
+	TextBuilder strings.Builder
+	Usage       *codex.Usage
+	ToolCalls   []map[string]any
+	Output      []map[string]any
+	Status      string
+	RawFinal    map[string]any
+}
+
+func NewAccumulator(normalized NormalizedRequest) *Accumulator {
+	return &Accumulator{
+		Normalized: normalized,
+	}
+}
+
+func (a *Accumulator) Apply(event *codex.StreamEvent) {
+	if event == nil {
+		return
+	}
+	if response := nestedMap(event.Raw, "response"); response != nil {
+		if id := stringValue(response["id"]); id != "" {
+			a.ResponseID = id
+		}
+		if model := stringValue(response["model"]); model != "" {
+			a.Model = model
+		}
+		if status := stringValue(response["status"]); status != "" {
+			a.Status = status
+		}
+		if usage := usageFromRaw(response["usage"]); usage != nil {
+			a.Usage = usage
+		}
+		if output := sliceOfMaps(response["output"]); len(output) > 0 {
+			a.Output = output
+		}
+	}
+	if id := stringValue(event.Raw["response_id"]); id != "" && a.ResponseID == "" {
+		a.ResponseID = id
+	}
+	if model := stringValue(event.Raw["model"]); model != "" && a.Model == "" {
+		a.Model = model
+	}
+	if delta := firstString(
+		stringValue(event.Raw["delta"]),
+		stringValue(event.Raw["text"]),
+		stringValue(event.Raw["output_text"]),
+		stringValue(nestedMap(event.Raw, "item")["text"]),
+	); delta != "" && strings.Contains(event.Type, "text") {
+		a.TextBuilder.WriteString(delta)
+	}
+	if item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item")); item != nil {
+		a.captureOutputItem(item)
+	}
+	if output := sliceOfMaps(event.Raw["output"]); len(output) > 0 {
+		for _, item := range output {
+			a.captureOutputItem(item)
+		}
+	}
+	if usage := usageFromRaw(event.Raw["usage"]); usage != nil {
+		a.Usage = usage
+	}
+	if event.Type == "response.completed" {
+		a.RawFinal = event.Raw
+		if response := nestedMap(event.Raw, "response"); response != nil {
+			if usage := usageFromRaw(response["usage"]); usage != nil {
+				a.Usage = usage
+			}
+			if output := sliceOfMaps(response["output"]); len(output) > 0 {
+				a.Output = output
+			}
+		}
+	}
+}
+
+func (a *Accumulator) Text() string {
+	if text := strings.TrimSpace(a.TextBuilder.String()); text != "" {
+		return text
+	}
+	for _, item := range a.Output {
+		if itemType := stringValue(item["type"]); itemType == "message" {
+			for _, content := range sliceOfMaps(item["content"]) {
+				if text := stringValue(content["text"]); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (a *Accumulator) captureOutputItem(item map[string]any) {
+	if len(item) == 0 {
+		return
+	}
+	itemType := stringValue(item["type"])
+	switch itemType {
+	case "function_call":
+		call := map[string]any{
+			"id":   firstString(stringValue(item["call_id"]), stringValue(item["id"])),
+			"type": "function",
+			"function": map[string]any{
+				"name":      stringValue(item["name"]),
+				"arguments": stringValue(item["arguments"]),
+			},
+		}
+		a.ToolCalls = append(a.ToolCalls, call)
+	case "message":
+		if len(a.Output) == 0 {
+			a.Output = append(a.Output, item)
+		}
+	default:
+		if len(a.Output) == 0 {
+			a.Output = append(a.Output, item)
+		}
+	}
+}
+
+func (a *Accumulator) ChatCompletionObject() map[string]any {
+	message := map[string]any{
+		"role":    "assistant",
+		"content": a.Text(),
+	}
+	if len(a.ToolCalls) > 0 {
+		message["tool_calls"] = a.ToolCalls
+	}
+	return map[string]any{
+		"id":      firstString(a.ResponseID, "chatcmpl_proxy"),
+		"object":  "chat.completion",
+		"model":   firstString(a.Model, a.Normalized.Model),
+		"choices": []map[string]any{{"index": 0, "message": message, "finish_reason": finishReason(a)}},
+		"usage":   usageObject(a.Usage),
+	}
+}
+
+func (a *Accumulator) ResponsesObject() map[string]any {
+	output := a.Output
+	if len(output) == 0 {
+		output = []map[string]any{{
+			"type":    "message",
+			"role":    "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": a.Text()}},
+		}}
+	}
+	return map[string]any{
+		"id":          firstString(a.ResponseID, "resp_proxy"),
+		"object":      "response",
+		"model":       firstString(a.Model, a.Normalized.Model),
+		"status":      firstString(a.Status, "completed"),
+		"output":      output,
+		"output_text": a.Text(),
+		"usage":       usageObject(a.Usage),
+	}
+}
+
+func ChatChunk(responseID, model string, delta map[string]any, finishReason string) map[string]any {
+	choice := map[string]any{
+		"index": 0,
+		"delta": delta,
+	}
+	if finishReason != "" {
+		choice["finish_reason"] = finishReason
+	}
+	return map[string]any{
+		"id":      firstString(responseID, "chatcmpl_proxy"),
+		"object":  "chat.completion.chunk",
+		"model":   model,
+		"choices": []map[string]any{choice},
+	}
+}
+
+func ResponseEventJSON(eventType string, responseID string, payload map[string]any) []byte {
+	eventPayload := make(map[string]any, len(payload)+2)
+	for key, value := range payload {
+		eventPayload[key] = value
+	}
+	if responseID != "" {
+		eventPayload["response_id"] = responseID
+	}
+	eventPayload["type"] = eventType
+	data, _ := json.Marshal(eventPayload)
+	return data
+}
+
+func usageObject(usage *codex.Usage) any {
+	if usage == nil {
+		return nil
+	}
+	return map[string]any{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  usage.InputTokens + usage.OutputTokens,
+	}
+}
+
+func finishReason(a *Accumulator) string {
+	if len(a.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	return "stop"
+}
+
+func nestedMap(raw map[string]any, key string) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	value, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	mapped, _ := value.(map[string]any)
+	return mapped
+}
+
+func sliceOfMaps(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		mapped, ok := item.(map[string]any)
+		if ok {
+			out = append(out, mapped)
+		}
+	}
+	return out
+}
+
+func usageFromRaw(value any) *codex.Usage {
+	if value == nil {
+		return nil
+	}
+	switch mapped := value.(type) {
+	case map[string]any:
+		return &codex.Usage{
+			InputTokens:  int64(numberValue(mapped["input_tokens"])),
+			OutputTokens: int64(numberValue(mapped["output_tokens"])),
+			CachedTokens: int64(numberValue(mapped["cached_tokens"])),
+		}
+	case codex.Usage:
+		cloned := mapped
+		return &cloned
+	case *codex.Usage:
+		return mapped
+	default:
+		return nil
+	}
+}
+
+func stringValue(value any) string {
+	str, _ := value.(string)
+	return str
+}
+
+func numberValue(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		number, _ := typed.Float64()
+		return number
+	default:
+		return 0
+	}
+}
+
+func firstString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstMap(values ...map[string]any) map[string]any {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func MustJSON(value any) []byte {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return []byte(fmt.Sprintf(`{"error":"%v"}`, err))
+	}
+	return data
+}
