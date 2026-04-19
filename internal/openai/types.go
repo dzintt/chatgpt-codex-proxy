@@ -60,6 +60,22 @@ type ImageURLValue struct {
 	URL string `json:"url"`
 }
 
+func (i *ImageURLValue) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	if data[0] == '"' {
+		return json.Unmarshal(data, &i.URL)
+	}
+	type imageURLAlias ImageURLValue
+	var alias imageURLAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*i = ImageURLValue(alias)
+	return nil
+}
+
 type ToolDefinition struct {
 	Type                string         `json:"type"`
 	Function            *FunctionTool  `json:"function,omitempty"`

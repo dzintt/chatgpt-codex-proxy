@@ -9,6 +9,8 @@ import (
 	"chatgpt-codex-proxy/internal/openai"
 )
 
+const defaultInstructions = "You are a helpful assistant."
+
 func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (NormalizedRequest, error) {
 	model, reasoning, serviceTier := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier)
 	out := NormalizedRequest{
@@ -92,6 +94,9 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 	}
 
 	out.Instructions = strings.TrimSpace(strings.Join(instructions, "\n\n"))
+	if out.Instructions == "" {
+		out.Instructions = defaultInstructions
+	}
 	return out, nil
 }
 
@@ -110,7 +115,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	out := NormalizedRequest{
 		Endpoint:           EndpointResponses,
 		Model:              model,
-		Instructions:       strings.TrimSpace(req.Instructions),
+		Instructions:       firstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
 		Stream:             req.Stream,
 		Tools:              normalizeTools(req.Tools),
 		ToolChoice:         normalizeToolChoice(req.ToolChoice),
@@ -213,6 +218,27 @@ func normalizeToolChoice(raw json.RawMessage) any {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return string(raw)
 	}
+	mapped, _ := decoded.(map[string]any)
+	if len(mapped) == 0 {
+		return decoded
+	}
+	switch strings.TrimSpace(stringValue(mapped["type"])) {
+	case "function":
+		name := strings.TrimSpace(stringValue(mapped["name"]))
+		if name == "" {
+			if function, _ := mapped["function"].(map[string]any); len(function) > 0 {
+				name = strings.TrimSpace(stringValue(function["name"]))
+			}
+		}
+		if name != "" {
+			return map[string]any{
+				"type": "function",
+				"name": name,
+			}
+		}
+	case "web_search", "web_search_preview":
+		return map[string]any{"type": "web_search"}
+	}
 	return decoded
 }
 
@@ -292,7 +318,7 @@ func flattenContent(content openai.MessageContent) (string, error) {
 func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string) (string, *codex.Reasoning, string) {
 	model := strings.TrimSpace(rawModel)
 	if model == "" || model == "codex" {
-		model = defaultModel
+		model = openai.ResolveDefaultModel(defaultModel)
 	}
 
 	effort := strings.TrimSpace(reasoningEffort)
@@ -324,7 +350,16 @@ func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string)
 		reasoning = &codex.Reasoning{Effort: effort, Summary: "auto"}
 	}
 	if model == "" || model == "codex" {
-		model = defaultModel
+		model = openai.ResolveDefaultModel(defaultModel)
 	}
 	return model, reasoning, strings.TrimSpace(serviceTier)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

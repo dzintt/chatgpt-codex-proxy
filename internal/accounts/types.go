@@ -64,6 +64,7 @@ type ContinuationRecord struct {
 	TurnState    string
 	Instructions string
 	Model        string
+	InputHistory []map[string]any
 	ExpiresAt    time.Time
 }
 

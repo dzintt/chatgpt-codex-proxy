@@ -55,12 +55,12 @@ func TestChatCompletionsTranslation(t *testing.T) {
 		}},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.2-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
 
-	if normalized.Model != "gpt-5.2-codex" {
+	if normalized.Model != "gpt-5.3-codex" {
 		t.Fatalf("model = %q, want default alias expansion", normalized.Model)
 	}
 	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" {
@@ -120,12 +120,12 @@ func TestResponsesTranslation(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.2-codex")
+	normalized, err := Responses(request, "gpt-5.3-codex")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
 
-	if normalized.Model != "gpt-5.2-codex" {
+	if normalized.Model != "gpt-5.3-codex" {
 		t.Fatalf("model = %q", normalized.Model)
 	}
 	if normalized.PreviousResponseID != "resp_prev" {
@@ -150,7 +150,7 @@ func TestUnsupportedContentPartRejected(t *testing.T) {
 				Type: "audio",
 			}},
 		}},
-	}, "gpt-5.2-codex")
+	}, "gpt-5.3-codex")
 	if err == nil {
 		t.Fatal("expected unsupported content part error")
 	}

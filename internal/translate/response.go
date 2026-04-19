@@ -55,12 +55,35 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	if model := stringValue(event.Raw["model"]); model != "" && a.Model == "" {
 		a.Model = model
 	}
+	switch event.Type {
+	case "response.output_text.delta":
+		if delta := stringValue(event.Raw["delta"]); delta != "" {
+			a.TextBuilder.WriteString(delta)
+		}
+	case "response.output_text.done":
+		if a.TextBuilder.Len() == 0 {
+			a.TextBuilder.WriteString(stringValue(event.Raw["text"]))
+		}
+	case "response.content_part.done":
+		if a.TextBuilder.Len() == 0 {
+			part := nestedMap(event.Raw, "part")
+			if text := stringValue(part["text"]); text != "" {
+				a.TextBuilder.WriteString(text)
+			}
+		}
+	case "response.completed":
+		if a.TextBuilder.Len() == 0 {
+			if response := nestedMap(event.Raw, "response"); response != nil {
+				if text := stringValue(response["output_text"]); text != "" {
+					a.TextBuilder.WriteString(text)
+				}
+			}
+		}
+	}
 	if delta := firstString(
-		stringValue(event.Raw["delta"]),
-		stringValue(event.Raw["text"]),
 		stringValue(event.Raw["output_text"]),
 		stringValue(nestedMap(event.Raw, "item")["text"]),
-	); delta != "" && strings.Contains(event.Type, "text") {
+	); delta != "" && a.TextBuilder.Len() == 0 && strings.Contains(event.Type, "text") {
 		a.TextBuilder.WriteString(delta)
 	}
 	if strings.HasPrefix(event.Type, "response.function_call_arguments.") {
@@ -159,23 +182,54 @@ func (a *Accumulator) ChatCompletionObject() map[string]any {
 }
 
 func (a *Accumulator) ResponsesObject() map[string]any {
-	output := a.Output
-	if len(output) == 0 {
-		output = []map[string]any{{
-			"type":    "message",
-			"role":    "assistant",
-			"content": []map[string]any{{"type": "output_text", "text": a.Text()}},
-		}}
-	}
+	text := a.Text()
+	output := a.responsesOutput(text)
 	return map[string]any{
 		"id":          firstString(a.ResponseID, "resp_proxy"),
 		"object":      "response",
 		"model":       firstString(a.Model, a.Normalized.Model),
 		"status":      firstString(a.Status, "completed"),
 		"output":      output,
-		"output_text": a.Text(),
+		"output_text": text,
 		"usage":       usageObject(a.Usage),
 	}
+}
+
+func (a *Accumulator) responsesOutput(text string) []map[string]any {
+	if len(a.Output) == 0 {
+		return []map[string]any{{
+			"type":    "message",
+			"role":    "assistant",
+			"status":  "completed",
+			"content": responseTextContent(text),
+		}}
+	}
+
+	output := make([]map[string]any, 0, len(a.Output))
+	for _, item := range a.Output {
+		cloned := cloneMap(item)
+		if stringValue(cloned["type"]) == "message" {
+			content := sliceOfMaps(cloned["content"])
+			if len(content) == 0 && strings.TrimSpace(text) != "" {
+				cloned["content"] = responseTextContent(text)
+			}
+			if stringValue(cloned["status"]) == "" {
+				cloned["status"] = "completed"
+			}
+		}
+		output = append(output, cloned)
+	}
+	return output
+}
+
+func responseTextContent(text string) []map[string]any {
+	if strings.TrimSpace(text) == "" {
+		return []map[string]any{}
+	}
+	return []map[string]any{{
+		"type": "output_text",
+		"text": text,
+	}}
 }
 
 func ChatChunk(responseID, model string, delta map[string]any, finishReason string) map[string]any {
@@ -379,4 +433,15 @@ func MustJSON(value any) []byte {
 		return []byte(fmt.Sprintf(`{"error":"%v"}`, err))
 	}
 	return data
+}
+
+func cloneMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }

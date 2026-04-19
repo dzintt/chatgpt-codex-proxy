@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -75,6 +76,7 @@ func (a *App) handleResponses(c *gin.Context) {
 	}
 
 	preferredID := ""
+	turnState := ""
 	if normalized.PreviousResponseID != "" {
 		record, ok := a.continuations.Get(normalized.PreviousResponseID)
 		if !ok {
@@ -82,12 +84,11 @@ func (a *App) handleResponses(c *gin.Context) {
 			return
 		}
 		preferredID = record.AccountID
-	}
-
-	turnState := ""
-	if normalized.PreviousResponseID != "" {
-		record, _ := a.continuations.Get(normalized.PreviousResponseID)
 		turnState = record.TurnState
+		if history := deserializeContinuationInput(record.InputHistory); len(history) > 0 {
+			normalized.Input = append(history, normalized.Input...)
+			normalized.PreviousResponseID = ""
+		}
 	}
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
@@ -115,7 +116,7 @@ func (a *App) handleResponses(c *gin.Context) {
 }
 
 func (a *App) openStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	if normalized.PreviousResponseID != "" {
+	if normalized.Endpoint == translate.EndpointResponses && normalized.PreviousResponseID != "" {
 		return a.openWSStream(ctx, normalized, preferredID, turnState)
 	}
 	return a.openHTTPStream(ctx, normalized, preferredID, turnState)
@@ -246,7 +247,8 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			return
 		}
 		accumulator.Apply(event)
-		writeSSE(c.Writer, event.Type, translate.ResponseEventJSON(event.Type, accumulator.ResponseID, event.Raw))
+		payload := responseStreamPayload(event, accumulator)
+		writeSSE(c.Writer, event.Type, translate.ResponseEventJSON(event.Type, accumulator.ResponseID, payload))
 		c.Writer.Flush()
 	}
 
@@ -258,17 +260,61 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	c.Writer.Flush()
 }
 
+func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accumulator) map[string]any {
+	if event == nil || event.Raw == nil {
+		return nil
+	}
+	if event.Type != "response.completed" {
+		return event.Raw
+	}
+
+	payload := cloneAnyMap(event.Raw)
+	response, _ := payload["response"].(map[string]any)
+	if response == nil {
+		return payload
+	}
+
+	text := accumulator.Text()
+	if output, ok := response["output"].([]any); !ok || len(output) == 0 {
+		response["output"] = []map[string]any{{
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": text,
+			}},
+		}}
+	}
+	if strings.TrimSpace(serverStringValue(response["output_text"])) == "" && strings.TrimSpace(text) != "" {
+		response["output_text"] = text
+	}
+	if strings.TrimSpace(serverStringValue(response["status"])) == "" {
+		response["status"] = "completed"
+	}
+	if accumulator.Usage != nil {
+		response["usage"] = map[string]any{
+			"input_tokens":  accumulator.Usage.InputTokens,
+			"output_tokens": accumulator.Usage.OutputTokens,
+			"total_tokens":  accumulator.Usage.InputTokens + accumulator.Usage.OutputTokens,
+		}
+	}
+	payload["response"] = response
+	return payload
+}
+
 func (a *App) rememberContinuation(accountID string, accumulator *translate.Accumulator, turnState string) {
-	if accumulator == nil || accumulator.ResponseID == "" {
+	if accumulator == nil || accumulator.ResponseID == "" || accumulator.Normalized.Endpoint != translate.EndpointResponses {
 		return
 	}
 	a.continuations.Put(accounts.ContinuationRecord{
-		ResponseID: accumulator.ResponseID,
-		AccountID:  accountID,
-		UpstreamID: accumulator.ResponseID,
-		TurnState:  strings.TrimSpace(turnState),
-		Model:      firstString(accumulator.Model, accumulator.Normalized.Model),
-		ExpiresAt:  timeNowUTC().Add(a.cfg.ContinuationTTL),
+		ResponseID:   accumulator.ResponseID,
+		AccountID:    accountID,
+		UpstreamID:   accumulator.ResponseID,
+		TurnState:    strings.TrimSpace(turnState),
+		Model:        firstString(accumulator.Model, accumulator.Normalized.Model),
+		InputHistory: continuationInputHistory(accumulator),
+		ExpiresAt:    timeNowUTC().Add(a.cfg.ContinuationTTL),
 	})
 }
 
@@ -321,4 +367,76 @@ func serverNestedMap(raw map[string]any, key string) map[string]any {
 func serverStringValue(value any) string {
 	str, _ := value.(string)
 	return str
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		if mapped, ok := value.(map[string]any); ok {
+			dst[key] = cloneAnyMap(mapped)
+			continue
+		}
+		dst[key] = value
+	}
+	return dst
+}
+
+func continuationInputHistory(accumulator *translate.Accumulator) []map[string]any {
+	history := serializeContinuationInput(accumulator.Normalized.Input)
+	if assistant := continuationAssistantTurn(accumulator); assistant != nil {
+		history = append(history, assistant)
+	}
+	return history
+}
+
+func continuationAssistantTurn(accumulator *translate.Accumulator) map[string]any {
+	text := strings.TrimSpace(accumulator.Text())
+	if text == "" {
+		return nil
+	}
+	item := codex.InputItem{
+		Role: "assistant",
+		Content: []codex.ContentPart{{
+			Type: "output_text",
+			Text: text,
+		}},
+	}
+	serialized := serializeContinuationInput([]codex.InputItem{item})
+	if len(serialized) == 0 {
+		return nil
+	}
+	return serialized[0]
+}
+
+func serializeContinuationInput(items []codex.InputItem) []map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return nil
+	}
+	var cloned []map[string]any
+	if err := json.Unmarshal(payload, &cloned); err != nil {
+		return nil
+	}
+	return cloned
+}
+
+func deserializeContinuationInput(items []map[string]any) []codex.InputItem {
+	if len(items) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return nil
+	}
+	var decoded []codex.InputItem
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return nil
+	}
+	return decoded
 }
