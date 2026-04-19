@@ -1,93 +1,87 @@
 # chatgpt-codex-proxy
 
-A minimal Go service that exposes an OpenAI-compatible API and proxies requests to the private ChatGPT Codex backend.
+`chatgpt-codex-proxy` is a small Go service that lets standard OpenAI clients talk to ChatGPT Codex accounts.
 
-This project is designed for developers who want to use existing OpenAI SDKs and tooling against Codex accounts authenticated through ChatGPT device auth, without carrying over the full complexity of larger proxy implementations.
+It exposes an OpenAI-compatible API, translates those requests into the private ChatGPT Codex backend format, and manages one or more locally authenticated Codex accounts.
 
-## Purpose
+## Important Note
 
-`chatgpt-codex-proxy` sits between an OpenAI-style client and the ChatGPT Codex backend:
+This project depends on the private `chatgpt.com/backend-api/codex/*` surface. That surface is undocumented and may change at any time.
 
-- It accepts OpenAI-style requests such as `POST /v1/chat/completions` and `POST /v1/responses`.
-- It translates those requests into the upstream Codex request shape expected by `https://chatgpt.com/backend-api/codex/*`.
-- It manages one or more Codex accounts locally.
-- It rotates requests across healthy accounts using simple strategies.
-- It exposes a small admin API for account onboarding, quota inspection, and rotation control.
+This proxy is meant for local or small-scale use by developers who want OpenAI SDK compatibility without building a larger proxy stack.
 
-The goal is not to mirror every detail of the public OpenAI platform. The goal is to provide a simple, understandable proxy that is compatible enough for normal OpenAI client usage while preserving the private Codex backend behaviors that matter in practice.
+## What This Project Does
+
+- Exposes OpenAI-style endpoints such as `POST /v1/chat/completions` and `POST /v1/responses`
+- Translates those requests into the upstream Codex request format
+- Streams upstream events back as OpenAI-style JSON or SSE
+- Manages one or more Codex accounts authenticated through ChatGPT device login
+- Rotates requests across healthy accounts
+- Provides a small admin API for onboarding, quota checks, and rotation control
 
 ## What It Supports
 
-- OpenAI-compatible `POST /v1/chat/completions`
-- OpenAI-compatible `POST /v1/responses`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/models`
 - Streaming and non-streaming responses
 - Function tools
 - Hosted web search tool passthrough
 - Structured outputs
 - Text and image inputs
-- Continuations for `previous_response_id` using a dedicated WebSocket path
+- `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
-- Device-auth account onboarding
 - Local JSON persistence for accounts and usage state
-- `httpcloak` for upstream HTTP requests and transport impersonation
 
 ## What It Does Not Try To Be
 
-- A public OpenAI API implementation
-- A full reimplementation of the upstream desktop app
-- A distributed, multi-node service
+- A full public OpenAI API implementation
+- A reimplementation of the ChatGPT desktop app
+- A distributed or multi-node service
 - A dashboard product
 - A generic credential vault
 
-This service is intentionally single-process and local-state-first.
-
 ## How It Works
 
-At a high level, the proxy has four layers:
+At a high level:
 
-1. A Gin HTTP server exposes OpenAI-style and admin routes.
-2. Public requests are translated into a shared internal request model.
-3. That normalized request is converted into the upstream Codex backend request shape.
-4. Upstream events are translated back into OpenAI-style JSON or SSE responses.
+1. A Gin server accepts OpenAI-style HTTP requests.
+2. The request is normalized into one internal format.
+3. That normalized request is translated into the upstream Codex backend shape.
+4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
 
-For normal response creation, the proxy uses HTTP SSE against:
+For normal requests, the proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
 
-For explicit continuation requests that depend on `previous_response_id`, the proxy uses:
+For continuations, the proxy keeps short-lived in-memory state so a `previous_response_id` request stays pinned to the correct account and preserves the prior turn context.
 
-- `wss://chatgpt.com/backend-api/codex/responses`
-
-This matters because the upstream backend uses server-side conversation state and turn-state headers that cannot be handled correctly by naive HTTP fallback.
-
-## Architecture
-
-The codebase is intentionally modular:
+## Project Layout
 
 - `cmd/api`
-  Entry point and HTTP server startup.
+  Server entry point.
 - `internal/config`
   Environment-driven configuration.
 - `internal/server`
-  Gin route registration and HTTP handlers.
+  HTTP routes and handlers.
 - `internal/middleware`
-  API key auth, recovery, and request IDs.
+  API key auth, request IDs, logging, and panic recovery.
 - `internal/openai`
-  OpenAI-facing request and error types.
+  OpenAI-facing request and response types.
 - `internal/translate`
-  OpenAI-to-Codex translation and downstream response shaping.
+  OpenAI-to-Codex request translation and response shaping.
 - `internal/codex`
-  Upstream Codex request types, headers, OAuth, quota parsing, and HTTP transport.
+  Upstream Codex types, headers, OAuth, quota parsing, and HTTP transport.
 - `internal/codex/wsclient`
-  Dedicated WebSocket client used for continuation requests.
+  WebSocket client kept for upstream continuation support.
 - `internal/accounts`
   Account records, local usage tracking, continuation affinity, and rotation logic.
 - `internal/admin`
-  Device-login orchestration.
+  Device login flow orchestration.
 - `internal/store`
-  JSON persistence.
+  Local JSON persistence.
 - `internal/observability`
-  Logging setup.
+  Structured logging setup.
 
 ## Requirements
 
@@ -97,7 +91,7 @@ The codebase is intentionally modular:
 
 ## Quick Start
 
-### 1. Set environment variables
+### 1. Configure the proxy
 
 Create a `.env` file or export the variables in your shell.
 
@@ -112,7 +106,7 @@ Common optional settings:
 ```env
 LISTEN_ADDR=:8080
 DATA_DIR=data
-DEFAULT_MODEL=gpt-5.2-codex
+DEFAULT_MODEL=gpt-5.3-codex
 ROTATION_STRATEGY=least_used
 LOG_LEVEL=info
 REQUEST_TIMEOUT_SECONDS=120
@@ -124,7 +118,7 @@ REQUEST_TIMEOUT_SECONDS=120
 go run ./cmd/api
 ```
 
-The server will listen on `:8080` by default.
+By default the server listens on `:8080`.
 
 ### 3. Add a Codex account
 
@@ -135,25 +129,25 @@ curl -X POST http://localhost:8080/admin/accounts/device-login/start \
   -H "Authorization: Bearer change-me"
 ```
 
-The response will include:
+The response includes:
 
 - `login_id`
 - `auth_url`
 - `user_code`
 - `status`
 
-Open `auth_url`, complete the device-login flow, then poll:
+Open `auth_url`, complete the login flow, then poll for completion:
 
 ```bash
 curl http://localhost:8080/admin/accounts/device-login/<login_id> \
   -H "Authorization: Bearer change-me"
 ```
 
-Once the login status becomes `ready`, the account is persisted locally and can be used for proxy requests.
+When the login status becomes `ready`, the account has been saved locally and can be used for proxy requests.
 
-### 4. Call the proxy with an OpenAI client
+### 4. Point an OpenAI client at the proxy
 
-Point your client at:
+Use:
 
 - Base URL: `http://localhost:8080/v1`
 - API key: your `PROXY_API_KEY`
@@ -189,7 +183,7 @@ curl http://localhost:8080/v1/responses \
 
 Every route except `GET /health/live` requires the proxy API key.
 
-Both of these are accepted:
+The proxy accepts either:
 
 - `Authorization: Bearer <PROXY_API_KEY>`
 - `X-API-Key: <PROXY_API_KEY>`
@@ -200,35 +194,33 @@ The same API key protects both public and admin routes.
 
 ### `POST /v1/chat/completions`
 
-Accepts OpenAI Chat Completions format and translates it into the upstream Codex request shape.
+Accepts OpenAI Chat Completions requests and translates them into the upstream Codex request shape.
 
 Supported behavior:
 
-- streaming and non-streaming
+- Streaming and non-streaming
 - `system` and `developer` instructions
-- function tools
-- hosted web search passthrough
-- structured outputs
-- reasoning effort
-- text and image input parts
+- Function tools
+- Hosted web search passthrough
+- Structured outputs
+- Reasoning effort
+- Text and image input parts
 
 ### `POST /v1/responses`
 
-Accepts OpenAI Responses format and translates it into the upstream Codex request shape.
+Accepts OpenAI Responses requests and translates them into the upstream Codex request shape.
 
 Supported behavior:
 
-- streaming and non-streaming
-- tools
-- structured outputs
-- text and image inputs
-- explicit `previous_response_id` continuation
-
-Continuation requests use the dedicated WebSocket upstream path. If the proxy cannot honor continuation affinity correctly, it fails rather than silently downgrading to a lossy path.
+- Streaming and non-streaming
+- Tools
+- Structured outputs
+- Text and image inputs
+- Explicit `previous_response_id` continuation
 
 ### `GET /v1/models`
 
-Returns a curated model list suitable for OpenAI-compatible clients. The alias `codex` is supported and resolves to the configured default model.
+Returns a curated model list for OpenAI-compatible clients. The alias `codex` resolves to the configured default model.
 
 ### `GET /health/live`
 
@@ -243,7 +235,7 @@ Authenticated service health endpoint.
 ### Accounts
 
 - `GET /admin/accounts`
-  List accounts and cached state.
+  List locally known accounts and cached state.
 - `DELETE /admin/accounts/:account_id`
   Remove an account from local persistence.
 - `PATCH /admin/accounts/:account_id`
@@ -251,7 +243,7 @@ Authenticated service health endpoint.
 - `POST /admin/accounts/:account_id/refresh`
   Force an OAuth token refresh.
 - `GET /admin/accounts/:account_id/usage`
-  Fetch authoritative upstream quota and local usage counters.
+  Fetch upstream quota and local usage counters.
 
 ### Device login
 
@@ -263,9 +255,9 @@ Authenticated service health endpoint.
 ### Rotation
 
 - `GET /admin/rotation`
-  Show the active rotation strategy.
+  Show the current rotation strategy.
 - `PUT /admin/rotation`
-  Update the rotation strategy.
+  Change the rotation strategy.
 
 Valid strategies:
 
@@ -284,20 +276,20 @@ Account state is stored locally in:
 
 - `data/accounts.json`
 
-This includes:
+That file includes:
 
-- account metadata
+- Account metadata
 - OAuth tokens
-- session cookies
-- cached quota snapshots
-- local token and request counters
-- admin labels and status flags
+- Session cookies
+- Cached quota snapshots
+- Local token and request counters
+- Admin labels and status flags
 
-Continuation mappings and in-flight device-login coordination remain in memory and are not persisted across restarts.
+Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
 
 ## Configuration
 
-The following environment variables are currently supported.
+Supported environment variables:
 
 ### Required
 
@@ -341,40 +333,42 @@ The following environment variables are currently supported.
 
 ## Translation Notes
 
-The proxy normalizes both public request styles into a shared internal form before sending them upstream.
+Both public request styles are normalized into one internal request model before being sent upstream.
 
 Key translation rules:
 
-- `system` and `developer` messages are folded into one `instructions` string.
-- `user` and `assistant` messages become upstream input items.
-- assistant tool calls become upstream `function_call` items.
-- tool outputs become upstream `function_call_output` items.
-- text and image content are mapped to `input_text` and `input_image`.
-- unsupported content types are rejected with a `400` instead of being dropped silently.
+- `system` and `developer` messages are merged into a single `instructions` string
+- `user` and `assistant` messages become upstream input items
+- Assistant tool calls become upstream `function_call` items
+- Tool outputs become upstream `function_call_output` items
+- Text and image content are mapped to `input_text` and `input_image`
+- Unsupported content types return `400` instead of being dropped silently
 
 ## Account Rotation
 
 Rotation is intentionally simple:
 
 - `least_used`
-  Prefers accounts with lower cached quota pressure, then lower request count, then older last-used time.
+  Prefer accounts with lower cached quota pressure, then lower request count, then older last-used time.
 - `round_robin`
-  Cycles healthy accounts in order.
+  Cycle healthy accounts in order.
 - `sticky`
-  Reuses the most recently used healthy account.
+  Reuse the most recently used healthy account.
 
-Explicit `previous_response_id` continuity is separate from global rotation. Continuation requests always prefer the originating account, regardless of the active rotation strategy.
+Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
 
 ## Observability
 
 The service includes:
 
-- structured JSON logging via `slog`
-- request IDs
-- panic recovery middleware
-- bounded JSON error responses
+- Structured JSON logging via `slog`
+- Request IDs
+- Panic recovery middleware
+- JSON error responses
 
-## Running Tests
+## Testing
+
+Run unit tests with:
 
 ```bash
 go test ./...
@@ -382,18 +376,10 @@ go test ./...
 
 ## Limitations
 
-- The upstream `chatgpt.com/backend-api/codex/*` surface is private and may change without notice.
+- The upstream Codex backend is private and may change without notice.
 - This project is single-process only.
 - There is no database backend.
 - There is no dashboard UI.
 - Account onboarding is device-auth only.
-- Current multimodal support is limited to text and image inputs.
-- The implementation is intentionally small and does not attempt to cover every edge case found in larger proxy projects.
-
-## Why `httpcloak`
-
-Upstream HTTP requests use `httpcloak` so the proxy can maintain the browser-like transport and header behavior needed by the Codex backend. The WebSocket continuation path is isolated separately because continuation semantics require a different transport.
-
-## Development Status
-
-This project is functional but still deliberately minimal. The core request path, account management, translation layer, and continuation flow are implemented. The main area that still benefits from ongoing validation is live upstream behavior, since the Codex backend is not a stable documented public API.
+- Multimodal support is currently limited to text and image inputs.
+- The implementation is intentionally small and does not aim to cover every edge case of the public OpenAI platform.
