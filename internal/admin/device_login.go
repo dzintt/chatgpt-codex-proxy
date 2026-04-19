@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +44,7 @@ func (s *DeviceLoginService) Start(ctx context.Context) (accounts.DeviceLoginRec
 	login := &pendingLogin{
 		DeviceLoginRecord: accounts.DeviceLoginRecord{
 			LoginID:   "login_" + now.Format("20060102150405.000000000"),
-			AuthURL:   deviceAuthURL(s.oauth.DeviceAuthURL(), resp.UserCode),
+			AuthURL:   s.oauth.DeviceAuthURL(),
 			UserCode:  resp.UserCode,
 			Status:    "pending",
 			CreatedAt: now,
@@ -104,6 +103,10 @@ func (s *DeviceLoginService) poll(login *pendingLogin) {
 				return
 			}
 
+			if result == nil {
+				continue
+			}
+
 			token, accountID, err := s.oauth.ExchangeAuthorizationCode(ctx, result.AuthorizationCode, result.CodeVerifier)
 			if err != nil {
 				s.update(login.LoginID, func(target *pendingLogin) {
@@ -145,17 +148,6 @@ func (s *DeviceLoginService) update(loginID string, fn func(*pendingLogin)) {
 		return
 	}
 	fn(login)
-}
-
-func deviceAuthURL(baseURL, userCode string) string {
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return baseURL
-	}
-	query := parsed.Query()
-	query.Set("user_code", userCode)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
 }
 
 func maxInt(value, minimum int) int {

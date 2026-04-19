@@ -44,6 +44,8 @@ type LocalUsage struct {
 type Record struct {
 	ID          string            `json:"id"`
 	AccountID   string            `json:"account_id"`
+	Email       string            `json:"email,omitempty"`
+	PlanType    string            `json:"plan_type,omitempty"`
 	Label       string            `json:"label,omitempty"`
 	Status      Status            `json:"status"`
 	LastError   string            `json:"last_error,omitempty"`

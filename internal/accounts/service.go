@@ -81,9 +81,13 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	metadata := metadataFromToken(token)
+
 	for _, existing := range s.records {
 		if existing.AccountID == accountID {
 			existing.Token = token
+			existing.Email = metadata.Email
+			existing.PlanType = metadata.PlanType
 			existing.Status = StatusActive
 			existing.LastError = ""
 			existing.UpdatedAt = time.Now().UTC()
@@ -98,6 +102,8 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 	record := &Record{
 		ID:        "acct_" + randomHex(8),
 		AccountID: accountID,
+		Email:     metadata.Email,
+		PlanType:  metadata.PlanType,
 		Status:    StatusActive,
 		Token:     token,
 		Cookies:   map[string]string{},
@@ -183,10 +189,17 @@ func (s *Service) UpdateAuth(id, accountID string, token OAuthToken) error {
 	if !ok {
 		return fmt.Errorf("account not found")
 	}
+	metadata := metadataFromToken(token)
 	if strings.TrimSpace(accountID) != "" {
 		record.AccountID = strings.TrimSpace(accountID)
 	}
 	record.Token = token
+	if metadata.Email != "" {
+		record.Email = metadata.Email
+	}
+	if metadata.PlanType != "" {
+		record.PlanType = metadata.PlanType
+	}
 	record.UpdatedAt = time.Now().UTC()
 	record.Status = StatusActive
 	record.LastError = ""

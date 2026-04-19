@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,37 @@ type DeviceCodeResponse struct {
 	UserCode     string `json:"user_code"`
 	DeviceAuthID string `json:"device_auth_id"`
 	Interval     int    `json:"interval"`
+}
+
+func (d *DeviceCodeResponse) UnmarshalJSON(data []byte) error {
+	type rawDeviceCodeResponse struct {
+		UserCode     string `json:"user_code"`
+		DeviceAuthID string `json:"device_auth_id"`
+		Interval     any    `json:"interval"`
+	}
+
+	var raw rawDeviceCodeResponse
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	d.UserCode = raw.UserCode
+	d.DeviceAuthID = raw.DeviceAuthID
+	switch value := raw.Interval.(type) {
+	case float64:
+		d.Interval = int(value)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("parse device auth interval %q: %w", value, err)
+		}
+		d.Interval = parsed
+	case nil:
+		d.Interval = 0
+	default:
+		return fmt.Errorf("unsupported device auth interval type %T", value)
+	}
+	return nil
 }
 
 type DevicePollResponse struct {
@@ -59,13 +91,23 @@ func (s *OAuthService) RequestDeviceCode(ctx context.Context) (DeviceCodeRespons
 	return doJSON[DeviceCodeResponse](ctx, s.client, http.MethodPost, endpoint, body, s.defaultHeaders())
 }
 
-func (s *OAuthService) PollDeviceCode(ctx context.Context, deviceAuthID, userCode string) (DevicePollResponse, error) {
+func (s *OAuthService) PollDeviceCode(ctx context.Context, deviceAuthID, userCode string) (*DevicePollResponse, error) {
 	endpoint := strings.TrimRight(s.cfg.AuthIssuer, "/") + deviceTokenPath
 	body := map[string]string{
 		"device_auth_id": deviceAuthID,
 		"user_code":      userCode,
 	}
-	return doJSON[DevicePollResponse](ctx, s.client, http.MethodPost, endpoint, body, s.defaultHeaders())
+	result, pending, err := doJSONAllowPending[DevicePollResponse](ctx, s.client, http.MethodPost, endpoint, body, s.defaultHeaders(), map[int]struct{}{
+		http.StatusForbidden: {},
+		http.StatusNotFound:  {},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return nil, nil
+	}
+	return &result, nil
 }
 
 func (s *OAuthService) ExchangeAuthorizationCode(ctx context.Context, authorizationCode, codeVerifier string) (accounts.OAuthToken, string, error) {
@@ -166,30 +208,39 @@ func CodeChallenge(verifier string) string {
 }
 
 func doJSON[T any](ctx context.Context, client *http.Client, method, endpoint string, body any, headers http.Header) (T, error) {
+	result, _, err := doJSONAllowPending[T](ctx, client, method, endpoint, body, headers, nil)
+	return result, err
+}
+
+func doJSONAllowPending[T any](ctx context.Context, client *http.Client, method, endpoint string, body any, headers http.Header, pendingStatuses map[int]struct{}) (T, bool, error) {
 	var zero T
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return zero, err
+		return zero, false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(string(payload)))
 	if err != nil {
-		return zero, err
+		return zero, false, err
 	}
 	req.Header = headers.Clone()
 	resp, err := client.Do(req)
 	if err != nil {
-		return zero, err
+		return zero, false, err
 	}
 	defer resp.Body.Close()
+	if _, ok := pendingStatuses[resp.StatusCode]; ok {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 32*1024))
+		return zero, true, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
-		return zero, fmt.Errorf("oauth request failed: %s", strings.TrimSpace(string(bodyBytes)))
+		return zero, false, fmt.Errorf("oauth request failed: %s", strings.TrimSpace(string(bodyBytes)))
 	}
 	var decoded T
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return zero, err
+		return zero, false, err
 	}
-	return decoded, nil
+	return decoded, false, nil
 }
 
 func doForm(ctx context.Context, client *http.Client, endpoint string, values url.Values, headers http.Header) (map[string]any, error) {
