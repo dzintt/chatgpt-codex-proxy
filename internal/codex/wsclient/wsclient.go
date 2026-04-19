@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/textproto"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -20,7 +21,8 @@ func New() *Client {
 }
 
 type Stream struct {
-	conn *websocket.Conn
+	conn    *websocket.Conn
+	headers http.Header
 }
 
 func (c *Client) Connect(ctx context.Context, endpoint string, headers http.Header, body any) (*Stream, error) {
@@ -36,11 +38,18 @@ func (c *Client) Connect(ctx context.Context, endpoint string, headers http.Head
 		conn.Close()
 		return nil, err
 	}
-	return &Stream{conn: conn}, nil
+	return &Stream{
+		conn:    conn,
+		headers: cloneHeaders(resp),
+	}, nil
 }
 
 func (s *Stream) Close() error {
 	return s.conn.Close()
+}
+
+func (s *Stream) Headers() http.Header {
+	return s.headers.Clone()
 }
 
 func (s *Stream) NextEvent() (*codex.StreamEvent, error) {
@@ -60,4 +69,15 @@ func (s *Stream) NextEvent() (*codex.StreamEvent, error) {
 		return nil, io.EOF
 	}
 	return &codex.StreamEvent{Type: eventType, Raw: raw}, nil
+}
+
+func cloneHeaders(resp *http.Response) http.Header {
+	if resp == nil {
+		return make(http.Header)
+	}
+	out := make(http.Header, len(resp.Header))
+	for key, values := range resp.Header {
+		out[textproto.CanonicalMIMEHeaderKey(key)] = append([]string(nil), values...)
+	}
+	return out
 }

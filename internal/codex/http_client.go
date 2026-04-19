@@ -46,9 +46,11 @@ func (c *HTTPClient) Close() error {
 func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (UsageResponse, *accounts.QuotaSnapshot, error) {
 	session := c.sessionFor(record.ID)
 	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
-		AccountID: record.AccountID,
-		Cookies:   record.Cookies,
-		RequestID: randomRequestID(),
+		AccountID:      record.AccountID,
+		Cookies:        record.Cookies,
+		RequestID:      NewRequestID(),
+		Accept:         "application/json",
+		AcceptEncoding: "gzip, deflate",
 	}), c.cfg.HeaderOrder)
 
 	resp, err := session.Get(ctx, strings.TrimRight(c.cfg.CodexBaseURL, "/")+"/codex/usage", headers)
@@ -72,20 +74,23 @@ func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (Usag
 	return decoded, QuotaFromUsageResponse(decoded), nil
 }
 
-func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record, req Request) (*StreamReader, error) {
+func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record, req Request, turnState string) (*StreamReader, error) {
 	session := c.sessionFor(record.ID)
 	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
 		AccountID:   record.AccountID,
 		Cookies:     record.Cookies,
 		ContentType: "application/json",
-		TurnState:   "",
-		RequestID:   randomRequestID(),
+		TurnState:   turnState,
+		RequestID:   NewRequestID(),
+		IncludeBeta: true,
+		Accept:      "text/event-stream",
 	}), c.cfg.HeaderOrder)
-	headers["Accept"] = []string{"text/event-stream"}
 
 	bodyReq := req
 	bodyReq.Stream = true
 	bodyReq.Store = false
+	bodyReq.PreviousResponseID = ""
+	bodyReq.ServiceTier = ""
 	payload, err := json.Marshal(bodyReq)
 	if err != nil {
 		return nil, err
@@ -143,12 +148,13 @@ func (r *StreamReader) Close() error {
 }
 
 func (r *StreamReader) NextEvent() (*StreamEvent, error) {
+	var eventName string
 	var dataLines []string
 	for {
 		line, err := r.reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF && len(dataLines) > 0 {
-				return parseStreamEvent(strings.Join(dataLines, "\n"))
+				return parseStreamEvent(eventName, strings.Join(dataLines, "\n"))
 			}
 			return nil, err
 		}
@@ -158,7 +164,11 @@ func (r *StreamReader) NextEvent() (*StreamEvent, error) {
 			if len(dataLines) == 0 {
 				continue
 			}
-			return parseStreamEvent(strings.Join(dataLines, "\n"))
+			return parseStreamEvent(eventName, strings.Join(dataLines, "\n"))
+		}
+		if strings.HasPrefix(strings.ToLower(line), "event:") {
+			eventName = strings.TrimSpace(line[6:])
+			continue
 		}
 		if strings.HasPrefix(strings.ToLower(line), "data:") {
 			dataLines = append(dataLines, strings.TrimSpace(line[5:]))
@@ -166,7 +176,7 @@ func (r *StreamReader) NextEvent() (*StreamEvent, error) {
 	}
 }
 
-func parseStreamEvent(data string) (*StreamEvent, error) {
+func parseStreamEvent(eventName, data string) (*StreamEvent, error) {
 	if data == "" || data == "[DONE]" {
 		return nil, io.EOF
 	}
@@ -174,8 +184,12 @@ func parseStreamEvent(data string) (*StreamEvent, error) {
 	if err := json.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, err
 	}
+	eventType := strings.TrimSpace(eventName)
+	if eventType == "" {
+		eventType = stringValue(raw["type"])
+	}
 	return &StreamEvent{
-		Type: stringValue(raw["type"]),
+		Type: eventType,
 		Raw:  raw,
 	}, nil
 }
@@ -189,10 +203,13 @@ func toHTTPHeader(headers map[string][]string) http.Header {
 	return out
 }
 
-func randomRequestID() string {
+func NewRequestID() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return "req_fallback"
+		return "00000000-0000-4000-8000-000000000000"
 	}
-	return "req_" + hex.EncodeToString(buf)
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	hexValue := hex.EncodeToString(buf)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexValue[0:8], hexValue[8:12], hexValue[12:16], hexValue[16:20], hexValue[20:32])
 }

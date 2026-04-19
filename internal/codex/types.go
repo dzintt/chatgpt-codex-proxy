@@ -14,6 +14,8 @@ type Request struct {
 	Reasoning          *Reasoning  `json:"reasoning,omitempty"`
 	ServiceTier        string      `json:"service_tier,omitempty"`
 	PreviousResponseID string      `json:"previous_response_id,omitempty"`
+	PromptCacheKey     string      `json:"prompt_cache_key,omitempty"`
+	Include            []string    `json:"include,omitempty"`
 }
 
 type Reasoning struct {

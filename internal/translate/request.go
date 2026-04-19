@@ -18,6 +18,7 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 		Tools:       normalizeTools(req.Tools),
 		Reasoning:   reasoning,
 		ServiceTier: serviceTier,
+		Include:     []string{"reasoning.encrypted_content"},
 	}
 	if len(req.Tools) > 0 {
 		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
@@ -101,6 +102,9 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 			Effort:  req.Reasoning.Effort,
 			Summary: req.Reasoning.Summary,
 		}
+		if reasoning.Effort != "" && reasoning.Summary == "" {
+			reasoning.Summary = "auto"
+		}
 	}
 
 	out := NormalizedRequest{
@@ -113,6 +117,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 		Reasoning:          reasoning,
 		ServiceTier:        serviceTier,
 		PreviousResponseID: strings.TrimSpace(req.PreviousResponseID),
+		Include:            []string{"reasoning.encrypted_content"},
 	}
 
 	if req.Text != nil && req.Text.Format != nil {
@@ -316,7 +321,7 @@ func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string)
 
 	var reasoning *codex.Reasoning
 	if effort != "" {
-		reasoning = &codex.Reasoning{Effort: effort}
+		reasoning = &codex.Reasoning{Effort: effort, Summary: "auto"}
 	}
 	if model == "" || model == "codex" {
 		model = defaultModel

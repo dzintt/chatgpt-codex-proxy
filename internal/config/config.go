@@ -13,7 +13,7 @@ const (
 	defaultListenAddr            = ":8080"
 	defaultDataDir               = "data"
 	defaultDefaultModel          = "gpt-5.2-codex"
-	defaultOriginator            = "codex-proxy"
+	defaultOriginator            = "Codex Desktop"
 	defaultOpenAIBeta            = "responses_websockets=2026-02-06"
 	defaultResidency             = "us"
 	defaultRotationStrategy      = "least_used"
@@ -47,6 +47,7 @@ type Config struct {
 	UserAgentTemplate     string
 	ChromiumVersion       string
 	Platform              string
+	ClientHintPlatform    string
 	Arch                  string
 	HeaderOrder           []string
 	DefaultAcceptLanguage string
@@ -82,10 +83,11 @@ func Load() (Config, error) {
 		RequestTimeout:        time.Duration(envInt("REQUEST_TIMEOUT_SECONDS", defaultRequestTimeoutSecond)) * time.Second,
 		RefreshSkew:           60 * time.Second,
 		LogLevel:              slogLevel(strings.ToLower(envOr("LOG_LEVEL", "info"))),
-		UserAgentTemplate:     envOr("USER_AGENT_TEMPLATE", "Codex Desktop/0.1.0 ({platform}; {arch})"),
-		ChromiumVersion:       envOr("CHROMIUM_VERSION", "141"),
-		Platform:              envOr("CLIENT_PLATFORM", "macOS"),
-		Arch:                  envOr("CLIENT_ARCH", "x86_64"),
+		UserAgentTemplate:     envOr("USER_AGENT_TEMPLATE", "Codex Desktop/26.318.11754 ({platform}; {arch})"),
+		ChromiumVersion:       envOr("CHROMIUM_VERSION", "144"),
+		Platform:              envOr("CLIENT_PLATFORM", "darwin"),
+		ClientHintPlatform:    envOr("CLIENT_HINT_PLATFORM", "macOS"),
+		Arch:                  envOr("CLIENT_ARCH", "arm64"),
 		DefaultAcceptLanguage: envOr("DEFAULT_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
 		HeaderOrder: []string{
 			"authorization",

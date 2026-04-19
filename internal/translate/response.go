@@ -9,20 +9,22 @@ import (
 )
 
 type Accumulator struct {
-	Normalized  NormalizedRequest
-	ResponseID  string
-	Model       string
-	TextBuilder strings.Builder
-	Usage       *codex.Usage
-	ToolCalls   []map[string]any
-	Output      []map[string]any
-	Status      string
-	RawFinal    map[string]any
+	Normalized   NormalizedRequest
+	ResponseID   string
+	Model        string
+	TextBuilder  strings.Builder
+	Usage        *codex.Usage
+	ToolCalls    []map[string]any
+	toolCallByID map[string]map[string]any
+	Output       []map[string]any
+	Status       string
+	RawFinal     map[string]any
 }
 
 func NewAccumulator(normalized NormalizedRequest) *Accumulator {
 	return &Accumulator{
-		Normalized: normalized,
+		Normalized:   normalized,
+		toolCallByID: make(map[string]map[string]any),
 	}
 }
 
@@ -60,6 +62,9 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 		stringValue(nestedMap(event.Raw, "item")["text"]),
 	); delta != "" && strings.Contains(event.Type, "text") {
 		a.TextBuilder.WriteString(delta)
+	}
+	if strings.HasPrefix(event.Type, "response.function_call_arguments.") {
+		a.applyToolArgumentEvent(event)
 	}
 	if item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item")); item != nil {
 		a.captureOutputItem(item)
@@ -108,15 +113,23 @@ func (a *Accumulator) captureOutputItem(item map[string]any) {
 	itemType := stringValue(item["type"])
 	switch itemType {
 	case "function_call":
+		callID := firstString(stringValue(item["call_id"]), stringValue(item["id"]))
 		call := map[string]any{
-			"id":   firstString(stringValue(item["call_id"]), stringValue(item["id"])),
+			"id":   callID,
 			"type": "function",
 			"function": map[string]any{
 				"name":      stringValue(item["name"]),
 				"arguments": stringValue(item["arguments"]),
 			},
 		}
+		if existing, ok := a.toolCallByID[callID]; ok {
+			mergeToolCall(existing, call)
+			return
+		}
 		a.ToolCalls = append(a.ToolCalls, call)
+		if callID != "" {
+			a.toolCallByID[callID] = call
+		}
 	case "message":
 		if len(a.Output) == 0 {
 			a.Output = append(a.Output, item)
@@ -210,6 +223,65 @@ func finishReason(a *Accumulator) string {
 		return "tool_calls"
 	}
 	return "stop"
+}
+
+func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
+	itemID := firstString(stringValue(event.Raw["item_id"]), stringValue(event.Raw["call_id"]))
+	if itemID == "" {
+		return
+	}
+	call, ok := a.toolCallByID[itemID]
+	if !ok {
+		call = map[string]any{
+			"id":   itemID,
+			"type": "function",
+			"function": map[string]any{
+				"name":      stringValue(event.Raw["name"]),
+				"arguments": "",
+			},
+		}
+		a.ToolCalls = append(a.ToolCalls, call)
+		a.toolCallByID[itemID] = call
+	}
+	function, _ := call["function"].(map[string]any)
+	if function == nil {
+		function = map[string]any{}
+		call["function"] = function
+	}
+	if name := stringValue(event.Raw["name"]); name != "" {
+		function["name"] = name
+	}
+	switch event.Type {
+	case "response.function_call_arguments.delta":
+		function["arguments"] = stringValue(function["arguments"]) + stringValue(event.Raw["delta"])
+	case "response.function_call_arguments.done":
+		if args := stringValue(event.Raw["arguments"]); args != "" {
+			function["arguments"] = args
+		}
+	}
+}
+
+func mergeToolCall(dst, src map[string]any) {
+	for key, value := range src {
+		if key == "function" {
+			dstFn, _ := dst["function"].(map[string]any)
+			srcFn, _ := value.(map[string]any)
+			if dstFn == nil {
+				dstFn = map[string]any{}
+			}
+			for fnKey, fnValue := range srcFn {
+				if fnValue == "" {
+					continue
+				}
+				dstFn[fnKey] = fnValue
+			}
+			dst["function"] = dstFn
+			continue
+		}
+		if value != "" {
+			dst[key] = value
+		}
+	}
 }
 
 func nestedMap(raw map[string]any, key string) map[string]any {

@@ -3,7 +3,6 @@ package codex
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 
@@ -11,11 +10,14 @@ import (
 )
 
 type HeaderOptions struct {
-	AccountID   string
-	Cookies     map[string]string
-	ContentType string
-	TurnState   string
-	RequestID   string
+	AccountID      string
+	Cookies        map[string]string
+	ContentType    string
+	TurnState      string
+	RequestID      string
+	Accept         string
+	AcceptEncoding string
+	IncludeBeta    bool
 }
 
 func BuildHeaders(cfg config.Config, token string, opts HeaderOptions) http.Header {
@@ -26,25 +28,36 @@ func BuildHeaders(cfg config.Config, token string, opts HeaderOptions) http.Head
 	}
 	headers.Set("originator", cfg.Originator)
 	headers.Set("x-openai-internal-codex-residency", cfg.Residency)
-	headers.Set("x-client-request-id", opts.RequestID)
+	if opts.RequestID != "" {
+		headers.Set("x-client-request-id", opts.RequestID)
+	}
 	if opts.TurnState != "" {
 		headers.Set("x-codex-turn-state", opts.TurnState)
 	}
-	headers.Set("OpenAI-Beta", cfg.OpenAIBeta)
+	if opts.IncludeBeta {
+		headers.Set("OpenAI-Beta", cfg.OpenAIBeta)
+	}
 	headers.Set("User-Agent", strings.NewReplacer(
 		"{platform}", cfg.Platform,
 		"{arch}", cfg.Arch,
 	).Replace(cfg.UserAgentTemplate))
 	headers.Set("sec-ch-ua", fmt.Sprintf(`"Chromium";v="%s", "Not:A-Brand";v="24"`, cfg.ChromiumVersion))
 	headers.Set("sec-ch-ua-mobile", "?0")
-	headers.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, cfg.Platform))
-	headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	headers.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, cfg.ClientHintPlatform))
+	if opts.AcceptEncoding != "" {
+		headers.Set("Accept-Encoding", opts.AcceptEncoding)
+	} else {
+		headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	}
 	headers.Set("Accept-Language", cfg.DefaultAcceptLanguage)
 	headers.Set("sec-fetch-site", "same-origin")
 	headers.Set("sec-fetch-mode", "cors")
 	headers.Set("sec-fetch-dest", "empty")
 	if opts.ContentType != "" {
 		headers.Set("Content-Type", opts.ContentType)
+	}
+	if opts.Accept != "" {
+		headers.Set("Accept", opts.Accept)
 	}
 	if len(opts.Cookies) > 0 {
 		headers.Set("Cookie", cookieHeader(opts.Cookies))
@@ -94,7 +107,7 @@ func cookieHeader(cookies map[string]string) string {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		pairs = append(pairs, fmt.Sprintf("%s=%s", key, url.QueryEscape(cookies[key])))
+		pairs = append(pairs, fmt.Sprintf("%s=%s", key, cookies[key]))
 	}
 	return strings.Join(pairs, "; ")
 }

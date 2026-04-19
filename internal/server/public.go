@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -18,6 +20,7 @@ import (
 type eventStream interface {
 	NextEvent() (*codex.StreamEvent, error)
 	Close() error
+	Headers() http.Header
 }
 
 func (a *App) handleChatCompletions(c *gin.Context) {
@@ -33,7 +36,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "")
+	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
 		status, code, message := a.classifyUpstreamError("", err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
@@ -81,7 +84,12 @@ func (a *App) handleResponses(c *gin.Context) {
 		preferredID = record.AccountID
 	}
 
-	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID)
+	turnState := ""
+	if normalized.PreviousResponseID != "" {
+		record, _ := a.continuations.Get(normalized.PreviousResponseID)
+		turnState = record.TurnState
+	}
+	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
 		status, code, message := a.classifyUpstreamError(preferredID, err)
 		a.writeOpenAIError(c, status, code, message, "api_error")
@@ -106,26 +114,27 @@ func (a *App) handleResponses(c *gin.Context) {
 	c.JSON(http.StatusOK, accumulator.ResponsesObject())
 }
 
-func (a *App) openStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	if normalized.PreviousResponseID != "" {
-		return a.openWSStream(ctx, normalized, preferredID)
+		return a.openWSStream(ctx, normalized, preferredID, turnState)
 	}
-	return a.openHTTPStream(ctx, normalized, preferredID)
+	return a.openHTTPStream(ctx, normalized, preferredID, turnState)
 }
 
-func (a *App) openHTTPStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openHTTPStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	account, err := a.accountMgr.AcquireReady(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
-	stream, err := a.httpClient.StreamResponse(ctx, account, normalized.ToCodexRequest())
+	request := normalized.ToCodexRequest()
+	stream, err := a.httpClient.StreamResponse(ctx, account, request, turnState)
 	if err != nil {
 		return account, nil, nil, err
 	}
 	return account, stream, codex.ParseQuotaFromHeaders(stream.Headers()), nil
 }
 
-func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	account, err := a.accountMgr.AcquireReady(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
@@ -133,18 +142,17 @@ func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedR
 	headers := codex.BuildHeaders(a.cfg, account.Token.AccessToken, codex.HeaderOptions{
 		AccountID:   account.AccountID,
 		Cookies:     account.Cookies,
-		ContentType: "application/json",
+		TurnState:   turnState,
+		RequestID:   codex.NewRequestID(),
+		IncludeBeta: true,
 	})
-	body := map[string]any{
-		"type":     "response.create",
-		"response": normalized.ToCodexRequest(),
-	}
+	body := normalized.ToCodexWSCreatePayload()
 	endpoint := websocketEndpoint(a.cfg.CodexBaseURL)
 	stream, err := a.wsClient.Connect(ctx, endpoint, headers, body)
 	if err != nil {
 		return account, nil, nil, err
 	}
-	return account, stream, nil, nil
+	return account, stream, codex.ParseQuotaFromHeaders(stream.Headers()), nil
 }
 
 func (a *App) collectEvents(account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) (*translate.Accumulator, error) {
@@ -157,13 +165,16 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 			}
 			return nil, err
 		}
+		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			return nil, upstreamErr
+		}
 		accumulator.Apply(event)
 	}
 
 	if accumulator.Usage != nil {
 		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
 	}
-	a.rememberContinuation(account.ID, accumulator)
+	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	return accumulator, nil
 }
 
@@ -187,6 +198,11 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			c.Writer.Flush()
 			return
 		}
+		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			writeSSE(c.Writer, "", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
+			c.Writer.Flush()
+			return
+		}
 		before := accumulator.Text()
 		accumulator.Apply(event)
 		after := accumulator.Text()
@@ -200,7 +216,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	if accumulator.Usage != nil {
 		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
 	}
-	a.rememberContinuation(account.ID, accumulator)
+	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, "stop")))
 	_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
@@ -224,6 +240,11 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			c.Writer.Flush()
 			return
 		}
+		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			writeSSE(c.Writer, "error", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
+			c.Writer.Flush()
+			return
+		}
 		accumulator.Apply(event)
 		writeSSE(c.Writer, event.Type, translate.ResponseEventJSON(event.Type, accumulator.ResponseID, event.Raw))
 		c.Writer.Flush()
@@ -232,12 +253,12 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	if accumulator.Usage != nil {
 		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
 	}
-	a.rememberContinuation(account.ID, accumulator)
+	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
 }
 
-func (a *App) rememberContinuation(accountID string, accumulator *translate.Accumulator) {
+func (a *App) rememberContinuation(accountID string, accumulator *translate.Accumulator, turnState string) {
 	if accumulator == nil || accumulator.ResponseID == "" {
 		return
 	}
@@ -245,6 +266,7 @@ func (a *App) rememberContinuation(accountID string, accumulator *translate.Accu
 		ResponseID: accumulator.ResponseID,
 		AccountID:  accountID,
 		UpstreamID: accumulator.ResponseID,
+		TurnState:  strings.TrimSpace(turnState),
 		Model:      firstString(accumulator.Model, accumulator.Normalized.Model),
 		ExpiresAt:  timeNowUTC().Add(a.cfg.ContinuationTTL),
 	})
@@ -268,4 +290,35 @@ func firstString(values ...string) string {
 
 func timeNowUTC() time.Time {
 	return time.Now().UTC()
+}
+
+func upstreamEventError(event *codex.StreamEvent) error {
+	if event == nil {
+		return nil
+	}
+	if event.Type != "error" && event.Type != "response.failed" {
+		return nil
+	}
+	if nested := serverNestedMap(event.Raw, "error"); nested != nil {
+		if message := firstString(serverStringValue(nested["message"]), serverStringValue(nested["detail"])); message != "" {
+			return errors.New(message)
+		}
+	}
+	if message := firstString(serverStringValue(event.Raw["message"]), serverStringValue(event.Raw["detail"])); message != "" {
+		return errors.New(message)
+	}
+	return fmt.Errorf("upstream %s", event.Type)
+}
+
+func serverNestedMap(raw map[string]any, key string) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	value, _ := raw[key].(map[string]any)
+	return value
+}
+
+func serverStringValue(value any) string {
+	str, _ := value.(string)
+	return str
 }

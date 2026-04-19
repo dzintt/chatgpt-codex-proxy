@@ -21,6 +21,8 @@ type NormalizedRequest struct {
 	Reasoning          *codex.Reasoning
 	ServiceTier        string
 	PreviousResponseID string
+	PromptCacheKey     string
+	Include            []string
 }
 
 func (n NormalizedRequest) ToCodexRequest() codex.Request {
@@ -36,5 +38,38 @@ func (n NormalizedRequest) ToCodexRequest() codex.Request {
 		Reasoning:          n.Reasoning,
 		ServiceTier:        n.ServiceTier,
 		PreviousResponseID: n.PreviousResponseID,
+		PromptCacheKey:     n.PromptCacheKey,
+		Include:            append([]string(nil), n.Include...),
 	}
+}
+
+func (n NormalizedRequest) ToCodexWSCreatePayload() map[string]any {
+	payload := map[string]any{
+		"type":         "response.create",
+		"model":        n.Model,
+		"input":        n.Input,
+		"instructions": n.Instructions,
+	}
+	if len(n.Tools) > 0 {
+		payload["tools"] = n.Tools
+	}
+	if n.ToolChoice != nil {
+		payload["tool_choice"] = n.ToolChoice
+	}
+	if n.Text != nil {
+		payload["text"] = n.Text
+	}
+	if n.Reasoning != nil {
+		payload["reasoning"] = n.Reasoning
+	}
+	if n.PreviousResponseID != "" {
+		payload["previous_response_id"] = n.PreviousResponseID
+	}
+	if n.PromptCacheKey != "" {
+		payload["prompt_cache_key"] = n.PromptCacheKey
+	}
+	if len(n.Include) > 0 {
+		payload["include"] = append([]string(nil), n.Include...)
+	}
+	return payload
 }
