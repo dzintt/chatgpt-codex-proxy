@@ -286,76 +286,104 @@ func TestAcquireKeepsQuotaFallbackBlockUntilExpiry(t *testing.T) {
 	}
 }
 
-func TestObserveQuotaClearsSnapshotManagedBlockWhenFreshSnapshotRecovers(t *testing.T) {
+func TestObserveQuotaClearsRecoveredQuotaFallbackBlock(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name   string
-		id     string
-		reason BlockReason
-	}{
-		{
-			name:   "quota fallback block",
-			id:     "acct_blocked",
-			reason: BlockQuotaPrimary,
+	now := time.Now().UTC()
+	until := now.Add(5 * time.Minute)
+	observedAt := now.Add(-time.Minute)
+	resetAt := now.Add(10 * time.Minute)
+	usedPercent := 35.0
+	svc, err := NewService(&memoryStore{state: State{
+		Records: []*Record{
+			{
+				ID:        "acct_blocked",
+				AccountID: "upstream_acct_blocked",
+				Status:    StatusActive,
+				BlockState: BlockState{
+					Reason:     BlockQuotaPrimary,
+					Until:      &until,
+					ObservedAt: &observedAt,
+				},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
 		},
-		{
-			name:   "rate limit fallback block",
-			id:     "acct_rate_limited",
-			reason: BlockRateLimit,
-		},
+	}}, RotationLeastUsed, ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
 	}
 
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	if err := svc.ObserveQuota("acct_blocked", &QuotaSnapshot{
+		FetchedAt: now,
+		RateLimit: RateLimitWindow{
+			Allowed:      true,
+			LimitReached: false,
+			UsedPercent:  &usedPercent,
+			ResetAt:      &resetAt,
+		},
+	}); err != nil {
+		t.Fatalf("ObserveQuota() error = %v", err)
+	}
 
-			now := time.Now().UTC()
-			until := now.Add(5 * time.Minute)
-			observedAt := now.Add(-time.Minute)
-			resetAt := now.Add(10 * time.Minute)
-			usedPercent := 35.0
-			svc, err := NewService(&memoryStore{state: State{
-				Records: []*Record{
-					{
-						ID:        tc.id,
-						AccountID: "upstream_" + tc.id,
-						Status:    StatusActive,
-						BlockState: BlockState{
-							Reason:     tc.reason,
-							Until:      &until,
-							ObservedAt: &observedAt,
-						},
-						CreatedAt: now,
-						UpdatedAt: now,
-					},
+	record, ok := svc.Get("acct_blocked")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.BlockState.Reason != BlockNone {
+		t.Fatalf("block_reason = %q, want none after recovered quota snapshot", record.BlockState.Reason)
+	}
+}
+
+func TestObserveQuotaDoesNotClearRateLimitFallbackBlock(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	until := now.Add(5 * time.Minute)
+	observedAt := now.Add(-time.Minute)
+	resetAt := now.Add(10 * time.Minute)
+	usedPercent := 35.0
+	svc, err := NewService(&memoryStore{state: State{
+		Records: []*Record{
+			{
+				ID:        "acct_rate_limited",
+				AccountID: "upstream_acct_rate_limited",
+				Status:    StatusActive,
+				BlockState: BlockState{
+					Reason:     BlockRateLimit,
+					Until:      &until,
+					ObservedAt: &observedAt,
 				},
-			}}, RotationLeastUsed, ServiceOptions{})
-			if err != nil {
-				t.Fatalf("NewService() error = %v", err)
-			}
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}}, RotationLeastUsed, ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
 
-			if err := svc.ObserveQuota(tc.id, &QuotaSnapshot{
-				FetchedAt: now,
-				RateLimit: RateLimitWindow{
-					Allowed:      true,
-					LimitReached: false,
-					UsedPercent:  &usedPercent,
-					ResetAt:      &resetAt,
-				},
-			}); err != nil {
-				t.Fatalf("ObserveQuota() error = %v", err)
-			}
+	if err := svc.ObserveQuota("acct_rate_limited", &QuotaSnapshot{
+		FetchedAt: now,
+		RateLimit: RateLimitWindow{
+			Allowed:      true,
+			LimitReached: false,
+			UsedPercent:  &usedPercent,
+			ResetAt:      &resetAt,
+		},
+	}); err != nil {
+		t.Fatalf("ObserveQuota() error = %v", err)
+	}
 
-			record, ok := svc.Get(tc.id)
-			if !ok {
-				t.Fatal("Get() returned false")
-			}
-			if record.BlockState.Reason != BlockNone {
-				t.Fatalf("block_reason = %q, want none after recovered quota snapshot", record.BlockState.Reason)
-			}
-		})
+	record, ok := svc.Get("acct_rate_limited")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.BlockState.Reason != BlockRateLimit {
+		t.Fatalf("block_reason = %q, want rate_limit", record.BlockState.Reason)
+	}
+	if record.BlockState.Until == nil || !record.BlockState.Until.Equal(until) {
+		t.Fatalf("block_until = %v, want %v", record.BlockState.Until, until)
 	}
 }
 
@@ -743,30 +771,34 @@ func TestGetClearsExpiredQuotaPressure(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
-	resetAt := now.Add(-time.Minute)
-	usedPercent := 99.0
-	svc, err := NewService(&memoryStore{state: State{
+	store := &memoryStore{state: State{
 		Records: []*Record{
 			{
 				ID:        "acct_pressure",
 				AccountID: "upstream_pressure",
 				Status:    StatusActive,
-				CachedQuota: &QuotaSnapshot{
-					RateLimit: RateLimitWindow{
-						Allowed:      true,
-						LimitReached: true,
-						UsedPercent:  &usedPercent,
-						ResetAt:      &resetAt,
-					},
-				},
 				CreatedAt: now,
 				UpdatedAt: now,
 			},
 		},
-	}}, RotationLeastUsed, ServiceOptions{})
+	}}
+	svc, err := NewService(store, RotationLeastUsed, ServiceOptions{})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
+
+	resetAt := now.Add(-time.Minute)
+	usedPercent := 99.0
+	svc.mu.Lock()
+	svc.records["acct_pressure"].CachedQuota = &QuotaSnapshot{
+		RateLimit: RateLimitWindow{
+			Allowed:      true,
+			LimitReached: true,
+			UsedPercent:  &usedPercent,
+			ResetAt:      &resetAt,
+		},
+	}
+	svc.mu.Unlock()
 
 	record, ok := svc.Get("acct_pressure")
 	if !ok {
@@ -783,6 +815,22 @@ func TestGetClearsExpiredQuotaPressure(t *testing.T) {
 	}
 	if record.CachedQuota.RateLimit.UsedPercent != nil {
 		t.Fatalf("used_percent = %v, want nil after reset", record.CachedQuota.RateLimit.UsedPercent)
+	}
+	if store.saveCount == 0 {
+		t.Fatal("expected Get() refresh to persist normalized quota state")
+	}
+	if persisted := store.state.Records[0].CachedQuota; persisted == nil {
+		t.Fatal("persisted cached quota = nil")
+	} else {
+		if persisted.RateLimit.LimitReached {
+			t.Fatal("persisted limit_reached = true, want false after reset")
+		}
+		if persisted.RateLimit.ResetAt != nil {
+			t.Fatalf("persisted reset_at = %v, want nil", persisted.RateLimit.ResetAt)
+		}
+		if persisted.RateLimit.UsedPercent != nil {
+			t.Fatalf("persisted used_percent = %v, want nil", persisted.RateLimit.UsedPercent)
+		}
 	}
 }
 

@@ -223,7 +223,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
+			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
@@ -298,7 +298,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
+			a.respondClassifiedStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
@@ -829,6 +829,13 @@ func (a *App) respondOpenAIUpstreamStreamError(c *gin.Context, endpoint, account
 	status, code, message := a.classifyUpstreamError(accountID, err)
 	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
 	a.writeOpenAIError(c, status, code, message, "api_error")
+}
+
+func (a *App) respondClassifiedStreamError(c *gin.Context, endpoint, accountID, responseID, eventName string, err error) {
+	_, _, message := a.classifyUpstreamError(accountID, err)
+	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
+	writeSSE(c.Writer, eventName, translate.MustJSON(gin.H{"error": message}))
+	c.Writer.Flush()
 }
 
 func (a *App) respondStreamError(c *gin.Context, endpoint, accountID, responseID, eventName string, err error) {

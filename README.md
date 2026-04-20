@@ -61,7 +61,7 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - `cmd/api`
   Server entry point.
 - `internal/config`
-  Environment-driven configuration.
+  Small runtime configuration.
 - `internal/server`
   HTTP routes and handlers.
 - `internal/middleware`
@@ -101,16 +101,10 @@ Required:
 PROXY_API_KEY=change-me
 ```
 
-Common optional settings:
+Optional:
 
-```env
-LISTEN_ADDR=:8080
-DATA_DIR=data
-DEFAULT_MODEL=gpt-5.3-codex
-ROTATION_STRATEGY=least_used
-LOG_LEVEL=info
-REQUEST_TIMEOUT_SECONDS=120
-```
+- `PORT`
+  Overrides the default listen port `8080`.
 
 ### 2. Run the server
 
@@ -118,7 +112,7 @@ REQUEST_TIMEOUT_SECONDS=120
 go run ./cmd/api
 ```
 
-By default the server listens on `:8080`.
+By default the server listens on `:8080` and stores local state in `./data`.
 
 ### 3. Add a Codex account
 
@@ -315,49 +309,17 @@ Continuation mappings and in-flight device-login coordination are kept in memory
 
 Supported environment variables:
 
-### Required
-
 - `PROXY_API_KEY`
+  Required. Protects both public and admin routes.
+- `PORT`
+  Optional. Defaults to `8080`.
 
-### Server
+Everything else is fixed in code on purpose:
 
-- `LISTEN_ADDR`
-- `DATA_DIR`
-- `LOG_LEVEL`
-
-### Proxy behavior
-
-- `DEFAULT_MODEL`
-- `ROTATION_STRATEGY`
-- `REQUEST_TIMEOUT_SECONDS`
-- `LOGIN_TIMEOUT_SECONDS`
-- `USAGE_CACHE_TTL_SECONDS`
-- `CONTINUATION_TTL_MINUTES`
-- `USAGE_SNAPSHOT_INTERVAL_MINUTES`
-- `USAGE_HISTORY_RETENTION_DAYS`
-- `RATE_LIMIT_FALLBACK_SECONDS`
-- `QUOTA_FALLBACK_BLOCK_SECONDS`
-
-### Upstream Codex
-
-- `CODEX_BASE_URL`
-- `CODEX_ORIGINATOR`
-- `CODEX_OPENAI_BETA`
-- `CODEX_RESIDENCY`
-
-### OAuth
-
-- `OPENAI_AUTH_ISSUER`
-- `OPENAI_OAUTH_CLIENT_ID`
-
-### Desktop-like client identity
-
-- `USER_AGENT_TEMPLATE`
-- `CHROMIUM_VERSION`
-- `CLIENT_PLATFORM`
-- `CLIENT_HINT_PLATFORM`
-- `CLIENT_ARCH`
-- `DEFAULT_ACCEPT_LANGUAGE`
+- Local state is stored in `./data`.
+- The default `codex` alias resolves to `gpt-5.3-codex`.
+- The initial rotation strategy is `least_used`, and can be changed at runtime through `PUT /admin/rotation`.
+- Upstream base URLs, OAuth client details, request timeouts, usage snapshot cadence, fallback windows, and desktop-like headers are implementation constants rather than deployment knobs.
 
 ## Translation Notes
 

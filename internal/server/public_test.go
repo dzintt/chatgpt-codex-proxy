@@ -328,6 +328,148 @@ func TestStreamResponsesReturnsStreamErrorOnEarlyEOF(t *testing.T) {
 	}
 }
 
+func TestStreamChatCompletionClassifiesStructuredRateLimitFailure(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_stream_chat_rate_limit",
+			AccountID: "upstream_stream_chat_rate_limit",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:           config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	account, ok := accountsSvc.Get("acct_stream_chat_rate_limit")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{Type: "error", Raw: map[string]any{
+				"error": map[string]any{
+					"code":              "rate_limited",
+					"message":           "Too many requests",
+					"resets_in_seconds": 12,
+				},
+			}},
+		},
+	}
+
+	app.streamChatCompletion(ctx, account, translate.NormalizedRequest{
+		Endpoint: translate.EndpointChat,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "upstream account rate limited") {
+		t.Fatalf("expected classified rate limit message in stream body, body = %s", body)
+	}
+
+	updated, ok := accountsSvc.Get("acct_stream_chat_rate_limit")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.BlockState.Reason != accounts.BlockRateLimit {
+		t.Fatalf("block_reason = %q, want rate_limit", updated.BlockState.Reason)
+	}
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	}
+}
+
+func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_stream_responses_unauthorized",
+			AccountID: "upstream_stream_responses_unauthorized",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:           config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	account, ok := accountsSvc.Get("acct_stream_responses_unauthorized")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{Type: "response.failed", Raw: map[string]any{
+				"response": map[string]any{
+					"id": "resp_unauthorized",
+					"error": map[string]any{
+						"code":    "invalid_token",
+						"message": "Session expired",
+					},
+				},
+			}},
+		},
+	}
+
+	app.streamResponses(ctx, account, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "upstream account unauthorized") {
+		t.Fatalf("expected classified unauthorized message in stream body, body = %s", body)
+	}
+
+	updated, ok := accountsSvc.Get("acct_stream_responses_unauthorized")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.Status != accounts.StatusExpired {
+		t.Fatalf("status = %q, want expired", updated.Status)
+	}
+	if updated.LocalUsage.RequestCount != 0 {
+		t.Fatalf("request_count = %d, want 0", updated.LocalUsage.RequestCount)
+	}
+}
+
 func TestLogCompatibilityWarningsDoesNotLeakRequestBody(t *testing.T) {
 	t.Parallel()
 

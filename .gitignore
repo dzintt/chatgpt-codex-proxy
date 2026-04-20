@@ -27,6 +27,6 @@ go.work.sum
 # others
 data/
 tmp*
-.gocache
+.gocache*
 .codex*
 .claude*

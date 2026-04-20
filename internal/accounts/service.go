@@ -94,7 +94,9 @@ func (s *Service) List() []Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.refreshAllLocked(time.Now().UTC())
+	if s.refreshAllLocked(time.Now().UTC()) {
+		_ = s.persistLocked()
+	}
 	items := make([]Record, 0, len(s.records))
 	for _, record := range s.records {
 		items = append(items, cloneRecord(record))
@@ -109,7 +111,9 @@ func (s *Service) Get(id string) (Record, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.refreshAllLocked(time.Now().UTC())
+	if s.refreshAllLocked(time.Now().UTC()) {
+		_ = s.persistLocked()
+	}
 	record, ok := s.records[id]
 	if !ok {
 		return Record{}, false
@@ -446,7 +450,9 @@ func (s *Service) Summary() Summary {
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	s.refreshAllLocked(now)
+	if s.refreshAllLocked(now) {
+		_ = s.persistLocked()
+	}
 
 	var summary Summary
 	for _, record := range s.records {
@@ -566,25 +572,38 @@ func migratedBlockState(record *Record, reason BlockReason, fallback time.Durati
 	return block
 }
 
-func (s *Service) refreshAllLocked(now time.Time) {
+func (s *Service) refreshAllLocked(now time.Time) bool {
+	changed := false
 	for _, record := range s.records {
+		recordChanged := false
 		if record.CachedQuota != nil {
-			normalizeQuotaSnapshot(record.CachedQuota, now)
+			if normalizeQuotaSnapshot(record.CachedQuota, now) {
+				recordChanged = true
+			}
 		}
-		s.refreshUsageWindowLocked(record, now)
+		if s.refreshUsageWindowLocked(record, now) {
+			recordChanged = true
+		}
 		if s.clearExpiredBlockLocked(record, now) {
-			record.UpdatedAt = now
+			recordChanged = true
 		}
-		s.syncBlockFromQuotaLocked(record, now)
+		if s.syncBlockFromQuotaLocked(record, now) {
+			recordChanged = true
+		}
+		if recordChanged {
+			record.UpdatedAt = now
+			changed = true
+		}
 	}
+	return changed
 }
 
-func (s *Service) refreshUsageWindowLocked(record *Record, now time.Time) {
+func (s *Service) refreshUsageWindowLocked(record *Record, now time.Time) bool {
 	if record == nil || record.LocalUsage.WindowResetAt == nil {
-		return
+		return false
 	}
 	if now.Before(*record.LocalUsage.WindowResetAt) {
-		return
+		return false
 	}
 	record.LocalUsage.WindowRequestCount = 0
 	record.LocalUsage.WindowInputTokens = 0
@@ -600,6 +619,7 @@ func (s *Service) refreshUsageWindowLocked(record *Record, now time.Time) {
 	} else {
 		record.LocalUsage.WindowResetAt = nil
 	}
+	return true
 }
 
 func (s *Service) syncPrimaryWindowLocked(record *Record, resetAt *time.Time, limitWindowSeconds *int, now time.Time) {
@@ -626,20 +646,27 @@ func (s *Service) syncPrimaryWindowLocked(record *Record, resetAt *time.Time, li
 	}
 }
 
-func (s *Service) syncBlockFromQuotaLocked(record *Record, now time.Time) {
+func (s *Service) syncBlockFromQuotaLocked(record *Record, now time.Time) bool {
 	if record == nil || record.Status != StatusActive {
-		return
+		return false
 	}
 	if reason, until := activeBlockFromQuota(record.CachedQuota, now); reason != BlockNone {
+		if record.BlockState.Reason == reason &&
+			timesEqual(record.BlockState.Until, until) &&
+			strings.TrimSpace(record.BlockState.Message) == strings.TrimSpace(record.LastError) {
+			return false
+		}
 		if until == nil {
 			until = s.fallbackBlockUntil(reason, now)
 		}
 		s.setBlockLocked(record, reason, until, record.LastError, now)
-		return
+		return true
 	}
 	if isSnapshotManagedBlockReason(record.BlockState.Reason) && shouldClearBlockFromSnapshot(record) {
 		record.BlockState = BlockState{Reason: BlockNone}
+		return true
 	}
+	return false
 }
 
 func (s *Service) setBlockLocked(record *Record, reason BlockReason, until *time.Time, message string, now time.Time) {
@@ -795,7 +822,7 @@ func isQuotaBlockReason(reason BlockReason) bool {
 }
 
 func isSnapshotManagedBlockReason(reason BlockReason) bool {
-	return reason == BlockRateLimit || isQuotaBlockReason(reason)
+	return isQuotaBlockReason(reason)
 }
 
 func shouldClearBlockFromSnapshot(record *Record) bool {
@@ -850,25 +877,34 @@ func cloneTime(value *time.Time) *time.Time {
 	return &ts
 }
 
-func normalizeQuotaSnapshot(snapshot *QuotaSnapshot, now time.Time) {
+func normalizeQuotaSnapshot(snapshot *QuotaSnapshot, now time.Time) bool {
 	if snapshot == nil {
-		return
+		return false
 	}
-	normalizeRateLimitWindow(&snapshot.RateLimit, now)
-	normalizeRateLimitWindow(snapshot.SecondaryRateLimit, now)
-	normalizeRateLimitWindow(snapshot.CodeReviewRateLimit, now)
+	changed := false
+	if normalizeRateLimitWindow(&snapshot.RateLimit, now) {
+		changed = true
+	}
+	if normalizeRateLimitWindow(snapshot.SecondaryRateLimit, now) {
+		changed = true
+	}
+	if normalizeRateLimitWindow(snapshot.CodeReviewRateLimit, now) {
+		changed = true
+	}
+	return changed
 }
 
-func normalizeRateLimitWindow(window *RateLimitWindow, now time.Time) {
+func normalizeRateLimitWindow(window *RateLimitWindow, now time.Time) bool {
 	if window == nil || window.ResetAt == nil {
-		return
+		return false
 	}
 	if window.ResetAt.After(now) {
-		return
+		return false
 	}
 	window.LimitReached = false
 	window.ResetAt = nil
 	window.UsedPercent = nil
+	return true
 }
 
 func (s *Service) fallbackBlockUntil(reason BlockReason, now time.Time) *time.Time {
@@ -1036,4 +1072,15 @@ func randomHex(n int) string {
 func timePtrValue(value time.Time) *time.Time {
 	ts := value.UTC()
 	return &ts
+}
+
+func timesEqual(a, b *time.Time) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return a.UTC().Equal(b.UTC())
+	}
 }

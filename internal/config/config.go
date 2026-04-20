@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultListenAddr            = ":8080"
+	defaultListenPort            = 8080
 	defaultDataDir               = "data"
 	defaultDefaultModel          = "gpt-5.3-codex"
 	defaultOriginator            = "Codex Desktop"
@@ -23,7 +23,6 @@ const (
 	defaultAuthIssuer            = "https://auth.openai.com"
 	defaultClientID              = "app_EMoamEEZ73f0CkXaXp7hrann"
 	defaultLoginTimeoutSeconds   = 900
-	defaultUsageCacheTTLSeconds  = 20
 	defaultContinuationTTLMinute = 60
 	defaultRequestTimeoutSecond  = 120
 	defaultUsageSnapshotMinutes  = 5
@@ -45,7 +44,6 @@ type Config struct {
 	AuthIssuer            string
 	OAuthClientID         string
 	LoginTimeout          time.Duration
-	UsageCacheTTL         time.Duration
 	ContinuationTTL       time.Duration
 	RequestTimeout        time.Duration
 	RefreshSkew           time.Duration
@@ -68,7 +66,7 @@ type slogLevel string
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
-	dataDir := envOr("DATA_DIR", defaultDataDir)
+	dataDir := defaultDataDir
 	if !filepath.IsAbs(dataDir) {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -77,34 +75,38 @@ func Load() (Config, error) {
 		dataDir = filepath.Join(cwd, dataDir)
 	}
 
+	listenAddr, err := loadListenAddr()
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
-		ListenAddr:            envOr("LISTEN_ADDR", defaultListenAddr),
+		ListenAddr:            listenAddr,
 		DataDir:               dataDir,
 		ProxyAPIKey:           strings.TrimSpace(os.Getenv("PROXY_API_KEY")),
-		DefaultModel:          envOr("DEFAULT_MODEL", defaultDefaultModel),
-		Originator:            envOr("CODEX_ORIGINATOR", defaultOriginator),
-		OpenAIBeta:            envOr("CODEX_OPENAI_BETA", defaultOpenAIBeta),
-		Residency:             envOr("CODEX_RESIDENCY", defaultResidency),
-		RotationStrategy:      envOr("ROTATION_STRATEGY", defaultRotationStrategy),
-		CodexBaseURL:          envOr("CODEX_BASE_URL", defaultCodexBaseURL),
-		AuthIssuer:            envOr("OPENAI_AUTH_ISSUER", defaultAuthIssuer),
-		OAuthClientID:         envOr("OPENAI_OAUTH_CLIENT_ID", defaultClientID),
-		LoginTimeout:          time.Duration(envInt("LOGIN_TIMEOUT_SECONDS", defaultLoginTimeoutSeconds)) * time.Second,
-		UsageCacheTTL:         time.Duration(envInt("USAGE_CACHE_TTL_SECONDS", defaultUsageCacheTTLSeconds)) * time.Second,
-		ContinuationTTL:       time.Duration(envInt("CONTINUATION_TTL_MINUTES", defaultContinuationTTLMinute)) * time.Minute,
-		RequestTimeout:        time.Duration(envInt("REQUEST_TIMEOUT_SECONDS", defaultRequestTimeoutSecond)) * time.Second,
+		DefaultModel:          defaultDefaultModel,
+		Originator:            defaultOriginator,
+		OpenAIBeta:            defaultOpenAIBeta,
+		Residency:             defaultResidency,
+		RotationStrategy:      defaultRotationStrategy,
+		CodexBaseURL:          defaultCodexBaseURL,
+		AuthIssuer:            defaultAuthIssuer,
+		OAuthClientID:         defaultClientID,
+		LoginTimeout:          time.Duration(defaultLoginTimeoutSeconds) * time.Second,
+		ContinuationTTL:       time.Duration(defaultContinuationTTLMinute) * time.Minute,
+		RequestTimeout:        time.Duration(defaultRequestTimeoutSecond) * time.Second,
 		RefreshSkew:           60 * time.Second,
-		UsageSnapshotInterval: time.Duration(envInt("USAGE_SNAPSHOT_INTERVAL_MINUTES", defaultUsageSnapshotMinutes)) * time.Minute,
-		UsageHistoryRetention: time.Duration(envInt("USAGE_HISTORY_RETENTION_DAYS", defaultHistoryRetentionDays)) * 24 * time.Hour,
-		RateLimitFallback:     time.Duration(envInt("RATE_LIMIT_FALLBACK_SECONDS", defaultRateLimitFallbackSec)) * time.Second,
-		QuotaFallback:         time.Duration(envInt("QUOTA_FALLBACK_BLOCK_SECONDS", defaultQuotaFallbackSec)) * time.Second,
-		LogLevel:              slogLevel(strings.ToLower(envOr("LOG_LEVEL", "info"))),
-		UserAgentTemplate:     envOr("USER_AGENT_TEMPLATE", "Codex Desktop/26.409.61251 ({platform}; {arch})"),
-		ChromiumVersion:       envOr("CHROMIUM_VERSION", "147"),
-		Platform:              envOr("CLIENT_PLATFORM", "win32"),
-		ClientHintPlatform:    envOr("CLIENT_HINT_PLATFORM", "Windows"),
-		Arch:                  envOr("CLIENT_ARCH", "x64"),
-		DefaultAcceptLanguage: envOr("DEFAULT_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
+		UsageSnapshotInterval: time.Duration(defaultUsageSnapshotMinutes) * time.Minute,
+		UsageHistoryRetention: time.Duration(defaultHistoryRetentionDays) * 24 * time.Hour,
+		RateLimitFallback:     time.Duration(defaultRateLimitFallbackSec) * time.Second,
+		QuotaFallback:         time.Duration(defaultQuotaFallbackSec) * time.Second,
+		LogLevel:              slogLevel("info"),
+		UserAgentTemplate:     "Codex Desktop/26.409.61251 ({platform}; {arch})",
+		ChromiumVersion:       "147",
+		Platform:              "win32",
+		ClientHintPlatform:    "Windows",
+		Arch:                  "x64",
+		DefaultAcceptLanguage: "en-US,en;q=0.9",
 		HeaderOrder: []string{
 			"authorization",
 			"chatgpt-account-id",
@@ -131,9 +133,6 @@ func Load() (Config, error) {
 	if cfg.ProxyAPIKey == "" {
 		return Config{}, fmt.Errorf("PROXY_API_KEY must be set")
 	}
-	if raw := strings.TrimSpace(os.Getenv("USAGE_SNAPSHOT_INTERVAL_MINUTES")); raw != "" && cfg.UsageSnapshotInterval <= 0 {
-		return Config{}, fmt.Errorf("USAGE_SNAPSHOT_INTERVAL_MINUTES must be a positive integer")
-	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create data dir: %w", err)
@@ -142,21 +141,14 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func envOr(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
+func loadListenAddr() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("PORT"))
 	if raw == "" {
-		return fallback
+		return ":" + strconv.Itoa(defaultListenPort), nil
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
+	port, err := strconv.Atoi(raw)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", fmt.Errorf("PORT must be a valid TCP port")
 	}
-	return value
+	return ":" + strconv.Itoa(port), nil
 }
