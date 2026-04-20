@@ -171,6 +171,7 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 			if err == io.EOF {
 				break
 			}
+			a.recordAttemptUsage(account.ID, accumulator, true, false)
 			return nil, err
 		}
 		if a.observeQuotaEvent(account, event) {
@@ -221,6 +222,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 				}
 				break
 			}
+			a.recordAttemptUsage(account.ID, accumulator, true, false)
 			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
 			return
 		}
@@ -300,6 +302,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 				}
 				break
 			}
+			a.recordAttemptUsage(account.ID, accumulator, true, false)
 			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
 			return
 		}

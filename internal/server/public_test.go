@@ -25,6 +25,7 @@ type fakeEventStream struct {
 	headers http.Header
 	events  []*codex.StreamEvent
 	index   int
+	tailErr error
 }
 
 type memoryAccountsStore struct {
@@ -44,6 +45,11 @@ func (m *memoryAccountsStore) Save(state accounts.State) error {
 
 func (f *fakeEventStream) NextEvent() (*codex.StreamEvent, error) {
 	if f.index >= len(f.events) {
+		if f.tailErr != nil {
+			err := f.tailErr
+			f.tailErr = nil
+			return nil, err
+		}
 		return nil, io.EOF
 	}
 	event := f.events[f.index]
@@ -320,6 +326,181 @@ func TestStreamResponsesReturnsStreamErrorOnEarlyEOF(t *testing.T) {
 	}
 
 	updated, ok := accountsSvc.Get("acct_stream_responses_eof")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	}
+}
+
+func TestCollectEventsCountsRequestOnStreamReadFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_collect_read_failure",
+			AccountID: "upstream_collect_read_failure",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	account, ok := accountsSvc.Get("acct_collect_read_failure")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
+		},
+		tailErr: errors.New("stream read failed"),
+	}
+
+	_, err = app.collectEvents(account, translate.NormalizedRequest{Endpoint: translate.EndpointResponses, Model: "gpt-5.4"}, stream)
+	if err == nil || err.Error() != "stream read failed" {
+		t.Fatalf("collectEvents() error = %v, want stream read failed", err)
+	}
+
+	updated, ok := accountsSvc.Get("acct_collect_read_failure")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	}
+	if updated.LocalUsage.EmptyResponseCount != 0 {
+		t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
+	}
+}
+
+func TestStreamChatCompletionCountsRequestOnStreamReadFailure(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_stream_chat_read_failure",
+			AccountID: "upstream_stream_chat_read_failure",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	account, ok := accountsSvc.Get("acct_stream_chat_read_failure")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
+		},
+		tailErr: errors.New("stream read failed"),
+	}
+
+	app.streamChatCompletion(ctx, account, translate.NormalizedRequest{
+		Endpoint: translate.EndpointChat,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "stream read failed") {
+		t.Fatalf("expected read failure in stream body, body = %s", body)
+	}
+
+	updated, ok := accountsSvc.Get("acct_stream_chat_read_failure")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	}
+}
+
+func TestStreamResponsesCountsRequestOnStreamReadFailure(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_stream_responses_read_failure",
+			AccountID: "upstream_stream_responses_read_failure",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	account, ok := accountsSvc.Get("acct_stream_responses_read_failure")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
+		},
+		tailErr: errors.New("stream read failed"),
+	}
+
+	app.streamResponses(ctx, account, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "stream read failed") {
+		t.Fatalf("expected read failure in stream body, body = %s", body)
+	}
+
+	updated, ok := accountsSvc.Get("acct_stream_responses_read_failure")
 	if !ok {
 		t.Fatal("Get(updated) returned false")
 	}
@@ -1203,6 +1384,100 @@ func TestClassifyUpstreamErrorPrefersQuotaWhen402MentionsRateLimit(t *testing.T)
 	}
 	if updated.LocalUsage.RequestCount != 0 {
 		t.Fatalf("request_count = %d, want 0 for quota classification", updated.LocalUsage.RequestCount)
+	}
+}
+
+func TestClassifyUpstreamErrorMarksGeneric403AsBanned(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_generic_403",
+			AccountID: "upstream_generic_403",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
+	}
+
+	status, code, message := app.classifyUpstreamError("acct_generic_403", &codex.UpstreamError{
+		Op:         "codex response",
+		StatusCode: http.StatusForbidden,
+		Body:       `{"error":"access denied"}`,
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if code != "account_banned" {
+		t.Fatalf("code = %q, want account_banned", code)
+	}
+	if message != "upstream account banned or deactivated" {
+		t.Fatalf("message = %q, want banned message", message)
+	}
+
+	updated, ok := accountsSvc.Get("acct_generic_403")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.Status != accounts.StatusBanned {
+		t.Fatalf("status = %q, want banned", updated.Status)
+	}
+}
+
+func TestClassifyUpstreamErrorDoesNotMarkCloudflare403AsBanned(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_cloudflare_403",
+			AccountID: "upstream_cloudflare_403",
+			Status:    accounts.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	app := &App{
+		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
+	}
+
+	status, code, message := app.classifyUpstreamError("acct_cloudflare_403", &codex.UpstreamError{
+		Op:         "codex response",
+		StatusCode: http.StatusForbidden,
+		Body:       "<!DOCTYPE html><html><body>cf_chl blocked</body></html>",
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if code != "upstream_error" {
+		t.Fatalf("code = %q, want upstream_error", code)
+	}
+	if !strings.Contains(message, "cf_chl") {
+		t.Fatalf("message = %q, want original upstream message", message)
+	}
+
+	updated, ok := accountsSvc.Get("acct_cloudflare_403")
+	if !ok {
+		t.Fatal("Get(updated) returned false")
+	}
+	if updated.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want active", updated.Status)
 	}
 }
 

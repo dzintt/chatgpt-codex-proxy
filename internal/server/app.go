@@ -176,7 +176,7 @@ func (a *App) classifyUpstreamError(accountID string, err error) (int, string, s
 			a.markAccountError(accountID, accounts.StatusExpired, err)
 			return http.StatusUnauthorized, "upstream_unauthorized", "upstream account unauthorized"
 		case http.StatusForbidden:
-			if strings.Contains(text, "banned") || strings.Contains(text, "deactivated") || strings.Contains(text, "suspended") {
+			if !looksLikeCloudflareBlock(text) {
 				a.markAccountError(accountID, accounts.StatusBanned, err)
 				return http.StatusForbidden, "account_banned", "upstream account banned or deactivated"
 			}
@@ -315,6 +315,16 @@ func clampUpstreamStatus(status int) int {
 		return status
 	}
 	return http.StatusBadGateway
+}
+
+func looksLikeCloudflareBlock(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "cf_chl") ||
+		strings.Contains(normalized, "<!doctype") ||
+		strings.Contains(normalized, "<html")
 }
 
 func quotaResetForReason(snapshot *accounts.QuotaSnapshot, reason accounts.BlockReason, now time.Time) *time.Time {
