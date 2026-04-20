@@ -116,9 +116,3 @@ type RateWindow struct {
 	ResetAt            time.Time
 }
 
-func stringValue(value any) string {
-	if str, ok := value.(string); ok {
-		return str
-	}
-	return ""
-}

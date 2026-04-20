@@ -18,6 +18,7 @@ import (
 
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/config"
+	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 type HTTPClient struct {
@@ -53,7 +54,7 @@ func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (Usag
 		AcceptEncoding: "gzip, deflate",
 	}), c.cfg.HeaderOrder)
 
-	resp, err := session.Get(ctx, strings.TrimRight(c.cfg.CodexBaseURL, "/")+"/codex/usage", headers)
+	resp, err := session.Get(ctx, JoinURL(c.cfg.CodexBaseURL, "/codex/usage"), headers)
 	if err != nil {
 		return UsageResponse{}, nil, err
 	}
@@ -98,7 +99,7 @@ func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record,
 
 	streamResp, err := session.DoStream(ctx, &httpcloak.Request{
 		Method:  http.MethodPost,
-		URL:     strings.TrimRight(c.cfg.CodexBaseURL, "/") + "/codex/responses",
+		URL:     JoinURL(c.cfg.CodexBaseURL, "/codex/responses"),
 		Headers: headers,
 		Body:    bytes.NewReader(payload),
 	})
@@ -186,7 +187,7 @@ func parseStreamEvent(eventName, data string) (*StreamEvent, error) {
 	}
 	eventType := strings.TrimSpace(eventName)
 	if eventType == "" {
-		eventType = stringValue(raw["type"])
+		eventType = jsonutil.StringValue(raw["type"])
 	}
 	return &StreamEvent{
 		Type: eventType,
@@ -201,6 +202,11 @@ func toHTTPHeader(headers map[string][]string) http.Header {
 		out[canonical] = append([]string(nil), values...)
 	}
 	return out
+}
+
+// JoinURL trims trailing slashes from base and appends path.
+func JoinURL(base, path string) string {
+	return strings.TrimRight(base, "/") + path
 }
 
 func NewRequestID() string {

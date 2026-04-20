@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +45,7 @@ func (s *DeviceLoginService) Start(ctx context.Context) (accounts.DeviceLoginRec
 			LoginID:   "login_" + now.Format("20060102150405.000000000"),
 			AuthURL:   s.oauth.DeviceAuthURL(),
 			UserCode:  resp.UserCode,
-			Status:    "pending",
+			Status:    accounts.DeviceLoginPending,
 			CreatedAt: now,
 			ExpiresAt: now.Add(s.timeout),
 		},
@@ -84,8 +83,8 @@ func (s *DeviceLoginService) poll(login *pendingLogin) {
 		select {
 		case <-ctx.Done():
 			s.update(login.LoginID, func(target *pendingLogin) {
-				if target.Status == "pending" {
-					target.Status = "expired"
+				if target.Status == accounts.DeviceLoginPending {
+					target.Status = accounts.DeviceLoginExpired
 					target.Error = "device login expired"
 				}
 			})
@@ -97,7 +96,7 @@ func (s *DeviceLoginService) poll(login *pendingLogin) {
 					continue
 				}
 				s.update(login.LoginID, func(target *pendingLogin) {
-					target.Status = "error"
+					target.Status = accounts.DeviceLoginError
 					target.Error = err.Error()
 				})
 				return
@@ -110,14 +109,14 @@ func (s *DeviceLoginService) poll(login *pendingLogin) {
 			token, accountID, err := s.oauth.ExchangeAuthorizationCode(ctx, result.AuthorizationCode, result.CodeVerifier)
 			if err != nil {
 				s.update(login.LoginID, func(target *pendingLogin) {
-					target.Status = "error"
+					target.Status = accounts.DeviceLoginError
 					target.Error = err.Error()
 				})
 				return
 			}
 			if strings.TrimSpace(accountID) == "" {
 				s.update(login.LoginID, func(target *pendingLogin) {
-					target.Status = "error"
+					target.Status = accounts.DeviceLoginError
 					target.Error = "oauth exchange did not return account_id"
 				})
 				return
@@ -125,14 +124,14 @@ func (s *DeviceLoginService) poll(login *pendingLogin) {
 
 			if _, err := s.accounts.UpsertFromToken(accountID, token); err != nil {
 				s.update(login.LoginID, func(target *pendingLogin) {
-					target.Status = "error"
+					target.Status = accounts.DeviceLoginError
 					target.Error = err.Error()
 				})
 				return
 			}
 
 			s.update(login.LoginID, func(target *pendingLogin) {
-				target.Status = "ready"
+				target.Status = accounts.DeviceLoginReady
 				target.Error = ""
 			})
 			return
@@ -169,20 +168,9 @@ func (s *DeviceLoginService) DeleteExpired(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, login := range s.logins {
-		if login.ExpiresAt.Before(now) && login.Status != "pending" {
+		if login.ExpiresAt.Before(now) && login.Status != accounts.DeviceLoginPending {
 			delete(s.logins, id)
 		}
 	}
 }
 
-func (s *DeviceLoginService) ForceStatus(loginID, status, message string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	login, ok := s.logins[loginID]
-	if !ok {
-		return fmt.Errorf("login not found")
-	}
-	login.Status = status
-	login.Error = message
-	return nil
-}

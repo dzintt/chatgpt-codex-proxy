@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+
+	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 type tokenMetadata struct {
@@ -18,19 +20,19 @@ func metadataFromToken(token OAuthToken) tokenMetadata {
 	}
 
 	metadata := tokenMetadata{
-		Email:    strings.TrimSpace(stringValue(claims["email"])),
-		PlanType: strings.TrimSpace(stringValue(claims["chatgpt_plan_type"])),
+		Email:    strings.TrimSpace(jsonutil.StringValue(claims["email"])),
+		PlanType: strings.TrimSpace(jsonutil.StringValue(claims["chatgpt_plan_type"])),
 	}
 
 	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
 		if metadata.Email == "" {
-			metadata.Email = strings.TrimSpace(stringValue(profile["email"]))
+			metadata.Email = strings.TrimSpace(jsonutil.StringValue(profile["email"]))
 		}
 	}
 
 	if authPayload, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
 		if metadata.PlanType == "" {
-			metadata.PlanType = strings.TrimSpace(stringValue(authPayload["chatgpt_plan_type"]))
+			metadata.PlanType = strings.TrimSpace(jsonutil.StringValue(authPayload["chatgpt_plan_type"]))
 		}
 	}
 
@@ -55,7 +57,3 @@ func parseJWTClaims(token string) map[string]any {
 	return claims
 }
 
-func stringValue(value any) string {
-	str, _ := value.(string)
-	return str
-}

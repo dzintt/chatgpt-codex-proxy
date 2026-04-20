@@ -148,19 +148,6 @@ func (s *Service) Patch(id string, label *string, status *Status) (Record, error
 	return cloneRecord(record), nil
 }
 
-func (s *Service) SetCookies(id string, cookies map[string]string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[id]
-	if !ok {
-		return fmt.Errorf("account not found")
-	}
-	record.Cookies = cloneCookies(cookies)
-	record.UpdatedAt = time.Now().UTC()
-	return s.persistLocked()
-}
-
 func (s *Service) UpdateQuota(id string, quota *QuotaSnapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -176,10 +163,6 @@ func (s *Service) UpdateQuota(id string, quota *QuotaSnapshot) error {
 	}
 	record.UpdatedAt = time.Now().UTC()
 	return s.persistLocked()
-}
-
-func (s *Service) UpdateToken(id string, token OAuthToken) error {
-	return s.UpdateAuth(id, "", token)
 }
 
 func (s *Service) UpdateAuth(id, accountID string, token OAuthToken) error {
@@ -393,6 +376,8 @@ func cloneCookies(cookies map[string]string) map[string]string {
 
 func randomHex(n int) string {
 	buf := make([]byte, n)
-	_, _ = rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		panic(fmt.Errorf("crypto/rand failed: %w", err))
+	}
 	return hex.EncodeToString(buf)
 }

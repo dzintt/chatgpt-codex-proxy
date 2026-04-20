@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 type Accumulator struct {
@@ -416,8 +417,7 @@ func usageFromRaw(value any) *codex.Usage {
 }
 
 func stringValue(value any) string {
-	str, _ := value.(string)
-	return str
+	return jsonutil.StringValue(value)
 }
 
 func numberValue(value any) float64 {

@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -67,7 +68,7 @@ func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.R
 
 	nextToken, nextAccountID, err := m.oauth.Refresh(ctx, record.Token, record.AccountID)
 	if err != nil {
-		_ = m.accounts.MarkError(id, accounts.StatusExpired, err.Error())
+		m.markRefreshFailure(id, err)
 		return accounts.Record{}, err
 	}
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
@@ -88,7 +89,7 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 	}
 	nextToken, nextAccountID, err := m.oauth.Refresh(ctx, record.Token, record.AccountID)
 	if err != nil {
-		_ = m.accounts.MarkError(id, accounts.StatusExpired, err.Error())
+		m.markRefreshFailure(id, err)
 		return accounts.Record{}, err
 	}
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
@@ -116,6 +117,16 @@ func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (
 	}
 	updated, _ := m.accounts.Get(record.ID)
 	return updated, quota, nil
+}
+
+func (m *AccountManager) markRefreshFailure(id string, cause error) {
+	if err := m.accounts.MarkError(id, accounts.StatusExpired, cause.Error()); err != nil {
+		slog.Default().Error("persist account refresh failure status failed",
+			"account_id", id,
+			"refresh_error", cause.Error(),
+			"error", err.Error(),
+		)
+	}
 }
 
 func (m *AccountManager) lockFor(id string) *sync.Mutex {

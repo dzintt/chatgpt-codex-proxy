@@ -135,16 +135,26 @@ func (a *App) classifyUpstreamError(accountID string, err error) (int, string, s
 	text := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(text, "401"), strings.Contains(text, "unauthorized"):
-		_ = a.accounts.MarkError(accountID, accounts.StatusExpired, err.Error())
+		a.markAccountError(accountID, accounts.StatusExpired, err)
 		return http.StatusUnauthorized, "upstream_unauthorized", "upstream account unauthorized"
 	case strings.Contains(text, "402"), strings.Contains(text, "payment"), strings.Contains(text, "quota"):
-		_ = a.accounts.MarkError(accountID, accounts.StatusQuotaExhausted, err.Error())
+		a.markAccountError(accountID, accounts.StatusQuotaExhausted, err)
 		return http.StatusPaymentRequired, "quota_exhausted", "upstream account quota exhausted"
 	case strings.Contains(text, "429"), strings.Contains(text, "rate"):
-		_ = a.accounts.MarkError(accountID, accounts.StatusRateLimited, err.Error())
+		a.markAccountError(accountID, accounts.StatusRateLimited, err)
 		return http.StatusTooManyRequests, "rate_limited", "upstream account rate limited"
 	default:
 		return http.StatusBadGateway, "upstream_error", err.Error()
+	}
+}
+
+func (a *App) markAccountError(accountID string, status accounts.Status, cause error) {
+	if err := a.accounts.MarkError(accountID, status, cause.Error()); err != nil {
+		a.logger.Error("persist account error status failed",
+			"account_id", accountID,
+			"status", string(status),
+			"error", err.Error(),
+		)
 	}
 }
 

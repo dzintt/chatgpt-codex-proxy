@@ -2,7 +2,6 @@ package codex
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -259,11 +258,6 @@ func (s *OAuthService) defaultHeaders() http.Header {
 	headers.Set("Content-Type", "application/json")
 	headers.Set("User-Agent", userAgent(s.cfg))
 	return headers
-}
-
-func CodeChallenge(verifier string) string {
-	sum := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func doJSON[T any](ctx context.Context, client *http.Client, method, endpoint string, body any, headers http.Header) (T, error) {
