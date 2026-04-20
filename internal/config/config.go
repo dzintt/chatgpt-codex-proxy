@@ -66,7 +66,10 @@ type slogLevel string
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
-	dataDir := defaultDataDir
+	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
+	if dataDir == "" {
+		dataDir = defaultDataDir
+	}
 	if !filepath.IsAbs(dataDir) {
 		cwd, err := os.Getwd()
 		if err != nil {

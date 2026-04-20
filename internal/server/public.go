@@ -177,6 +177,9 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			if shouldCountAttemptBeforeClassification(upstreamErr) {
+				a.recordAttemptUsage(account.ID, accumulator, true, false)
+			}
 			return nil, upstreamErr
 		}
 		accumulator.Apply(event)
@@ -186,6 +189,7 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 	}
 
 	if !completed {
+		a.recordAttemptUsage(account.ID, accumulator, true, false)
 		return nil, errIncompleteResponse
 	}
 
@@ -211,6 +215,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		if err != nil {
 			if err == io.EOF {
 				if !completed {
+					a.recordAttemptUsage(account.ID, accumulator, true, false)
 					a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", errIncompleteResponse)
 					return
 				}
@@ -223,6 +228,9 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			if shouldCountAttemptBeforeClassification(upstreamErr) {
+				a.recordAttemptUsage(account.ID, accumulator, true, false)
+			}
 			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
@@ -286,6 +294,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		if err != nil {
 			if err == io.EOF {
 				if !completed {
+					a.recordAttemptUsage(account.ID, accumulator, true, false)
 					a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", errIncompleteResponse)
 					return
 				}
@@ -298,6 +307,9 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			if shouldCountAttemptBeforeClassification(upstreamErr) {
+				a.recordAttemptUsage(account.ID, accumulator, true, false)
+			}
 			a.respondClassifiedStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
 			return
 		}
@@ -806,6 +818,14 @@ func isEmptySuccessfulResponse(accumulator *translate.Accumulator) bool {
 		return false
 	}
 	return len(accumulator.Output) == 0
+}
+
+func shouldCountAttemptBeforeClassification(err error) bool {
+	var upstreamErr *codex.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode == http.StatusTooManyRequests {
+		return false
+	}
+	return true
 }
 
 func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {

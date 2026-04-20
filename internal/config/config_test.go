@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -15,7 +16,8 @@ func TestLoadRequiresProxyAPIKey(t *testing.T) {
 
 func TestLoadUsesDefaultPortAndDataDir(t *testing.T) {
 	t.Setenv("PROXY_API_KEY", "test-key")
-	t.Chdir(t.TempDir())
+	cwd := t.TempDir()
+	t.Chdir(cwd)
 
 	cfg, err := Load()
 	if err != nil {
@@ -26,6 +28,24 @@ func TestLoadUsesDefaultPortAndDataDir(t *testing.T) {
 	}
 	if cfg.DataDir == "" {
 		t.Fatal("Load() data dir = empty, want resolved data path")
+	}
+	if cfg.DataDir != filepath.Join(cwd, "data") {
+		t.Fatalf("Load() data dir = %q, want %q", cfg.DataDir, filepath.Join(cwd, "data"))
+	}
+}
+
+func TestLoadHonorsDataDirOverride(t *testing.T) {
+	t.Setenv("PROXY_API_KEY", "test-key")
+	t.Setenv("DATA_DIR", "custom-data")
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DataDir != filepath.Join(cwd, "custom-data") {
+		t.Fatalf("Load() data dir = %q, want %q", cfg.DataDir, filepath.Join(cwd, "custom-data"))
 	}
 }
 

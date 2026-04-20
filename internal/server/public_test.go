@@ -260,8 +260,8 @@ func TestStreamChatCompletionReturnsStreamErrorOnEarlyEOF(t *testing.T) {
 	if !ok {
 		t.Fatal("Get(updated) returned false")
 	}
-	if updated.LocalUsage.RequestCount != 0 {
-		t.Fatalf("request_count = %d, want 0", updated.LocalUsage.RequestCount)
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
 	}
 }
 
@@ -323,8 +323,8 @@ func TestStreamResponsesReturnsStreamErrorOnEarlyEOF(t *testing.T) {
 	if !ok {
 		t.Fatal("Get(updated) returned false")
 	}
-	if updated.LocalUsage.RequestCount != 0 {
-		t.Fatalf("request_count = %d, want 0", updated.LocalUsage.RequestCount)
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
 	}
 }
 
@@ -465,8 +465,8 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	if updated.Status != accounts.StatusExpired {
 		t.Fatalf("status = %q, want expired", updated.Status)
 	}
-	if updated.LocalUsage.RequestCount != 0 {
-		t.Fatalf("request_count = %d, want 0", updated.LocalUsage.RequestCount)
+	if updated.LocalUsage.RequestCount != 1 {
+		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
 	}
 }
 
@@ -717,7 +717,7 @@ func TestCollectEventsDoesNotMarkToolCallOnlyResponseAsEmpty(t *testing.T) {
 	}
 }
 
-func TestCollectEventsDoesNotCountIncompleteOrFailedResponseAsUsage(t *testing.T) {
+func TestCollectEventsCountsIncompleteOrFailedResponseAttempt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -792,8 +792,8 @@ func TestCollectEventsDoesNotCountIncompleteOrFailedResponseAsUsage(t *testing.T
 			if !ok {
 				t.Fatal("Get(updated) returned false")
 			}
-			if updated.LocalUsage.RequestCount != 0 {
-				t.Fatalf("request_count = %d, want 0", updated.LocalUsage.RequestCount)
+			if updated.LocalUsage.RequestCount != 1 {
+				t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
 			}
 			if updated.LocalUsage.EmptyResponseCount != 0 {
 				t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
