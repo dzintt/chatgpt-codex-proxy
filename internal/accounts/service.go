@@ -75,7 +75,7 @@ func NewService(accountsStore Store, defaultStrategy RotationStrategy, opts Serv
 	needsPersist := false
 	for _, record := range state.Records {
 		cloned := cloneRecord(record)
-		original := cloned
+		original := cloneRecord(&cloned)
 		svc.normalizeLoadedRecord(&cloned, now)
 		if !reflect.DeepEqual(original, cloned) {
 			needsPersist = true

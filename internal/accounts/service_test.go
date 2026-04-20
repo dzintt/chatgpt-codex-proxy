@@ -768,6 +768,71 @@ func TestNewServiceClearsExpiredBlockStateAndPersistsRepair(t *testing.T) {
 	}
 }
 
+func TestNewServiceClearsExpiredQuotaPressureAndPersistsRepair(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	expiredReset := now.Add(-2 * time.Minute)
+	usedPercent := 99.0
+	store := &memoryStore{state: State{
+		Records: []*Record{
+			{
+				ID:        "acct_expired_quota",
+				AccountID: "upstream_expired_quota",
+				Status:    StatusActive,
+				CachedQuota: &QuotaSnapshot{
+					RateLimit: RateLimitWindow{
+						Allowed:      true,
+						LimitReached: true,
+						UsedPercent:  &usedPercent,
+						ResetAt:      &expiredReset,
+					},
+				},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}}
+
+	svc, err := NewService(store, RotationLeastUsed, ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	record, ok := svc.Get("acct_expired_quota")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.CachedQuota == nil {
+		t.Fatal("cached quota = nil")
+	}
+	if record.CachedQuota.RateLimit.LimitReached {
+		t.Fatal("limit_reached = true, want false after startup repair")
+	}
+	if record.CachedQuota.RateLimit.ResetAt != nil {
+		t.Fatalf("reset_at = %v, want nil", record.CachedQuota.RateLimit.ResetAt)
+	}
+	if record.CachedQuota.RateLimit.UsedPercent != nil {
+		t.Fatalf("used_percent = %v, want nil after startup repair", record.CachedQuota.RateLimit.UsedPercent)
+	}
+	if store.saveCount == 0 {
+		t.Fatal("expected startup normalization to persist repaired quota state")
+	}
+	if persisted := store.state.Records[0].CachedQuota; persisted == nil {
+		t.Fatal("persisted cached quota = nil")
+	} else {
+		if persisted.RateLimit.LimitReached {
+			t.Fatal("persisted limit_reached = true, want false after startup repair")
+		}
+		if persisted.RateLimit.ResetAt != nil {
+			t.Fatalf("persisted reset_at = %v, want nil", persisted.RateLimit.ResetAt)
+		}
+		if persisted.RateLimit.UsedPercent != nil {
+			t.Fatalf("persisted used_percent = %v, want nil after startup repair", persisted.RateLimit.UsedPercent)
+		}
+	}
+}
+
 func TestGetClearsExpiredQuotaPressure(t *testing.T) {
 	t.Parallel()
 
