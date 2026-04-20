@@ -130,6 +130,10 @@ func (a *Accumulator) Text() string {
 	return ""
 }
 
+func (a *Accumulator) IsCompleted() bool {
+	return a != nil && a.RawFinal != nil
+}
+
 func (a *Accumulator) captureOutputItem(item map[string]any) {
 	if len(item) == 0 {
 		return

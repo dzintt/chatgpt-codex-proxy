@@ -164,7 +164,6 @@ func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedR
 
 func (a *App) collectEvents(account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) (*translate.Accumulator, error) {
 	accumulator := translate.NewAccumulator(normalized)
-	completed := false
 	for {
 		event, err := stream.NextEvent()
 		if err != nil {
@@ -185,16 +184,16 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 		}
 		accumulator.Apply(event)
 		if event.Type == "response.completed" {
-			completed = true
+			break
 		}
 	}
 
-	if !completed {
+	if accumulator.ResponseID == "" || !accumulator.IsCompleted() {
 		a.recordAttemptUsage(account.ID, accumulator, true, false)
 		return nil, errIncompleteResponse
 	}
 
-	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
+	a.recordAttemptUsage(account.ID, accumulator, true, true)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	return accumulator, nil
 }
@@ -207,7 +206,6 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	toolCallSawDelta := make(map[string]bool)
 	nextToolCallIndex := 0
 	var tupleTextBuffer strings.Builder
-	completed := false
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk("", normalized.Model, map[string]any{"role": "assistant"}, "")))
 	c.Writer.Flush()
 
@@ -215,7 +213,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		event, err := stream.NextEvent()
 		if err != nil {
 			if err == io.EOF {
-				if !completed {
+				if !accumulator.IsCompleted() {
 					a.recordAttemptUsage(account.ID, accumulator, true, false)
 					a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", errIncompleteResponse)
 					return
@@ -238,7 +236,6 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		}
 		accumulator.Apply(event)
 		if event.Type == "response.completed" {
-			completed = true
 		}
 		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallSawDelta, &nextToolCallIndex); emitted {
 			c.Writer.Flush()
@@ -275,9 +272,12 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 				c.Writer.Flush()
 			}
 		}
+		if event.Type == "response.completed" {
+			break
+		}
 	}
 
-	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
+	a.recordAttemptUsage(account.ID, accumulator, true, true)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
@@ -290,12 +290,11 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 
 	accumulator := translate.NewAccumulator(normalized)
 	var tupleTextBuffer strings.Builder
-	completed := false
 	for {
 		event, err := stream.NextEvent()
 		if err != nil {
 			if err == io.EOF {
-				if !completed {
+				if !accumulator.IsCompleted() {
 					a.recordAttemptUsage(account.ID, accumulator, true, false)
 					a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", errIncompleteResponse)
 					return
@@ -318,7 +317,6 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		}
 		accumulator.Apply(event)
 		if event.Type == "response.completed" {
-			completed = true
 		}
 		if normalized.TupleSchema != nil {
 			switch event.Type {
@@ -354,9 +352,12 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		}
 		writeSSE(c.Writer, event.Type, translate.ResponseEventJSON(event.Type, accumulator.ResponseID, payload))
 		c.Writer.Flush()
+		if event.Type == "response.completed" {
+			break
+		}
 	}
 
-	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
+	a.recordAttemptUsage(account.ID, accumulator, true, true)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
