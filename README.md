@@ -28,7 +28,7 @@ This proxy is meant for local or small-scale use by developers who want OpenAI S
 - Function tools
 - Hosted web search tool passthrough
 - Structured outputs
-- Text and image inputs
+- Text, image, and file inputs
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
 - Local JSON persistence for accounts and usage state
@@ -213,9 +213,9 @@ Accepts OpenAI Responses requests and translates them into the upstream Codex re
 Supported behavior:
 
 - Streaming and non-streaming
-- Tools
+- Tools, including the modern Responses API function tool shape
 - Structured outputs
-- Text and image inputs
+- Text, image, and file inputs
 - Explicit `previous_response_id` continuation
 
 ### `GET /v1/models`
@@ -341,7 +341,9 @@ Key translation rules:
 - `user` and `assistant` messages become upstream input items
 - Assistant tool calls become upstream `function_call` items
 - Tool outputs become upstream `function_call_output` items
-- Text and image content are mapped to `input_text` and `input_image`
+- Text, image, and file content are mapped to `input_text`, `input_image`, and `input_file`
+- Responses API assistant replay content such as `output_text` is accepted for stateless continuation reconstruction
+- Function tools are accepted in both Chat Completions-style nested form and the modern Responses API top-level form
 - Unsupported content types return `400` instead of being dropped silently
 
 ## Account Rotation
@@ -381,5 +383,4 @@ go test ./...
 - There is no database backend.
 - There is no dashboard UI.
 - Account onboarding is device-auth only.
-- Multimodal support is currently limited to text and image inputs.
 - The implementation is intentionally small and does not aim to cover every edge case of the public OpenAI platform.

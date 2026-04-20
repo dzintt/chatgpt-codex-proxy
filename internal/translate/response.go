@@ -137,6 +137,7 @@ func (a *Accumulator) captureOutputItem(item map[string]any) {
 	switch itemType {
 	case "function_call":
 		callID := firstString(stringValue(item["call_id"]), stringValue(item["id"]))
+		responseItemID := stringValue(item["id"])
 		call := map[string]any{
 			"id":   callID,
 			"type": "function",
@@ -145,14 +146,13 @@ func (a *Accumulator) captureOutputItem(item map[string]any) {
 				"arguments": stringValue(item["arguments"]),
 			},
 		}
-		if existing, ok := a.toolCallByID[callID]; ok {
+		if existing := firstMap(a.toolCallByID[callID], a.toolCallByID[responseItemID]); existing != nil {
 			mergeToolCall(existing, call)
+			a.registerToolCallAliases(existing, callID, responseItemID)
 			return
 		}
 		a.ToolCalls = append(a.ToolCalls, call)
-		if callID != "" {
-			a.toolCallByID[callID] = call
-		}
+		a.registerToolCallAliases(call, callID, responseItemID)
 	case "message":
 		if len(a.Output) == 0 {
 			a.Output = append(a.Output, item)
@@ -196,16 +196,11 @@ func (a *Accumulator) ResponsesObject() map[string]any {
 }
 
 func (a *Accumulator) responsesOutput(text string) []map[string]any {
-	if len(a.Output) == 0 {
-		return []map[string]any{{
-			"type":    "message",
-			"role":    "assistant",
-			"status":  "completed",
-			"content": responseTextContent(text),
-		}}
+	output := make([]map[string]any, 0, len(a.Output)+len(a.ToolCalls)+1)
+	for _, call := range a.ToolCalls {
+		output = append(output, responseFunctionCallItem(call))
 	}
 
-	output := make([]map[string]any, 0, len(a.Output))
 	for _, item := range a.Output {
 		cloned := cloneMap(item)
 		if stringValue(cloned["type"]) == "message" {
@@ -218,6 +213,15 @@ func (a *Accumulator) responsesOutput(text string) []map[string]any {
 			}
 		}
 		output = append(output, cloned)
+	}
+
+	if len(output) == 0 {
+		output = append(output, map[string]any{
+			"type":    "message",
+			"role":    "assistant",
+			"status":  "completed",
+			"content": responseTextContent(text),
+		})
 	}
 	return output
 }
@@ -280,14 +284,15 @@ func finishReason(a *Accumulator) string {
 }
 
 func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
-	itemID := firstString(stringValue(event.Raw["item_id"]), stringValue(event.Raw["call_id"]))
-	if itemID == "" {
+	responseItemID := stringValue(event.Raw["item_id"])
+	callID := firstString(stringValue(event.Raw["call_id"]), responseItemID)
+	if callID == "" {
 		return
 	}
-	call, ok := a.toolCallByID[itemID]
-	if !ok {
+	call := firstMap(a.toolCallByID[callID], a.toolCallByID[responseItemID])
+	if call == nil {
 		call = map[string]any{
-			"id":   itemID,
+			"id":   callID,
 			"type": "function",
 			"function": map[string]any{
 				"name":      stringValue(event.Raw["name"]),
@@ -295,8 +300,8 @@ func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
 			},
 		}
 		a.ToolCalls = append(a.ToolCalls, call)
-		a.toolCallByID[itemID] = call
 	}
+	a.registerToolCallAliases(call, callID, responseItemID)
 	function, _ := call["function"].(map[string]any)
 	if function == nil {
 		function = map[string]any{}
@@ -313,6 +318,30 @@ func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
 			function["arguments"] = args
 		}
 	}
+}
+
+func (a *Accumulator) registerToolCallAliases(call map[string]any, ids ...string) {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		a.toolCallByID[id] = call
+	}
+}
+
+func responseFunctionCallItem(call map[string]any) map[string]any {
+	function, _ := call["function"].(map[string]any)
+	item := map[string]any{
+		"type":      "function_call",
+		"call_id":   stringValue(call["id"]),
+		"name":      stringValue(function["name"]),
+		"arguments": stringValue(function["arguments"]),
+		"status":    "completed",
+	}
+	if id := stringValue(call["id"]); id != "" {
+		item["id"] = id
+	}
+	return item
 }
 
 func mergeToolCall(dst, src map[string]any) {

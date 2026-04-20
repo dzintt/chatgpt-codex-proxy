@@ -189,15 +189,24 @@ func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 	for _, tool := range tools {
 		switch tool.Type {
 		case "function":
-			if tool.Function == nil {
+			function := tool.Function
+			if function == nil && strings.TrimSpace(tool.Name) != "" {
+				function = &openai.FunctionTool{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.Parameters,
+					Strict:      tool.Strict,
+				}
+			}
+			if function == nil {
 				continue
 			}
 			result = append(result, codex.Tool{
 				Type:        "function",
-				Name:        tool.Function.Name,
-				Description: tool.Function.Description,
-				Parameters:  tool.Function.Parameters,
-				Strict:      tool.Function.Strict,
+				Name:        function.Name,
+				Description: function.Description,
+				Parameters:  function.Parameters,
+				Strict:      function.Strict,
 			})
 		case "web_search", "web_search_preview":
 			result = append(result, codex.Tool{
@@ -278,9 +287,13 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 	out := make([]codex.ContentPart, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
-		case "", "text", "input_text":
+		case "", "text", "input_text", "output_text":
+			contentType := "input_text"
+			if part.Type == "output_text" {
+				contentType = "output_text"
+			}
 			out = append(out, codex.ContentPart{
-				Type: "input_text",
+				Type: contentType,
 				Text: part.Text,
 			})
 		case "image_url", "input_image":
@@ -290,6 +303,19 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 			out = append(out, codex.ContentPart{
 				Type:     "input_image",
 				ImageURL: strings.TrimSpace(part.ImageURL.URL),
+				Detail:   strings.TrimSpace(part.Detail),
+			})
+		case "input_file":
+			if strings.TrimSpace(part.FileData) == "" && strings.TrimSpace(part.FileURL) == "" && strings.TrimSpace(part.FileID) == "" {
+				return nil, fmt.Errorf("input_file requires file_data, file_url, or file_id")
+			}
+			out = append(out, codex.ContentPart{
+				Type:     "input_file",
+				Detail:   strings.TrimSpace(part.Detail),
+				FileURL:  strings.TrimSpace(part.FileURL),
+				FileData: strings.TrimSpace(part.FileData),
+				FileID:   strings.TrimSpace(part.FileID),
+				Filename: strings.TrimSpace(part.Filename),
 			})
 		default:
 			return nil, fmt.Errorf("unsupported_content_part: %s", part.Type)
@@ -302,7 +328,7 @@ func flattenContent(content openai.MessageContent) (string, error) {
 	var parts []string
 	for _, part := range content {
 		switch part.Type {
-		case "", "text", "input_text":
+		case "", "text", "input_text", "output_text":
 			if strings.TrimSpace(part.Text) != "" {
 				parts = append(parts, part.Text)
 			}

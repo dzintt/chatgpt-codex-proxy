@@ -54,6 +54,11 @@ type ContentPart struct {
 	Type     string         `json:"type"`
 	Text     string         `json:"text,omitempty"`
 	ImageURL *ImageURLValue `json:"image_url,omitempty"`
+	Detail   string         `json:"detail,omitempty"`
+	FileURL  string         `json:"file_url,omitempty"`
+	FileData string         `json:"file_data,omitempty"`
+	FileID   string         `json:"file_id,omitempty"`
+	Filename string         `json:"filename,omitempty"`
 }
 
 type ImageURLValue struct {
@@ -79,6 +84,10 @@ func (i *ImageURLValue) UnmarshalJSON(data []byte) error {
 type ToolDefinition struct {
 	Type                string         `json:"type"`
 	Function            *FunctionTool  `json:"function,omitempty"`
+	Name                string         `json:"name,omitempty"`
+	Description         string         `json:"description,omitempty"`
+	Parameters          map[string]any `json:"parameters,omitempty"`
+	Strict              bool           `json:"strict,omitempty"`
 	SearchContextSize   string         `json:"search_context_size,omitempty"`
 	UserLocation        map[string]any `json:"user_location,omitempty"`
 	AdditionalRawFields map[string]any `json:"-"`
