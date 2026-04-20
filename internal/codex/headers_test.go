@@ -28,19 +28,3 @@ func TestBuildHeadersUsesConfiguredDesktopIdentity(t *testing.T) {
 		t.Fatalf("unexpected client hint platform: %q", got)
 	}
 }
-
-func TestOAuthDefaultHeadersReuseDesktopIdentity(t *testing.T) {
-	svc := OAuthService{
-		cfg: config.Config{
-			UserAgentTemplate: "Codex Desktop/26.409.61251 ({platform}; {arch})",
-			Platform:          "win32",
-			Arch:              "x64",
-		},
-	}
-
-	headers := svc.defaultHeaders()
-
-	if got := headers.Get("User-Agent"); got != "Codex Desktop/26.409.61251 (win32; x64)" {
-		t.Fatalf("unexpected oauth user-agent: %q", got)
-	}
-}

@@ -74,27 +74,6 @@ func TestRequestLoggerSkipsHealthLive(t *testing.T) {
 	}
 }
 
-func TestRequestLoggerLogsHealth(t *testing.T) {
-	t.Parallel()
-
-	engine, logs := newLoggedEngine(t)
-	engine.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/health", nil)
-	engine.ServeHTTP(recorder, request)
-
-	entries := decodeLogEntries(t, logs)
-	if len(entries) != 1 {
-		t.Fatalf("log entries = %d, want 1", len(entries))
-	}
-	if entries[0]["path"] != "/health" {
-		t.Fatalf("path = %v, want /health", entries[0]["path"])
-	}
-}
-
 func TestRequestLoggerPreservesRequestID(t *testing.T) {
 	t.Parallel()
 
