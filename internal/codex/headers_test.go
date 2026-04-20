@@ -12,7 +12,7 @@ func TestBuildHeadersUsesConfiguredDesktopIdentity(t *testing.T) {
 		Residency:             "us",
 		OpenAIBeta:            "responses_websockets=2026-02-06",
 		UserAgentTemplate:     "Codex Desktop/26.409.61251 ({platform}; {arch})",
-		ChromiumVersion:       "144",
+		ChromiumVersion:       "147",
 		Platform:              "win32",
 		ClientHintPlatform:    "Windows",
 		Arch:                  "x64",

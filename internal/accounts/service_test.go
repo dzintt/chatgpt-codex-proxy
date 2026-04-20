@@ -359,7 +359,7 @@ func TestObserveQuotaClearsSnapshotManagedBlockWhenFreshSnapshotRecovers(t *test
 	}
 }
 
-func TestObserveQuotaUsesStickyBlockWhenLimitReachedWithoutReset(t *testing.T) {
+func TestObserveQuotaUsesFallbackBlockWhenLimitReachedWithoutReset(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
@@ -397,8 +397,12 @@ func TestObserveQuotaUsesStickyBlockWhenLimitReachedWithoutReset(t *testing.T) {
 	if record.BlockState.Reason != BlockQuotaPrimary {
 		t.Fatalf("block_reason = %q, want quota_primary", record.BlockState.Reason)
 	}
-	if record.BlockState.Until != nil {
-		t.Fatalf("block_until = %v, want nil for sticky quota block", record.BlockState.Until)
+	if record.BlockState.Until == nil {
+		t.Fatal("block_until = nil, want fallback block")
+	}
+	duration := record.BlockState.Until.Sub(now)
+	if duration < 4*time.Minute || duration > 6*time.Minute {
+		t.Fatalf("block duration = %v, want about 5m", duration)
 	}
 }
 
@@ -407,6 +411,8 @@ func TestPatchActiveClearsTransientBlock(t *testing.T) {
 
 	now := time.Now().UTC()
 	until := now.Add(time.Hour)
+	resetAt := now.Add(24 * time.Hour)
+	usedPercent := 100.0
 	svc, err := NewService(&memoryStore{state: State{
 		Records: []*Record{
 			{
@@ -416,6 +422,14 @@ func TestPatchActiveClearsTransientBlock(t *testing.T) {
 				BlockState: BlockState{
 					Reason: BlockRateLimit,
 					Until:  &until,
+				},
+				CachedQuota: &QuotaSnapshot{
+					RateLimit: RateLimitWindow{
+						Allowed:      true,
+						LimitReached: true,
+						UsedPercent:  &usedPercent,
+						ResetAt:      &resetAt,
+					},
 				},
 				LastError: "rate limited",
 				CreatedAt: now,
@@ -437,6 +451,9 @@ func TestPatchActiveClearsTransientBlock(t *testing.T) {
 	}
 	if record.LastError != "" {
 		t.Fatalf("last_error = %q, want empty", record.LastError)
+	}
+	if record.CachedQuota != nil {
+		t.Fatalf("cached_quota = %#v, want nil after manual reactivation", record.CachedQuota)
 	}
 
 	acquired, err := svc.Acquire("")

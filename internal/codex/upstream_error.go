@@ -10,6 +10,8 @@ type UpstreamError struct {
 	Op         string
 	StatusCode int
 	Body       string
+	Code       string
+	RetryAfter int
 }
 
 func (e *UpstreamError) Error() string {

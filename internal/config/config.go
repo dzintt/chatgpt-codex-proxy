@@ -100,7 +100,7 @@ func Load() (Config, error) {
 		QuotaFallback:         time.Duration(envInt("QUOTA_FALLBACK_BLOCK_SECONDS", defaultQuotaFallbackSec)) * time.Second,
 		LogLevel:              slogLevel(strings.ToLower(envOr("LOG_LEVEL", "info"))),
 		UserAgentTemplate:     envOr("USER_AGENT_TEMPLATE", "Codex Desktop/26.409.61251 ({platform}; {arch})"),
-		ChromiumVersion:       envOr("CHROMIUM_VERSION", "144"),
+		ChromiumVersion:       envOr("CHROMIUM_VERSION", "147"),
 		Platform:              envOr("CLIENT_PLATFORM", "win32"),
 		ClientHintPlatform:    envOr("CLIENT_HINT_PLATFORM", "Windows"),
 		Arch:                  envOr("CLIENT_ARCH", "x64"),

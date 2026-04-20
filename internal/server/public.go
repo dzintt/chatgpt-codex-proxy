@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -501,15 +502,100 @@ func upstreamEventError(event *codex.StreamEvent) error {
 	if event.Type != "error" && event.Type != "response.failed" {
 		return nil
 	}
-	if nested := serverNestedMap(event.Raw, "error"); nested != nil {
-		if message := firstString(serverStringValue(nested["message"]), serverStringValue(nested["detail"])); message != "" {
-			return errors.New(message)
+	details := extractUpstreamEventDetails(event)
+	if details == nil {
+		return fmt.Errorf("upstream %s", event.Type)
+	}
+	return details
+}
+
+func extractUpstreamEventDetails(event *codex.StreamEvent) *codex.UpstreamError {
+	if event == nil || event.Raw == nil {
+		return nil
+	}
+
+	nested := firstNestedMap(
+		serverNestedMap(event.Raw, "error"),
+		serverNestedPathMap(event.Raw, "response", "error"),
+	)
+	message := firstString(
+		serverStringValueFromMap(nested, "message"),
+		serverStringValueFromMap(nested, "detail"),
+		serverStringValue(event.Raw["message"]),
+		serverStringValue(event.Raw["detail"]),
+	)
+	if message == "" {
+		message = fmt.Sprintf("upstream %s", event.Type)
+	}
+
+	code := firstString(
+		serverStringValueFromMap(nested, "code"),
+		serverStringValueFromMap(nested, "type"),
+		serverStringValue(event.Raw["code"]),
+		serverStringValue(event.Raw["type"]),
+	)
+	statusCode, ok := serverIntValueFromMap(nested, "status_code")
+	if !ok {
+		statusCode, ok = serverIntValueFromMap(nested, "status")
+	}
+	if !ok {
+		statusCode, ok = serverIntValue(event.Raw["status_code"])
+	}
+	if !ok {
+		statusCode, ok = serverIntValue(event.Raw["status"])
+	}
+	if statusCode == 0 {
+		statusCode = upstreamStatusCodeFromCode(code)
+	}
+
+	return &codex.UpstreamError{
+		Op:         "codex stream",
+		StatusCode: statusCode,
+		Body:       message,
+		Code:       code,
+		RetryAfter: firstRetryAfterSeconds(nested, event.Raw),
+	}
+}
+
+func upstreamStatusCodeFromCode(code string) int {
+	switch normalized := strings.ToLower(strings.TrimSpace(code)); normalized {
+	case "rate_limited", "rate_limit_exceeded", "too_many_requests":
+		return http.StatusTooManyRequests
+	case "quota_exhausted", "usage_limit_reached", "payment_required", "subscription_required":
+		return http.StatusPaymentRequired
+	case "invalid_api_key", "unauthorized", "authentication_error", "invalid_token":
+		return http.StatusUnauthorized
+	default:
+		switch {
+		case strings.Contains(normalized, "rate_limit"), strings.Contains(normalized, "too_many"):
+			return http.StatusTooManyRequests
+		case strings.Contains(normalized, "quota"), strings.Contains(normalized, "usage_limit"), strings.Contains(normalized, "payment"):
+			return http.StatusPaymentRequired
+		case strings.Contains(normalized, "unauthorized"), strings.Contains(normalized, "auth"):
+			return http.StatusUnauthorized
+		default:
+			return 0
 		}
 	}
-	if message := firstString(serverStringValue(event.Raw["message"]), serverStringValue(event.Raw["detail"])); message != "" {
-		return errors.New(message)
+}
+
+func firstRetryAfterSeconds(values ...map[string]any) int {
+	now := timeNowUTC()
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		if seconds, ok := serverIntValue(value["resets_in_seconds"]); ok && seconds > 0 {
+			return seconds
+		}
+		if resetAt, ok := serverIntValue(value["resets_at"]); ok && resetAt > 0 {
+			diff := resetAt - int(now.Unix())
+			if diff > 0 {
+				return diff
+			}
+		}
 	}
-	return fmt.Errorf("upstream %s", event.Type)
+	return 0
 }
 
 func serverNestedMap(raw map[string]any, key string) map[string]any {
@@ -523,6 +609,62 @@ func serverNestedMap(raw map[string]any, key string) map[string]any {
 func serverStringValue(value any) string {
 	str, _ := value.(string)
 	return str
+}
+
+func serverNestedPathMap(raw map[string]any, keys ...string) map[string]any {
+	current := raw
+	for idx, key := range keys {
+		if current == nil {
+			return nil
+		}
+		value, _ := current[key].(map[string]any)
+		if idx == len(keys)-1 {
+			return value
+		}
+		current = value
+	}
+	return nil
+}
+
+func serverStringValueFromMap(raw map[string]any, key string) string {
+	if raw == nil {
+		return ""
+	}
+	return serverStringValue(raw[key])
+}
+
+func serverIntValueFromMap(raw map[string]any, key string) (int, bool) {
+	if raw == nil {
+		return 0, false
+	}
+	return serverIntValue(raw[key])
+}
+
+func serverIntValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func firstNestedMap(values ...map[string]any) map[string]any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func cloneAnyMap(src map[string]any) map[string]any {

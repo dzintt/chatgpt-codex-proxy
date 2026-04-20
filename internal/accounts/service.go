@@ -188,6 +188,7 @@ func (s *Service) Patch(id string, label *string, status *Status) (Record, error
 		record.Status = *status
 		if *status == StatusActive {
 			record.BlockState = BlockState{Reason: BlockNone}
+			record.CachedQuota = nil
 			record.LastError = ""
 		} else {
 			record.BlockState = BlockState{Reason: BlockNone}
@@ -357,9 +358,13 @@ func (s *Service) MarkError(id string, status Status, message string) error {
 			record.BlockState = BlockState{Reason: BlockNone}
 		}
 	case Status("rate_limited"):
-		s.setBlockLocked(record, BlockRateLimit, timePtrValue(now.Add(s.rateLimitFallback)), message, now)
+		s.setBlockLocked(record, BlockRateLimit, s.fallbackBlockUntil(BlockRateLimit, now), message, now)
 	case Status("quota_exhausted"):
-		s.setBlockLocked(record, BlockQuotaPrimary, blockUntilFromQuota(record.CachedQuota, BlockQuotaPrimary), message, now)
+		until := blockUntilFromQuota(record.CachedQuota, BlockQuotaPrimary)
+		if until == nil {
+			until = s.fallbackBlockUntil(BlockQuotaPrimary, now)
+		}
+		s.setBlockLocked(record, BlockQuotaPrimary, until, message, now)
 	default:
 		record.Status = status
 	}
@@ -555,7 +560,7 @@ func migratedBlockState(record *Record, reason BlockReason, fallback time.Durati
 		block.Until = until
 		return block
 	}
-	if reason == BlockRateLimit && fallback > 0 {
+	if fallback > 0 {
 		block.Until = timePtrValue(now.Add(fallback))
 	}
 	return block
@@ -626,6 +631,9 @@ func (s *Service) syncBlockFromQuotaLocked(record *Record, now time.Time) {
 		return
 	}
 	if reason, until := activeBlockFromQuota(record.CachedQuota, now); reason != BlockNone {
+		if until == nil {
+			until = s.fallbackBlockUntil(reason, now)
+		}
 		s.setBlockLocked(record, reason, until, record.LastError, now)
 		return
 	}

@@ -264,7 +264,7 @@ func (a *App) blockUntil(accountID string, reason accounts.BlockReason, cause er
 	if cached != nil {
 		return cached
 	}
-	return nil
+	return fallback
 }
 
 func (a *App) fallbackDuration(reason accounts.BlockReason) time.Duration {
@@ -277,6 +277,10 @@ func (a *App) fallbackDuration(reason accounts.BlockReason) time.Duration {
 func retryAfterFromError(err error) time.Duration {
 	if err == nil {
 		return 0
+	}
+	var upstreamErr *codex.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr.RetryAfter > 0 {
+		return time.Duration(upstreamErr.RetryAfter) * time.Second
 	}
 	text := strings.ToLower(err.Error())
 	idx := strings.Index(text, "retry-after")

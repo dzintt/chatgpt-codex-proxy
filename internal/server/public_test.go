@@ -602,7 +602,10 @@ func TestCollectEventsDoesNotCountIncompleteOrFailedResponseAsUsage(t *testing.T
 					},
 				}},
 			},
-			wantErr: func(err error) bool { return err != nil && err.Error() == "upstream failure" },
+			wantErr: func(err error) bool {
+				var upstreamErr *codex.UpstreamError
+				return err != nil && errors.As(err, &upstreamErr) && upstreamErr.Message() == "upstream failure"
+			},
 		},
 	}
 
@@ -736,6 +739,15 @@ func TestBlockUntilUsesRetryAfterBeforeFallback(t *testing.T) {
 	}
 	if until.Sub(start) < 9*time.Second || until.Sub(start) > 11*time.Second {
 		t.Fatalf("retry-after block duration = %v, want about 10s", until.Sub(start))
+	}
+
+	start = time.Now().UTC()
+	until = app.blockUntil("acct_missing", accounts.BlockQuotaPrimary, io.EOF)
+	if until == nil {
+		t.Fatal("blockUntil(quota fallback) = nil")
+	}
+	if until.Sub(start) < 4*time.Minute || until.Sub(start) > 6*time.Minute {
+		t.Fatalf("quota fallback block duration = %v, want about 5m", until.Sub(start))
 	}
 }
 
@@ -1040,11 +1052,109 @@ func TestClassifyUpstreamErrorPrefersQuotaWhen402MentionsRateLimit(t *testing.T)
 	if updated.BlockState.Reason != accounts.BlockQuotaPrimary {
 		t.Fatalf("block_reason = %q, want quota_primary", updated.BlockState.Reason)
 	}
-	if updated.BlockState.Until != nil {
-		t.Fatalf("block_until = %v, want nil for sticky quota exhaustion", updated.BlockState.Until)
+	if updated.BlockState.Until == nil {
+		t.Fatal("block_until = nil, want fallback quota block")
+	}
+	duration := updated.BlockState.Until.Sub(time.Now().UTC())
+	if duration < 4*time.Minute || duration > 6*time.Minute {
+		t.Fatalf("block duration = %v, want about 5m", duration)
 	}
 	if updated.LocalUsage.RequestCount != 0 {
 		t.Fatalf("request_count = %d, want 0 for quota classification", updated.LocalUsage.RequestCount)
+	}
+}
+
+func TestClassifyUpstreamErrorHandlesStructuredStreamFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		accountID       string
+		event           *codex.StreamEvent
+		wantStatus      int
+		wantCode        string
+		wantBlockReason accounts.BlockReason
+		wantRequests    int64
+	}{
+		{
+			name:      "top-level error rate limit",
+			accountID: "acct_stream_rate_limit",
+			event: &codex.StreamEvent{Type: "error", Raw: map[string]any{
+				"error": map[string]any{
+					"code":              "rate_limited",
+					"message":           "Too many requests",
+					"resets_in_seconds": 12,
+				},
+			}},
+			wantStatus:      http.StatusTooManyRequests,
+			wantCode:        "rate_limited",
+			wantBlockReason: accounts.BlockRateLimit,
+			wantRequests:    1,
+		},
+		{
+			name:      "response.failed quota exhaustion",
+			accountID: "acct_stream_quota",
+			event: &codex.StreamEvent{Type: "response.failed", Raw: map[string]any{
+				"response": map[string]any{
+					"id": "resp_1",
+					"error": map[string]any{
+						"code":    "usage_limit_reached",
+						"message": "Billing period exhausted",
+					},
+				},
+			}},
+			wantStatus:      http.StatusPaymentRequired,
+			wantCode:        "quota_exhausted",
+			wantBlockReason: accounts.BlockQuotaPrimary,
+			wantRequests:    0,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Now().UTC()
+			accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+				Records: []*accounts.Record{{
+					ID:        tc.accountID,
+					AccountID: "upstream_" + tc.accountID,
+					Status:    accounts.StatusActive,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}},
+			}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+
+			app := &App{
+				cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+				logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+				accounts: accountsSvc,
+			}
+
+			err = upstreamEventError(tc.event)
+			status, code, _ := app.classifyUpstreamError(tc.accountID, err)
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if code != tc.wantCode {
+				t.Fatalf("code = %q, want %q", code, tc.wantCode)
+			}
+
+			updated, ok := accountsSvc.Get(tc.accountID)
+			if !ok {
+				t.Fatal("Get(updated) returned false")
+			}
+			if updated.BlockState.Reason != tc.wantBlockReason {
+				t.Fatalf("block_reason = %q, want %q", updated.BlockState.Reason, tc.wantBlockReason)
+			}
+			if updated.LocalUsage.RequestCount != tc.wantRequests {
+				t.Fatalf("request_count = %d, want %d", updated.LocalUsage.RequestCount, tc.wantRequests)
+			}
+		})
 	}
 }
 
