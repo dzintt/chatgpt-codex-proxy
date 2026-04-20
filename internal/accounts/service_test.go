@@ -431,6 +431,63 @@ func TestObserveQuotaUsesFallbackBlockWhenLimitReachedWithoutReset(t *testing.T)
 	}
 }
 
+func TestObserveQuotaBlocksWhenPrimaryWindowIsNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	svc, err := NewService(&memoryStore{state: State{
+		Records: []*Record{
+			{
+				ID:        "acct_exhausted",
+				AccountID: "upstream_exhausted",
+				Status:    StatusActive,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "acct_healthy",
+				AccountID: "upstream_healthy",
+				Status:    StatusActive,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}}, RotationLeastUsed, ServiceOptions{QuotaFallback: 5 * time.Minute})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	if err := svc.ObserveQuota("acct_exhausted", &QuotaSnapshot{
+		Source:    "usage_endpoint",
+		FetchedAt: now,
+		RateLimit: RateLimitWindow{
+			Allowed:      false,
+			LimitReached: false,
+		},
+	}); err != nil {
+		t.Fatalf("ObserveQuota() error = %v", err)
+	}
+
+	record, ok := svc.Get("acct_exhausted")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.BlockState.Reason != BlockQuotaPrimary {
+		t.Fatalf("block_reason = %q, want quota_primary", record.BlockState.Reason)
+	}
+	if record.BlockState.Until != nil {
+		t.Fatalf("block_until = %v, want nil for indefinite subscription block", record.BlockState.Until)
+	}
+
+	acquired, err := svc.Acquire("")
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if acquired.ID != "acct_healthy" {
+		t.Fatalf("Acquire() = %q, want acct_healthy while exhausted subscription is blocked", acquired.ID)
+	}
+}
+
 func TestExpiredFallbackBlockWithoutResetDoesNotReinstallFromSameSnapshot(t *testing.T) {
 	t.Parallel()
 

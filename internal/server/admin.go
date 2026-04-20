@@ -34,6 +34,11 @@ func (a *App) handleAdminDeviceLoginGet(c *gin.Context) {
 }
 
 func (a *App) handleAdminAccountDelete(c *gin.Context) {
+	if _, ok := a.accounts.Get(c.Param("account_id")); !ok {
+		a.writeAdminError(c, http.StatusNotFound, "account_not_found", "account not found")
+		return
+	}
+	a.recordUsageSnapshot(time.Now().UTC())
 	if err := a.accounts.Remove(c.Param("account_id")); err != nil {
 		a.writeAdminError(c, http.StatusNotFound, "account_not_found", err.Error())
 		return

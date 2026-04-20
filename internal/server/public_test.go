@@ -1659,3 +1659,74 @@ func TestClassifyUpstreamErrorRejectsWeakRateLimitSignals(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleAdminAccountDeleteSnapshotsUsageBeforeRemoval(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: []*accounts.Record{{
+			ID:        "acct_delete",
+			AccountID: "upstream_delete",
+			Status:    accounts.StatusActive,
+			LocalUsage: accounts.LocalUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+				RequestCount: 10,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if err := accountsSvc.RecordUsage("acct_delete", 50, 25); err != nil {
+		t.Fatalf("RecordUsage() error = %v", err)
+	}
+
+	usageHistory, err := accounts.NewUsageHistoryStore(t.TempDir(), 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewUsageHistoryStore() error = %v", err)
+	}
+	if err := usageHistory.RecordSummary(accounts.Summary{
+		Total:             1,
+		Active:            1,
+		Available:         1,
+		TotalInputTokens:  100,
+		TotalOutputTokens: 50,
+		TotalRequests:     10,
+	}, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("RecordSummary(initial) error = %v", err)
+	}
+
+	app := &App{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:     accountsSvc,
+		usageHistory: usageHistory,
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/admin/accounts/acct_delete", nil)
+	ctx.Params = gin.Params{{Key: "account_id", Value: "acct_delete"}}
+
+	app.handleAdminAccountDelete(ctx)
+
+	if ctx.Writer.Status() != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", ctx.Writer.Status())
+	}
+	if _, ok := accountsSvc.Get("acct_delete"); ok {
+		t.Fatal("account still present after delete")
+	}
+
+	summary, err := usageHistory.CumulativeSummary(accountsSvc.Summary())
+	if err != nil {
+		t.Fatalf("CumulativeSummary() error = %v", err)
+	}
+	if summary.TotalInputTokens != 150 || summary.TotalOutputTokens != 75 || summary.TotalRequests != 11 {
+		t.Fatalf("summary = %#v, want 150 input / 75 output / 11 requests preserved", summary)
+	}
+}

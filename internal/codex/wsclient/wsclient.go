@@ -31,11 +31,7 @@ func (c *Client) Connect(ctx context.Context, endpoint string, headers http.Head
 		if resp != nil {
 			payload, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return nil, &codex.UpstreamError{
-				Op:         "websocket dial",
-				StatusCode: resp.StatusCode,
-				Body:       strings.TrimSpace(string(payload)),
-			}
+			return nil, codex.NewUpstreamError("websocket dial", resp.StatusCode, string(payload), resp.Header)
 		}
 		return nil, err
 	}

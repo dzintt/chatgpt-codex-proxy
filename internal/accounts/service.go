@@ -658,7 +658,7 @@ func (s *Service) syncBlockFromQuotaLocked(record *Record, now time.Time) bool {
 			strings.TrimSpace(record.BlockState.Message) == strings.TrimSpace(record.LastError) {
 			return false
 		}
-		if until == nil {
+		if until == nil && shouldUseFallbackForQuotaBlock(record.CachedQuota, reason) {
 			until = s.fallbackBlockUntil(reason, now)
 		}
 		s.setBlockLocked(record, reason, until, record.LastError, now)
@@ -796,6 +796,9 @@ func activeBlockFromQuota(snapshot *QuotaSnapshot, now time.Time) (BlockReason, 
 	if snapshot == nil {
 		return BlockNone, nil
 	}
+	if snapshot.Source == "usage_endpoint" && windowAvailabilityBlocked(&snapshot.RateLimit, now) {
+		return BlockQuotaPrimary, cloneTime(snapshot.RateLimit.ResetAt)
+	}
 	if snapshot.SecondaryRateLimit != nil && windowLimitActive(snapshot.SecondaryRateLimit, now) {
 		return BlockQuotaSecondary, cloneTime(snapshot.SecondaryRateLimit.ResetAt)
 	}
@@ -806,6 +809,16 @@ func activeBlockFromQuota(snapshot *QuotaSnapshot, now time.Time) (BlockReason, 
 		return BlockQuotaPrimary, cloneTime(snapshot.RateLimit.ResetAt)
 	}
 	return BlockNone, nil
+}
+
+func windowAvailabilityBlocked(window *RateLimitWindow, now time.Time) bool {
+	if window == nil || window.Allowed {
+		return false
+	}
+	if window.ResetAt == nil {
+		return true
+	}
+	return window.ResetAt.After(now)
 }
 
 func windowLimitActive(window *RateLimitWindow, now time.Time) bool {
@@ -829,6 +842,16 @@ func isQuotaBlockReason(reason BlockReason) bool {
 
 func isSnapshotManagedBlockReason(reason BlockReason) bool {
 	return isQuotaBlockReason(reason) || reason == BlockRateLimit
+}
+
+func shouldUseFallbackForQuotaBlock(snapshot *QuotaSnapshot, reason BlockReason) bool {
+	if snapshot == nil {
+		return true
+	}
+	if reason == BlockQuotaPrimary && snapshot.Source == "usage_endpoint" && !snapshot.RateLimit.Allowed {
+		return false
+	}
+	return true
 }
 
 func shouldClearBlockFromSnapshot(record *Record) bool {
