@@ -825,10 +825,7 @@ func isEmptySuccessfulResponse(accumulator *translate.Accumulator) bool {
 
 func shouldCountAttemptBeforeClassification(err error) bool {
 	var upstreamErr *codex.UpstreamError
-	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode == http.StatusTooManyRequests {
-		return false
-	}
-	return true
+	return !errors.As(err, &upstreamErr)
 }
 
 func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {

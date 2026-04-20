@@ -297,7 +297,6 @@ func (s *Service) RecordUsage(id string, inputTokens, outputTokens int64) error 
 	record.LocalUsage.WindowInputTokens += inputTokens
 	record.LocalUsage.WindowOutputTokens += outputTokens
 	record.UpdatedAt = now
-	record.LastError = ""
 	return s.persistLocked()
 }
 
@@ -822,7 +821,7 @@ func isQuotaBlockReason(reason BlockReason) bool {
 }
 
 func isSnapshotManagedBlockReason(reason BlockReason) bool {
-	return isQuotaBlockReason(reason)
+	return isQuotaBlockReason(reason) || reason == BlockRateLimit
 }
 
 func shouldClearBlockFromSnapshot(record *Record) bool {

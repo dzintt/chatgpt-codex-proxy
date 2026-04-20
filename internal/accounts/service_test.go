@@ -335,7 +335,7 @@ func TestObserveQuotaClearsRecoveredQuotaFallbackBlock(t *testing.T) {
 	}
 }
 
-func TestObserveQuotaDoesNotClearRateLimitFallbackBlock(t *testing.T) {
+func TestObserveQuotaClearsRateLimitBlockWhenFreshSnapshotRecovers(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
@@ -379,11 +379,8 @@ func TestObserveQuotaDoesNotClearRateLimitFallbackBlock(t *testing.T) {
 	if !ok {
 		t.Fatal("Get() returned false")
 	}
-	if record.BlockState.Reason != BlockRateLimit {
-		t.Fatalf("block_reason = %q, want rate_limit", record.BlockState.Reason)
-	}
-	if record.BlockState.Until == nil || !record.BlockState.Until.Equal(until) {
-		t.Fatalf("block_until = %v, want %v", record.BlockState.Until, until)
+	if record.BlockState.Reason != BlockNone {
+		t.Fatalf("block_reason = %q, want none after recovered quota snapshot", record.BlockState.Reason)
 	}
 }
 
@@ -592,6 +589,7 @@ func TestRecordUsageUpdatesLifetimeAndWindowCountersOnce(t *testing.T) {
 				ID:        "acct_usage",
 				AccountID: "upstream_usage",
 				Status:    StatusActive,
+				LastError: "previous failure",
 				LocalUsage: LocalUsage{
 					WindowResetAt:      &resetAt,
 					LimitWindowSeconds: &windowSeconds,
@@ -624,6 +622,9 @@ func TestRecordUsageUpdatesLifetimeAndWindowCountersOnce(t *testing.T) {
 	}
 	if record.LocalUsage.WindowRequestCount != 1 {
 		t.Fatalf("window_request_count = %d, want 1", record.LocalUsage.WindowRequestCount)
+	}
+	if record.LastError != "previous failure" {
+		t.Fatalf("last_error = %q, want preserved previous failure", record.LastError)
 	}
 }
 

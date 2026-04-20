@@ -646,8 +646,8 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	if updated.Status != accounts.StatusExpired {
 		t.Fatalf("status = %q, want expired", updated.Status)
 	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	if updated.LocalUsage.RequestCount != 0 {
+		t.Fatalf("request_count = %d, want 0 for classified unauthorized failure", updated.LocalUsage.RequestCount)
 	}
 }
 
@@ -898,14 +898,15 @@ func TestCollectEventsDoesNotMarkToolCallOnlyResponseAsEmpty(t *testing.T) {
 	}
 }
 
-func TestCollectEventsCountsIncompleteOrFailedResponseAttempt(t *testing.T) {
+func TestCollectEventsCountsIncompleteAttemptButSkipsStructuredFailureUsage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		accountID string
-		events    []*codex.StreamEvent
-		wantErr   func(error) bool
+		name         string
+		accountID    string
+		events       []*codex.StreamEvent
+		wantErr      func(error) bool
+		wantRequests int64
 	}{
 		{
 			name:      "early eof before completion",
@@ -913,7 +914,8 @@ func TestCollectEventsCountsIncompleteOrFailedResponseAttempt(t *testing.T) {
 			events: []*codex.StreamEvent{
 				{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
 			},
-			wantErr: func(err error) bool { return errors.Is(err, errIncompleteResponse) },
+			wantErr:      func(err error) bool { return errors.Is(err, errIncompleteResponse) },
+			wantRequests: 1,
 		},
 		{
 			name:      "response.failed event",
@@ -929,6 +931,7 @@ func TestCollectEventsCountsIncompleteOrFailedResponseAttempt(t *testing.T) {
 				var upstreamErr *codex.UpstreamError
 				return err != nil && errors.As(err, &upstreamErr) && upstreamErr.Message() == "upstream failure"
 			},
+			wantRequests: 0,
 		},
 	}
 
@@ -973,8 +976,8 @@ func TestCollectEventsCountsIncompleteOrFailedResponseAttempt(t *testing.T) {
 			if !ok {
 				t.Fatal("Get(updated) returned false")
 			}
-			if updated.LocalUsage.RequestCount != 1 {
-				t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+			if updated.LocalUsage.RequestCount != tc.wantRequests {
+				t.Fatalf("request_count = %d, want %d", updated.LocalUsage.RequestCount, tc.wantRequests)
 			}
 			if updated.LocalUsage.EmptyResponseCount != 0 {
 				t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
