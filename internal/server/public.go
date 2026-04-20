@@ -36,6 +36,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
 		return
 	}
+	a.logCompatibilityWarnings(c, "chat_completions", normalized.CompatibilityWarnings)
 
 	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
@@ -61,7 +62,11 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
-	c.JSON(http.StatusOK, accumulator.ChatCompletionObject())
+	response := accumulator.ChatCompletionObject()
+	if err := translate.PatchChatCompletionObjectForTuple(response, normalized.TupleSchema); err != nil {
+		a.logTupleReconversionWarning(c, "chat_completions", accumulator.ResponseID, err)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (a *App) handleResponses(c *gin.Context) {
@@ -76,6 +81,7 @@ func (a *App) handleResponses(c *gin.Context) {
 		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
 		return
 	}
+	a.logCompatibilityWarnings(c, "responses", normalized.CompatibilityWarnings)
 
 	preferredID := ""
 	turnState := ""
@@ -117,7 +123,11 @@ func (a *App) handleResponses(c *gin.Context) {
 		a.writeOpenAIError(c, status, code, message, "api_error")
 		return
 	}
-	c.JSON(http.StatusOK, accumulator.ResponsesObject())
+	response := accumulator.ResponsesObject()
+	if err := translate.PatchResponsesObjectForTuple(response, normalized.TupleSchema); err != nil {
+		a.logTupleReconversionWarning(c, "responses", accumulator.ResponseID, err)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (a *App) openStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
@@ -191,6 +201,10 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	c.Status(http.StatusOK)
 
 	accumulator := translate.NewAccumulator(normalized)
+	toolCallIndex := make(map[string]int)
+	toolCallSawDelta := make(map[string]bool)
+	nextToolCallIndex := 0
+	var tupleTextBuffer strings.Builder
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk("", normalized.Model, map[string]any{"role": "assistant"}, "")))
 	c.Writer.Flush()
 
@@ -211,13 +225,41 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			c.Writer.Flush()
 			return
 		}
-		before := accumulator.Text()
 		accumulator.Apply(event)
-		after := accumulator.Text()
-		if strings.HasPrefix(after, before) && len(after) > len(before) {
-			delta := after[len(before):]
+		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallSawDelta, &nextToolCallIndex); emitted {
+			c.Writer.Flush()
+			continue
+		}
+		switch event.Type {
+		case "response.output_text.delta":
+			delta := serverStringValue(event.Raw["delta"])
+			if delta == "" {
+				continue
+			}
+			if normalized.TupleSchema != nil {
+				tupleTextBuffer.WriteString(delta)
+				continue
+			}
 			writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{"content": delta}, "")))
 			c.Writer.Flush()
+		case "response.output_text.done":
+			if normalized.TupleSchema != nil {
+				if text := serverStringValue(event.Raw["text"]); text != "" {
+					tupleTextBuffer.Reset()
+					tupleTextBuffer.WriteString(text)
+				}
+			}
+		case "response.completed":
+			if normalized.TupleSchema != nil && strings.TrimSpace(tupleTextBuffer.String()) != "" {
+				reconverted := tupleTextBuffer.String()
+				if patched, err := translate.ReconvertJSONText(reconverted, normalized.TupleSchema); err != nil {
+					a.logTupleReconversionWarning(c, "chat_completions", accumulator.ResponseID, err)
+				} else {
+					reconverted = patched
+				}
+				writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{"content": reconverted}, "")))
+				c.Writer.Flush()
+			}
 		}
 	}
 
@@ -226,7 +268,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	}
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
-	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, "stop")))
+	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
 	_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
 	c.Writer.Flush()
 }
@@ -238,6 +280,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	c.Status(http.StatusOK)
 
 	accumulator := translate.NewAccumulator(normalized)
+	var tupleTextBuffer strings.Builder
 	for {
 		event, err := stream.NextEvent()
 		if err != nil {
@@ -256,7 +299,38 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			return
 		}
 		accumulator.Apply(event)
+		if normalized.TupleSchema != nil {
+			switch event.Type {
+			case "response.output_text.delta":
+				tupleTextBuffer.WriteString(serverStringValue(event.Raw["delta"]))
+				continue
+			case "response.output_text.done":
+				if text := serverStringValue(event.Raw["text"]); text != "" {
+					tupleTextBuffer.Reset()
+					tupleTextBuffer.WriteString(text)
+				}
+				continue
+			case "response.completed":
+				if strings.TrimSpace(tupleTextBuffer.String()) != "" {
+					reconverted := tupleTextBuffer.String()
+					if patched, err := translate.ReconvertJSONText(reconverted, normalized.TupleSchema); err != nil {
+						a.logTupleReconversionWarning(c, "responses", accumulator.ResponseID, err)
+					} else {
+						reconverted = patched
+					}
+					writeSSE(c.Writer, "response.output_text.delta", translate.ResponseEventJSON("response.output_text.delta", accumulator.ResponseID, map[string]any{
+						"delta": reconverted,
+					}))
+					c.Writer.Flush()
+				}
+			}
+		}
 		payload := responseStreamPayload(event, accumulator)
+		if normalized.TupleSchema != nil && event.Type == "response.completed" {
+			if err := translate.PatchResponseCompletedPayloadForTuple(payload, normalized.TupleSchema); err != nil {
+				a.logTupleReconversionWarning(c, "responses", accumulator.ResponseID, err)
+			}
+		}
 		writeSSE(c.Writer, event.Type, translate.ResponseEventJSON(event.Type, accumulator.ResponseID, payload))
 		c.Writer.Flush()
 	}
@@ -267,6 +341,76 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
+}
+
+func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, normalized translate.NormalizedRequest, event *codex.StreamEvent, toolCallIndex map[string]int, toolCallSawDelta map[string]bool, nextToolCallIndex *int) bool {
+	if event == nil || !strings.HasPrefix(event.Type, "response.function_call_arguments.") {
+		return false
+	}
+
+	callID := firstString(serverStringValue(event.Raw["call_id"]), serverStringValue(event.Raw["item_id"]))
+	if callID == "" {
+		return false
+	}
+
+	idx, exists := toolCallIndex[callID]
+	if !exists {
+		idx = *nextToolCallIndex
+		toolCallIndex[callID] = idx
+		*nextToolCallIndex = *nextToolCallIndex + 1
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": idx,
+				"id":    callID,
+				"type":  "function",
+				"function": map[string]any{
+					"name":      serverStringValue(event.Raw["name"]),
+					"arguments": "",
+				},
+			}},
+		}, "")))
+	}
+
+	switch event.Type {
+	case "response.function_call_arguments.delta":
+		delta := serverStringValue(event.Raw["delta"])
+		if delta == "" {
+			return false
+		}
+		toolCallSawDelta[callID] = true
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": idx,
+				"function": map[string]any{
+					"arguments": delta,
+				},
+			}},
+		}, "")))
+		return true
+	case "response.function_call_arguments.done":
+		if toolCallSawDelta[callID] {
+			return false
+		}
+		arguments := serverStringValue(event.Raw["arguments"])
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": idx,
+				"function": map[string]any{
+					"arguments": arguments,
+				},
+			}},
+		}, "")))
+		return true
+	default:
+		return false
+	}
+}
+
+func chatStreamFinishReason(accumulator *translate.Accumulator) string {
+	if accumulator != nil && len(accumulator.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	return "stop"
 }
 
 func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accumulator) map[string]any {

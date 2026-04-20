@@ -3,6 +3,7 @@ package openai
 import "strings"
 
 const CanonicalDefaultModel = "gpt-5.3-codex"
+const ModelCreatedTimestamp int64 = 1700000000
 
 var supportedModelSet = map[string]struct{}{
 	"gpt-5.4":          {},
@@ -54,4 +55,17 @@ func PublicModelList(configuredDefault string) []string {
 		result = append(result, model)
 	}
 	return result
+}
+
+func ResolvePublicModel(model string, configuredDefault string) (string, bool) {
+	target := strings.TrimSpace(model)
+	if target == "" {
+		return "", false
+	}
+	for _, publicModel := range PublicModelList(configuredDefault) {
+		if publicModel == target {
+			return publicModel, true
+		}
+	}
+	return "", false
 }

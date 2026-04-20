@@ -9,20 +9,29 @@ const (
 	EndpointResponses Endpoint = "responses"
 )
 
+type CompatibilityWarning struct {
+	Field    string
+	Endpoint Endpoint
+	Behavior string
+	Detail   string
+}
+
 type NormalizedRequest struct {
-	Endpoint           Endpoint
-	Model              string
-	Instructions       string
-	Input              []codex.InputItem
-	Stream             bool
-	Tools              []codex.Tool
-	ToolChoice         any
-	Text               *codex.TextConfig
-	Reasoning          *codex.Reasoning
-	ServiceTier        string
-	PreviousResponseID string
-	PromptCacheKey     string
-	Include            []string
+	Endpoint              Endpoint
+	Model                 string
+	Instructions          string
+	Input                 []codex.InputItem
+	Stream                bool
+	Tools                 []codex.Tool
+	ToolChoice            any
+	Text                  *codex.TextConfig
+	Reasoning             *codex.Reasoning
+	ServiceTier           string
+	PreviousResponseID    string
+	PromptCacheKey        string
+	Include               []string
+	TupleSchema           map[string]any
+	CompatibilityWarnings []CompatibilityWarning
 }
 
 func (n NormalizedRequest) ToCodexRequest() codex.Request {

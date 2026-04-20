@@ -106,6 +106,7 @@ func (a *App) routes() {
 	protected.Use(middleware.APIKey(a.cfg.ProxyAPIKey))
 	protected.GET("/health", a.handleHealth)
 	protected.GET("/v1/models", a.handleModels)
+	protected.GET("/v1/models/:model_id", a.handleModelByID)
 	protected.POST("/v1/chat/completions", a.handleChatCompletions)
 	protected.POST("/v1/responses", a.handleResponses)
 

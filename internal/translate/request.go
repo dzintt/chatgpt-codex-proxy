@@ -13,24 +13,34 @@ const defaultInstructions = "You are a helpful assistant."
 
 func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (NormalizedRequest, error) {
 	model, reasoning, serviceTier := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier)
+	tools := req.Tools
+	if len(tools) == 0 && len(req.Functions) > 0 {
+		tools = legacyFunctionsAsTools(req.Functions)
+	}
 	out := NormalizedRequest{
-		Endpoint:    EndpointChat,
-		Model:       model,
-		Stream:      req.Stream,
-		Tools:       normalizeTools(req.Tools),
-		Reasoning:   reasoning,
-		ServiceTier: serviceTier,
-		Include:     []string{"reasoning.encrypted_content"},
+		Endpoint:              EndpointChat,
+		Model:                 model,
+		Stream:                req.Stream,
+		Tools:                 normalizeTools(tools),
+		Reasoning:             reasoning,
+		ServiceTier:           serviceTier,
+		Include:               []string{"reasoning.encrypted_content"},
+		CompatibilityWarnings: collectChatCompatibilityWarnings(req),
 	}
 	if len(req.Tools) > 0 {
 		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
+	} else if choice := normalizeLegacyFunctionChoice(req.FunctionCall); choice != nil {
+		out.ToolChoice = choice
+	} else if len(req.Functions) > 0 {
+		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
 	}
 	if req.ResponseFormat != nil {
-		text, err := normalizeChatResponseFormat(req.ResponseFormat)
+		text, tupleSchema, err := normalizeChatResponseFormat(req.ResponseFormat)
 		if err != nil {
 			return NormalizedRequest{}, err
 		}
 		out.Text = text
+		out.TupleSchema = tupleSchema
 	}
 
 	var instructions []string
@@ -113,27 +123,38 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	}
 
 	out := NormalizedRequest{
-		Endpoint:           EndpointResponses,
-		Model:              model,
-		Instructions:       firstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
-		Stream:             req.Stream,
-		Tools:              normalizeTools(req.Tools),
-		ToolChoice:         normalizeToolChoice(req.ToolChoice),
-		Reasoning:          reasoning,
-		ServiceTier:        serviceTier,
-		PreviousResponseID: strings.TrimSpace(req.PreviousResponseID),
-		Include:            []string{"reasoning.encrypted_content"},
+		Endpoint:              EndpointResponses,
+		Model:                 model,
+		Instructions:          firstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
+		Stream:                req.Stream,
+		Tools:                 normalizeTools(req.Tools),
+		ToolChoice:            normalizeToolChoice(req.ToolChoice),
+		Reasoning:             reasoning,
+		ServiceTier:           serviceTier,
+		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
+		Include:               []string{"reasoning.encrypted_content"},
+		CompatibilityWarnings: collectResponsesCompatibilityWarnings(req),
 	}
 
 	if req.Text != nil && req.Text.Format != nil {
-		out.Text = &codex.TextConfig{
-			Format: codex.TextFormat{
-				Type:   req.Text.Format.Type,
-				Name:   req.Text.Format.Name,
-				Schema: req.Text.Format.Schema,
-				Strict: req.Text.Format.Strict,
-			},
+		var tupleSchema map[string]any
+		format := codex.TextFormat{
+			Type: req.Text.Format.Type,
+			Name: req.Text.Format.Name,
 		}
+		if req.Text.Format.Type == "json_schema" {
+			prepared, original := PrepareSchema(req.Text.Format.Schema)
+			format.Schema = prepared
+			format.Strict = req.Text.Format.Strict
+			tupleSchema = original
+		} else {
+			format.Schema = req.Text.Format.Schema
+			format.Strict = req.Text.Format.Strict
+		}
+		out.Text = &codex.TextConfig{
+			Format: format,
+		}
+		out.TupleSchema = tupleSchema
 	}
 
 	if req.Input.String != "" {
@@ -180,6 +201,24 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	return out, nil
 }
 
+func legacyFunctionsAsTools(functions []openai.LegacyFunctionDefinition) []openai.ToolDefinition {
+	if len(functions) == 0 {
+		return nil
+	}
+	tools := make([]openai.ToolDefinition, 0, len(functions))
+	for _, function := range functions {
+		tools = append(tools, openai.ToolDefinition{
+			Type: "function",
+			Function: &openai.FunctionTool{
+				Name:        function.Name,
+				Description: function.Description,
+				Parameters:  function.Parameters,
+			},
+		})
+	}
+	return tools
+}
+
 func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 	if len(tools) == 0 {
 		return nil
@@ -205,7 +244,7 @@ func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 				Type:        "function",
 				Name:        function.Name,
 				Description: function.Description,
-				Parameters:  function.Parameters,
+				Parameters:  NormalizeSchema(function.Parameters),
 				Strict:      function.Strict,
 			})
 		case "web_search", "web_search_preview":
@@ -251,27 +290,49 @@ func normalizeToolChoice(raw json.RawMessage) any {
 	return decoded
 }
 
-func normalizeChatResponseFormat(format *openai.ResponseFormat) (*codex.TextConfig, error) {
+func normalizeLegacyFunctionChoice(choice *openai.LegacyFunctionCallChoice) any {
+	if choice == nil || choice.IsZero() {
+		return nil
+	}
+	switch strings.TrimSpace(choice.Mode) {
+	case "none", "auto":
+		return choice.Mode
+	}
+	if name := strings.TrimSpace(choice.Name); name != "" {
+		return map[string]any{
+			"type": "function",
+			"name": name,
+		}
+	}
+	return nil
+}
+
+func normalizeChatResponseFormat(format *openai.ResponseFormat) (*codex.TextConfig, map[string]any, error) {
 	if format == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	switch format.Type {
 	case "", "text":
-		return nil, nil
+		return nil, nil, nil
+	case "json_object":
+		return &codex.TextConfig{
+			Format: codex.TextFormat{Type: "json_object"},
+		}, nil, nil
 	case "json_schema":
 		if format.JSONSchema == nil {
-			return nil, fmt.Errorf("response_format.json_schema is required")
+			return nil, nil, fmt.Errorf("response_format.json_schema is required")
 		}
+		prepared, tupleSchema := PrepareSchema(format.JSONSchema.Schema)
 		return &codex.TextConfig{
 			Format: codex.TextFormat{
 				Type:   "json_schema",
 				Name:   format.JSONSchema.Name,
-				Schema: format.JSONSchema.Schema,
+				Schema: prepared,
 				Strict: format.JSONSchema.Strict,
 			},
-		}, nil
+		}, tupleSchema, nil
 	default:
-		return nil, fmt.Errorf("unsupported response_format %q", format.Type)
+		return nil, nil, fmt.Errorf("unsupported response_format %q", format.Type)
 	}
 }
 
@@ -388,4 +449,80 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func collectChatCompatibilityWarnings(req openai.ChatCompletionsRequest) []CompatibilityWarning {
+	var warnings []CompatibilityWarning
+	if req.N != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "n"))
+	}
+	if req.Temperature != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "temperature"))
+	}
+	if req.TopP != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "top_p"))
+	}
+	if req.MaxTokens != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "max_tokens"))
+	}
+	if req.PresencePenalty != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "presence_penalty"))
+	}
+	if req.FrequencyPenalty != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "frequency_penalty"))
+	}
+	if len(req.Stop) > 0 {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "stop"))
+	}
+	if req.User != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "user"))
+	}
+	if req.ParallelToolCalls != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "parallel_tool_calls"))
+	}
+	if len(req.StreamOptions) > 0 {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointChat, "stream_options"))
+	}
+	return warnings
+}
+
+func collectResponsesCompatibilityWarnings(req openai.ResponsesRequest) []CompatibilityWarning {
+	var warnings []CompatibilityWarning
+	if req.Temperature != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "temperature"))
+	}
+	if req.TopP != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "top_p"))
+	}
+	if req.MaxOutputTokens != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "max_output_tokens"))
+	}
+	if req.ParallelToolCalls != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "parallel_tool_calls"))
+	}
+	if req.Store != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "store"))
+	}
+	if req.Background != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "background"))
+	}
+	if req.User != nil {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "user"))
+	}
+	if len(req.Metadata) > 0 {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "metadata"))
+	}
+	if len(req.StreamOptions) > 0 {
+		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "stream_options"))
+	}
+	return warnings
+}
+
+func unsupportedFieldWarning(endpoint Endpoint, field string) CompatibilityWarning {
+	return CompatibilityWarning{
+		Field:    field,
+		Endpoint: endpoint,
+		Behavior: "ignored_with_warning",
+		Detail:   "field is accepted for compatibility but not applied in this proxy",
+	}
 }

@@ -474,3 +474,113 @@ func cloneMap(src map[string]any) map[string]any {
 	}
 	return dst
 }
+
+func ReconvertJSONText(text string, schema map[string]any) (string, error) {
+	if schema == nil || strings.TrimSpace(text) == "" {
+		return text, nil
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		return text, err
+	}
+
+	reconverted := ReconvertTupleValues(decoded, schema)
+	payload, err := json.Marshal(reconverted)
+	if err != nil {
+		return text, err
+	}
+	return string(payload), nil
+}
+
+func PatchChatCompletionObjectForTuple(object map[string]any, schema map[string]any) error {
+	if schema == nil || len(object) == 0 {
+		return nil
+	}
+
+	choices := sliceOfMaps(object["choices"])
+	if len(choices) == 0 {
+		return nil
+	}
+
+	message := nestedMap(choices[0], "message")
+	if message == nil {
+		return nil
+	}
+
+	reconverted, err := ReconvertJSONText(stringValue(message["content"]), schema)
+	if err != nil {
+		return err
+	}
+	message["content"] = reconverted
+	return nil
+}
+
+func PatchResponsesObjectForTuple(object map[string]any, schema map[string]any) error {
+	if schema == nil || len(object) == 0 {
+		return nil
+	}
+
+	if text := stringValue(object["output_text"]); strings.TrimSpace(text) != "" {
+		reconverted, err := ReconvertJSONText(text, schema)
+		if err != nil {
+			return err
+		}
+		object["output_text"] = reconverted
+	}
+
+	for _, item := range sliceOfMaps(object["output"]) {
+		if stringValue(item["type"]) != "message" {
+			continue
+		}
+		for _, content := range sliceOfMaps(item["content"]) {
+			if stringValue(content["type"]) != "output_text" {
+				continue
+			}
+			reconverted, err := ReconvertJSONText(stringValue(content["text"]), schema)
+			if err != nil {
+				return err
+			}
+			content["text"] = reconverted
+		}
+	}
+
+	return nil
+}
+
+func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[string]any) error {
+	if schema == nil || len(payload) == 0 {
+		return nil
+	}
+
+	response := nestedMap(payload, "response")
+	if response == nil {
+		return nil
+	}
+
+	if text := stringValue(response["output_text"]); strings.TrimSpace(text) != "" {
+		reconverted, err := ReconvertJSONText(text, schema)
+		if err != nil {
+			return err
+		}
+		response["output_text"] = reconverted
+	}
+
+	for _, item := range sliceOfMaps(response["output"]) {
+		if stringValue(item["type"]) != "message" {
+			continue
+		}
+		for _, content := range sliceOfMaps(item["content"]) {
+			if stringValue(content["type"]) != "output_text" {
+				continue
+			}
+			reconverted, err := ReconvertJSONText(stringValue(content["text"]), schema)
+			if err != nil {
+				return err
+			}
+			content["text"] = reconverted
+		}
+	}
+
+	return nil
+}

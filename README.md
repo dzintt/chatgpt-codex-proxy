@@ -24,11 +24,14 @@ This proxy is meant for local or small-scale use by developers who want OpenAI S
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `GET /v1/models`
+- `GET /v1/models/<model_id>`
 - Streaming and non-streaming responses
-- Function tools
+- Tool calling via `tools`
+- Legacy Chat Completions `functions` and top-level `function_call`
 - Hosted web search tool passthrough
 - Structured outputs
-- Text, image, and file inputs
+- Text and image inputs on Chat Completions
+- Text, image, and file inputs on Responses
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
 - Local JSON persistence for accounts and usage state
@@ -40,6 +43,8 @@ This proxy is meant for local or small-scale use by developers who want OpenAI S
 - A distributed or multi-node service
 - A dashboard product
 - A generic credential vault
+
+OpenAI compatibility is intentionally scoped. The proxy focuses on the parts needed by common OpenAI SDK workflows, but it does not aim to mirror every request field or endpoint. Some unsupported fields are accepted for compatibility and logged as warnings rather than rejected.
 
 ## How It Works
 
@@ -200,11 +205,17 @@ Supported behavior:
 
 - Streaming and non-streaming
 - `system` and `developer` instructions
-- Function tools
+- Tool calling via `tools`
+- Legacy `functions` and top-level `function_call` request compatibility
 - Hosted web search passthrough
-- Structured outputs
+- Structured outputs via `response_format.type = "json_schema"` and `response_format.type = "json_object"`
 - Reasoning effort
 - Text and image input parts
+
+Compatibility notes:
+
+- Legacy requests are normalized onto the modern tool-calling response shape; responses still use `tool_calls` rather than the older assistant `function_call` field.
+- The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are logged as compatibility warnings when present.
 
 ### `POST /v1/responses`
 
@@ -217,10 +228,21 @@ Supported behavior:
 - Structured outputs
 - Text, image, and file inputs
 - Explicit `previous_response_id` continuation
+- Follow-up turns that replay prior `output_text` items from the OpenAI Responses shape
+
+Compatibility notes:
+
+- The proxy models the OpenAI Responses API shape directly, but it is still a partial implementation rather than full parity with every official field.
+- Structured-output schemas are normalized before they are sent upstream, including tuple-schema handling and stricter object-shape normalization for Codex compatibility.
+- Known unsupported fields are logged as compatibility warnings when present.
 
 ### `GET /v1/models`
 
 Returns a curated model list for OpenAI-compatible clients. The alias `codex` resolves to the configured default model.
+
+### `GET /v1/models/<model_id>`
+
+Returns one model object in the OpenAI model shape. The alias `codex` resolves to the configured default model and unknown IDs return an OpenAI-style `model_not_found` error.
 
 ### `GET /health/live`
 
