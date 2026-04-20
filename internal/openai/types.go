@@ -136,15 +136,14 @@ func (i *ImageURLValue) UnmarshalJSON(data []byte) error {
 }
 
 type ToolDefinition struct {
-	Type                string         `json:"type"`
-	Function            *FunctionTool  `json:"function,omitempty"`
-	Name                string         `json:"name,omitempty"`
-	Description         string         `json:"description,omitempty"`
-	Parameters          map[string]any `json:"parameters,omitempty"`
-	Strict              bool           `json:"strict,omitempty"`
-	SearchContextSize   string         `json:"search_context_size,omitempty"`
-	UserLocation        map[string]any `json:"user_location,omitempty"`
-	AdditionalRawFields map[string]any `json:"-"`
+	Type              string         `json:"type"`
+	Function          *FunctionTool  `json:"function,omitempty"`
+	Name              string         `json:"name,omitempty"`
+	Description       string         `json:"description,omitempty"`
+	Parameters        map[string]any `json:"parameters,omitempty"`
+	Strict            bool           `json:"strict,omitempty"`
+	SearchContextSize string         `json:"search_context_size,omitempty"`
+	UserLocation      map[string]any `json:"user_location,omitempty"`
 }
 
 type FunctionTool struct {

@@ -12,10 +12,6 @@ type RequestLoggerOptions struct {
 }
 
 func RequestLogger(logger *slog.Logger, opts RequestLoggerOptions) gin.HandlerFunc {
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if _, skip := opts.SkipPaths[path]; skip {

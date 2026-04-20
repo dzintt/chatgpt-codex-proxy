@@ -31,11 +31,80 @@ type DeviceCodeResponse struct {
 	Interval     int    `json:"interval"`
 }
 
+type oauthTokenResponse struct {
+	AccessToken  string        `json:"access_token"`
+	RefreshToken string        `json:"refresh_token"`
+	IDToken      string        `json:"id_token"`
+	ExpiresIn    flexibleInt64 `json:"expires_in"`
+}
+
+type oauthClaims struct {
+	ChatGPTAccountID string          `json:"chatgpt_account_id"`
+	OpenAIAuth       oauthAuthClaims `json:"https://api.openai.com/auth"`
+}
+
+type oauthAuthClaims struct {
+	ChatGPTAccountID string `json:"chatgpt_account_id"`
+}
+
+type flexibleInt64 struct {
+	value int64
+	set   bool
+}
+
+func (f *flexibleInt64) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err == nil {
+		value, err := number.Int64()
+		if err != nil {
+			floatValue, floatErr := number.Float64()
+			if floatErr != nil {
+				return fmt.Errorf("parse numeric value %q: %w", number.String(), err)
+			}
+			value = int64(floatValue)
+		}
+		f.value = value
+		f.set = true
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			return nil
+		}
+		value, err := strconv.ParseInt(trimmed, 10, 64)
+		if err == nil {
+			f.value = value
+			f.set = true
+			return nil
+		}
+		floatValue, floatErr := strconv.ParseFloat(trimmed, 64)
+		if floatErr != nil {
+			return fmt.Errorf("parse numeric value %q: %w", text, err)
+		}
+		f.value = int64(floatValue)
+		f.set = true
+		return nil
+	}
+	return fmt.Errorf("unsupported numeric value %q", string(data))
+}
+
+func (f flexibleInt64) Int64() (int64, bool) {
+	if !f.set {
+		return 0, false
+	}
+	return f.value, true
+}
+
 func (d *DeviceCodeResponse) UnmarshalJSON(data []byte) error {
 	type rawDeviceCodeResponse struct {
-		UserCode     string `json:"user_code"`
-		DeviceAuthID string `json:"device_auth_id"`
-		Interval     any    `json:"interval"`
+		UserCode     string        `json:"user_code"`
+		DeviceAuthID string        `json:"device_auth_id"`
+		Interval     flexibleInt64 `json:"interval"`
 	}
 
 	var raw rawDeviceCodeResponse
@@ -45,19 +114,8 @@ func (d *DeviceCodeResponse) UnmarshalJSON(data []byte) error {
 
 	d.UserCode = raw.UserCode
 	d.DeviceAuthID = raw.DeviceAuthID
-	switch value := raw.Interval.(type) {
-	case float64:
+	if value, ok := raw.Interval.Int64(); ok {
 		d.Interval = int(value)
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("parse device auth interval %q: %w", value, err)
-		}
-		d.Interval = parsed
-	case nil:
-		d.Interval = 0
-	default:
-		return fmt.Errorf("unsupported device auth interval type %T", value)
 	}
 	return nil
 }
@@ -145,52 +203,53 @@ func (s *OAuthService) Refresh(ctx context.Context, existing accounts.OAuthToken
 	return buildOAuthToken(resp), nextAccountID, nil
 }
 
-func buildOAuthToken(raw map[string]any) accounts.OAuthToken {
+func buildOAuthToken(raw oauthTokenResponse) accounts.OAuthToken {
 	expiresIn := int64(3600)
-	switch value := raw["expires_in"].(type) {
-	case float64:
-		expiresIn = int64(value)
-	case int64:
+	if value, ok := raw.ExpiresIn.Int64(); ok {
 		expiresIn = value
 	}
 	return accounts.OAuthToken{
-		AccessToken:  stringValue(raw["access_token"]),
-		RefreshToken: stringValue(raw["refresh_token"]),
+		AccessToken:  raw.AccessToken,
+		RefreshToken: raw.RefreshToken,
 		ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresIn) * time.Second),
 	}
 }
 
-func extractAccountID(raw map[string]any) string {
+func extractAccountID(raw oauthTokenResponse) string {
 	for _, key := range []string{"id_token", "access_token"} {
-		token := stringValue(raw[key])
+		var token string
+		switch key {
+		case "id_token":
+			token = raw.IDToken
+		case "access_token":
+			token = raw.AccessToken
+		}
 		if token == "" {
 			continue
 		}
 		claims := parseJWTClaims(token)
-		if accountID := stringValue(claims["chatgpt_account_id"]); accountID != "" {
+		if accountID := claims.ChatGPTAccountID; accountID != "" {
 			return accountID
 		}
-		if nested, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
-			if accountID := stringValue(nested["chatgpt_account_id"]); accountID != "" {
-				return accountID
-			}
+		if accountID := claims.OpenAIAuth.ChatGPTAccountID; accountID != "" {
+			return accountID
 		}
 	}
 	return ""
 }
 
-func parseJWTClaims(token string) map[string]any {
+func parseJWTClaims(token string) oauthClaims {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil
+		return oauthClaims{}
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil
+		return oauthClaims{}
 	}
-	var claims map[string]any
+	var claims oauthClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil
+		return oauthClaims{}
 	}
 	return claims
 }
@@ -243,32 +302,25 @@ func doJSONAllowPending[T any](ctx context.Context, client *http.Client, method,
 	return decoded, false, nil
 }
 
-func doForm(ctx context.Context, client *http.Client, endpoint string, values url.Values, headers http.Header) (map[string]any, error) {
+func doForm(ctx context.Context, client *http.Client, endpoint string, values url.Values, headers http.Header) (oauthTokenResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(values.Encode()))
 	if err != nil {
-		return nil, err
+		return oauthTokenResponse{}, err
 	}
 	req.Header = headers.Clone()
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return oauthTokenResponse{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("oauth token exchange failed: %s", strings.TrimSpace(string(body)))
+		return oauthTokenResponse{}, fmt.Errorf("oauth token exchange failed: %s", strings.TrimSpace(string(body)))
 	}
-	var decoded map[string]any
+	var decoded oauthTokenResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, err
+		return oauthTokenResponse{}, err
 	}
 	return decoded, nil
-}
-
-func stringValue(value any) string {
-	if str, ok := value.(string); ok {
-		return str
-	}
-	return ""
 }

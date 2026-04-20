@@ -4,11 +4,9 @@
 
 It exposes an OpenAI-compatible API, translates those requests into the private ChatGPT Codex backend format, and manages one or more locally authenticated Codex accounts.
 
-## Important Note
-
 This project depends on the private `chatgpt.com/backend-api/codex/*` surface. That surface is undocumented and may change at any time.
 
-This proxy is meant for local or small-scale use by developers who want OpenAI SDK compatibility without building a larger proxy stack.
+Use it for local or small-scale deployments.
 
 ## What This Project Does
 
@@ -44,18 +42,14 @@ This proxy is meant for local or small-scale use by developers who want OpenAI S
 - A dashboard product
 - A generic credential vault
 
-OpenAI compatibility is intentionally scoped. The proxy focuses on the parts needed by common OpenAI SDK workflows, but it does not aim to mirror every request field or endpoint. Some unsupported fields are accepted for compatibility and logged as warnings rather than rejected.
-
 ## How It Works
-
-At a high level:
 
 1. A Gin server accepts OpenAI-style HTTP requests.
 2. The request is normalized into one internal format.
 3. That normalized request is translated into the upstream Codex backend shape.
 4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
 
-For normal requests, the proxy talks to:
+The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
 
@@ -134,8 +128,6 @@ curl -X POST http://localhost:8080/admin/accounts/device-login/start \
   -H "Authorization: Bearer change-me"
 ```
 
-The response includes:
-
 - `login_id`
 - `auth_url`
 - `user_code`
@@ -151,8 +143,6 @@ curl http://localhost:8080/admin/accounts/device-login/<login_id> \
 When the login status becomes `ready`, the account has been saved locally and can be used for proxy requests.
 
 ### 4. Point an OpenAI client at the proxy
-
-Use:
 
 - Base URL: `http://localhost:8080/v1`
 - API key: your `PROXY_API_KEY`
@@ -232,7 +222,6 @@ Supported behavior:
 
 Compatibility notes:
 
-- The proxy models the OpenAI Responses API shape directly, but it is still a partial implementation rather than full parity with every official field.
 - Structured-output schemas are normalized before they are sent upstream, including tuple-schema handling and stricter object-shape normalization for Codex compatibility.
 - Known unsupported fields are logged as compatibility warnings when present.
 
@@ -370,8 +359,6 @@ Key translation rules:
 
 ## Account Rotation
 
-Rotation is intentionally simple:
-
 - `least_used`
   Prefer accounts with lower cached quota pressure, then lower request count, then older last-used time.
 - `round_robin`
@@ -382,8 +369,6 @@ Rotation is intentionally simple:
 Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
 
 ## Observability
-
-The service includes:
 
 - Structured JSON logging via `slog`
 - Request IDs

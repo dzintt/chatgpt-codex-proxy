@@ -1,6 +1,10 @@
 package translate
 
-import "chatgpt-codex-proxy/internal/codex"
+import (
+	"encoding/json"
+
+	"chatgpt-codex-proxy/internal/codex"
+)
 
 type Endpoint string
 
@@ -23,7 +27,7 @@ type NormalizedRequest struct {
 	Input                 []codex.InputItem
 	Stream                bool
 	Tools                 []codex.Tool
-	ToolChoice            any
+	ToolChoice            json.RawMessage
 	Text                  *codex.TextConfig
 	Reasoning             *codex.Reasoning
 	ServiceTier           string
@@ -32,6 +36,12 @@ type NormalizedRequest struct {
 	Include               []string
 	TupleSchema           map[string]any
 	CompatibilityWarnings []CompatibilityWarning
+}
+
+type UsageSummary struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
 }
 
 func (n NormalizedRequest) ToCodexRequest() codex.Request {
@@ -62,7 +72,7 @@ func (n NormalizedRequest) ToCodexWSCreatePayload() map[string]any {
 	if len(n.Tools) > 0 {
 		payload["tools"] = n.Tools
 	}
-	if n.ToolChoice != nil {
+	if len(n.ToolChoice) > 0 {
 		payload["tool_choice"] = n.ToolChoice
 	}
 	if n.Text != nil {

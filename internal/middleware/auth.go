@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -10,40 +11,23 @@ import (
 func APIKey(required string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if required == "" {
-			c.Next()
+			AbortJSON(c, http.StatusInternalServerError, OpenAIErrorPayload("internal_server_error", "server_error", "internal_server_error", ""))
 			return
 		}
 
 		token := strings.TrimSpace(c.GetHeader("X-API-Key"))
 		if token == "" {
 			auth := strings.TrimSpace(c.GetHeader("Authorization"))
-			if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
 				token = strings.TrimSpace(auth[7:])
 			}
 		}
 
-		if subtleEqual(token, required) {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(required)) == 1 {
 			c.Next()
 			return
 		}
 
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{
-				"message": "invalid_api_key",
-				"type":    "authentication_error",
-				"code":    "invalid_api_key",
-			},
-		})
+		AbortJSON(c, http.StatusUnauthorized, OpenAIErrorPayload("invalid_api_key", "authentication_error", "invalid_api_key", ""))
 	}
-}
-
-func subtleEqual(left, right string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var diff byte
-	for i := 0; i < len(left); i++ {
-		diff |= left[i] ^ right[i]
-	}
-	return diff == 0
 }

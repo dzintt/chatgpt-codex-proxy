@@ -10,15 +10,12 @@ import (
 	"chatgpt-codex-proxy/internal/accounts"
 )
 
-type AccountsState struct {
-	Records          []*accounts.Record        `json:"records"`
-	RotationStrategy accounts.RotationStrategy `json:"rotation_strategy"`
-}
-
 type JSONAccountsStore struct {
 	path string
 	mu   sync.Mutex
 }
+
+var _ accounts.Store = (*JSONAccountsStore)(nil)
 
 func NewJSONAccountsStore(dataDir string) *JSONAccountsStore {
 	return &JSONAccountsStore{

@@ -1,37 +1,33 @@
 package codex
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	"chatgpt-codex-proxy/internal/openai"
+)
+
+type Reasoning = openai.Reasoning
+type TextFormat = openai.ResponsesTextFormat
 
 type Request struct {
-	Model              string      `json:"model"`
-	Instructions       string      `json:"instructions,omitempty"`
-	Input              []InputItem `json:"input"`
-	Stream             bool        `json:"stream"`
-	Store              bool        `json:"store"`
-	Tools              []Tool      `json:"tools,omitempty"`
-	ToolChoice         any         `json:"tool_choice,omitempty"`
-	Text               *TextConfig `json:"text,omitempty"`
-	Reasoning          *Reasoning  `json:"reasoning,omitempty"`
-	ServiceTier        string      `json:"service_tier,omitempty"`
-	PreviousResponseID string      `json:"previous_response_id,omitempty"`
-	PromptCacheKey     string      `json:"prompt_cache_key,omitempty"`
-	Include            []string    `json:"include,omitempty"`
-}
-
-type Reasoning struct {
-	Effort  string `json:"effort,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Model              string          `json:"model"`
+	Instructions       string          `json:"instructions,omitempty"`
+	Input              []InputItem     `json:"input"`
+	Stream             bool            `json:"stream"`
+	Store              bool            `json:"store"`
+	Tools              []Tool          `json:"tools,omitempty"`
+	ToolChoice         json.RawMessage `json:"tool_choice,omitempty"`
+	Text               *TextConfig     `json:"text,omitempty"`
+	Reasoning          *Reasoning      `json:"reasoning,omitempty"`
+	ServiceTier        string          `json:"service_tier,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
+	Include            []string        `json:"include,omitempty"`
 }
 
 type TextConfig struct {
 	Format TextFormat `json:"format"`
-}
-
-type TextFormat struct {
-	Type   string         `json:"type"`
-	Name   string         `json:"name,omitempty"`
-	Schema map[string]any `json:"schema,omitempty"`
-	Strict bool           `json:"strict,omitempty"`
 }
 
 type Tool struct {
@@ -45,14 +41,14 @@ type Tool struct {
 }
 
 type InputItem struct {
-	Role      string `json:"role,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Content   any    `json:"content,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-	ID        string `json:"id,omitempty"`
+	Role      string        `json:"role,omitempty"`
+	Type      string        `json:"type,omitempty"`
+	Content   []ContentPart `json:"content,omitempty"`
+	CallID    string        `json:"call_id,omitempty"`
+	Name      string        `json:"name,omitempty"`
+	Arguments string        `json:"arguments,omitempty"`
+	Output    string        `json:"output,omitempty"`
+	ID        string        `json:"id,omitempty"`
 }
 
 type ContentPart struct {
@@ -118,4 +114,11 @@ type RateWindow struct {
 	UsedPercent        float64
 	LimitWindowSeconds int
 	ResetAt            time.Time
+}
+
+func stringValue(value any) string {
+	if str, ok := value.(string); ok {
+		return str
+	}
+	return ""
 }

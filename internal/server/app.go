@@ -124,26 +124,14 @@ func (a *App) routes() {
 }
 
 func (a *App) writeOpenAIError(c *gin.Context, status int, code, message, errType string) {
-	c.AbortWithStatusJSON(status, gin.H{
-		"error": gin.H{
-			"message": message,
-			"type":    errType,
-			"code":    code,
-		},
-	})
+	middleware.AbortJSON(c, status, middleware.OpenAIErrorPayload(message, errType, code, ""))
 }
 
 func (a *App) writeAdminError(c *gin.Context, status int, code, message string) {
-	c.AbortWithStatusJSON(status, gin.H{
-		"error":   code,
-		"message": message,
-	})
+	middleware.AbortJSON(c, status, middleware.AdminErrorPayload(code, message))
 }
 
 func (a *App) classifyUpstreamError(accountID string, err error) (int, string, string) {
-	if err == nil {
-		return http.StatusBadGateway, "upstream_error", "upstream error"
-	}
 	text := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(text, "401"), strings.Contains(text, "unauthorized"):

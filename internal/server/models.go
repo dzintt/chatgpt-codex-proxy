@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"chatgpt-codex-proxy/internal/middleware"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
@@ -22,14 +23,7 @@ func (a *App) handleModels(c *gin.Context) {
 func (a *App) handleModelByID(c *gin.Context) {
 	modelID, ok := openai.ResolvePublicModel(c.Param("model_id"), a.cfg.DefaultModel)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
-			"error": gin.H{
-				"message": "Model '" + c.Param("model_id") + "' not found",
-				"type":    "invalid_request_error",
-				"param":   "model",
-				"code":    "model_not_found",
-			},
-		})
+		middleware.AbortJSON(c, http.StatusNotFound, middleware.OpenAIErrorPayload("Model '"+c.Param("model_id")+"' not found", "invalid_request_error", "model_not_found", "model"))
 		return
 	}
 	c.JSON(http.StatusOK, modelObject(modelID))

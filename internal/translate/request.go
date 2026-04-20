@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"chatgpt-codex-proxy/internal/codex"
@@ -249,7 +250,7 @@ func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 			})
 		case "web_search", "web_search_preview":
 			result = append(result, codex.Tool{
-				Type:              tool.Type,
+				Type:              "web_search",
 				SearchContextSize: tool.SearchContextSize,
 				UserLocation:      tool.UserLocation,
 			})
@@ -258,51 +259,71 @@ func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 	return result
 }
 
-func normalizeToolChoice(raw json.RawMessage) any {
+func normalizeToolChoice(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return nil
 	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return string(raw)
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil
 	}
-	mapped, _ := decoded.(map[string]any)
-	if len(mapped) == 0 {
-		return decoded
+	var mode string
+	if err := json.Unmarshal(raw, &mode); err == nil {
+		return mustJSONString(mode)
 	}
-	switch strings.TrimSpace(stringValue(mapped["type"])) {
+	var choice struct {
+		Type     string `json:"type"`
+		Name     string `json:"name,omitempty"`
+		Function *struct {
+			Name string `json:"name"`
+		} `json:"function,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil {
+		return append(json.RawMessage(nil), raw...)
+	}
+	switch strings.TrimSpace(choice.Type) {
 	case "function":
-		name := strings.TrimSpace(stringValue(mapped["name"]))
-		if name == "" {
-			if function, _ := mapped["function"].(map[string]any); len(function) > 0 {
-				name = strings.TrimSpace(stringValue(function["name"]))
-			}
+		name := strings.TrimSpace(choice.Name)
+		if name == "" && choice.Function != nil {
+			name = strings.TrimSpace(choice.Function.Name)
 		}
 		if name != "" {
-			return map[string]any{
-				"type": "function",
-				"name": name,
-			}
+			data, _ := json.Marshal(struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			}{
+				Type: "function",
+				Name: name,
+			})
+			return data
 		}
 	case "web_search", "web_search_preview":
-		return map[string]any{"type": "web_search"}
+		data, _ := json.Marshal(struct {
+			Type string `json:"type"`
+		}{
+			Type: "web_search",
+		})
+		return data
 	}
-	return decoded
+	return append(json.RawMessage(nil), raw...)
 }
 
-func normalizeLegacyFunctionChoice(choice *openai.LegacyFunctionCallChoice) any {
+func normalizeLegacyFunctionChoice(choice *openai.LegacyFunctionCallChoice) json.RawMessage {
 	if choice == nil || choice.IsZero() {
 		return nil
 	}
 	switch strings.TrimSpace(choice.Mode) {
 	case "none", "auto":
-		return choice.Mode
+		return mustJSONString(choice.Mode)
 	}
 	if name := strings.TrimSpace(choice.Name); name != "" {
-		return map[string]any{
-			"type": "function",
-			"name": name,
-		}
+		data, _ := json.Marshal(struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{
+			Type: "function",
+			Name: name,
+		})
+		return data
 	}
 	return nil
 }
@@ -383,6 +404,10 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 		}
 	}
 	return out, nil
+}
+
+func mustJSONString(value string) json.RawMessage {
+	return json.RawMessage(strconv.Quote(value))
 }
 
 func flattenContent(content openai.MessageContent) (string, error) {

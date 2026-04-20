@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"chatgpt-codex-proxy/internal/codex"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
@@ -184,6 +183,79 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsTranslationSupportsWebSearchTool(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ChatCompletionsRequest{
+		Model: "codex",
+		Messages: []openai.ChatMessage{{
+			Role:    "user",
+			Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
+		}},
+		Tools: []openai.ToolDefinition{{
+			Type: "web_search",
+		}},
+		ToolChoice: json.RawMessage(`{"type":"web_search"}`),
+	}
+
+	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("ChatCompletions() error = %v", err)
+	}
+
+	if len(normalized.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
+	}
+	if normalized.Tools[0].Type != "web_search" {
+		t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
+	}
+	if string(normalized.ToolChoice) != `{"type":"web_search"}` {
+		t.Fatalf("tool choice = %s, want web_search", string(normalized.ToolChoice))
+	}
+}
+
+func TestChatCompletionsTranslationSupportsWebSearchPreviewAlias(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ChatCompletionsRequest{
+		Model: "codex",
+		Messages: []openai.ChatMessage{{
+			Role:    "user",
+			Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
+		}},
+		Tools: []openai.ToolDefinition{{
+			Type:              "web_search_preview",
+			SearchContextSize: "high",
+			UserLocation: map[string]any{
+				"type":    "approximate",
+				"country": "US",
+			},
+		}},
+		ToolChoice: json.RawMessage(`{"type":"web_search_preview"}`),
+	}
+
+	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("ChatCompletions() error = %v", err)
+	}
+
+	if len(normalized.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
+	}
+	if normalized.Tools[0].Type != "web_search" {
+		t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
+	}
+	if normalized.Tools[0].SearchContextSize != "high" {
+		t.Fatalf("search_context_size = %q, want high", normalized.Tools[0].SearchContextSize)
+	}
+	if country := normalized.Tools[0].UserLocation["country"]; country != "US" {
+		t.Fatalf("user_location.country = %#v, want US", country)
+	}
+	if string(normalized.ToolChoice) != `{"type":"web_search"}` {
+		t.Fatalf("tool choice = %s, want web_search", string(normalized.ToolChoice))
+	}
+}
+
 func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	t.Parallel()
 
@@ -217,8 +289,8 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	if len(normalized.Input) != 2 {
 		t.Fatalf("input len = %d, want 2", len(normalized.Input))
 	}
-	parts, ok := normalized.Input[0].Content.([]codex.ContentPart)
-	if !ok || len(parts) != 1 {
+	parts := normalized.Input[0].Content
+	if len(parts) != 1 {
 		t.Fatalf("assistant replay content = %#v", normalized.Input[0].Content)
 	}
 	if parts[0].Type != "output_text" {
@@ -254,8 +326,8 @@ func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 	if len(normalized.Input) != 1 {
 		t.Fatalf("input len = %d, want 1", len(normalized.Input))
 	}
-	parts, ok := normalized.Input[0].Content.([]codex.ContentPart)
-	if !ok || len(parts) != 2 {
+	parts := normalized.Input[0].Content
+	if len(parts) != 2 {
 		t.Fatalf("file input content = %#v", normalized.Input[0].Content)
 	}
 	if parts[1].Type != "input_file" {
@@ -310,12 +382,8 @@ func TestChatCompletionsTranslationAcceptsLegacyFunctionsAndChoice(t *testing.T)
 	if normalized.Tools[0].Name != "lookup_weather" {
 		t.Fatalf("tool name = %q, want lookup_weather", normalized.Tools[0].Name)
 	}
-	choice, ok := normalized.ToolChoice.(map[string]any)
-	if !ok {
-		t.Fatalf("tool choice = %#v", normalized.ToolChoice)
-	}
-	if choice["type"] != "function" || choice["name"] != "lookup_weather" {
-		t.Fatalf("tool choice = %#v", choice)
+	if string(normalized.ToolChoice) != `{"type":"function","name":"lookup_weather"}` {
+		t.Fatalf("tool choice = %s", string(normalized.ToolChoice))
 	}
 }
 
@@ -361,12 +429,8 @@ func TestChatCompletionsTranslationPrefersModernToolsAndToolChoice(t *testing.T)
 	if normalized.Tools[0].Name != "modern_tool" {
 		t.Fatalf("tool name = %q, want modern_tool", normalized.Tools[0].Name)
 	}
-	choice, ok := normalized.ToolChoice.(map[string]any)
-	if !ok {
-		t.Fatalf("tool choice = %#v", normalized.ToolChoice)
-	}
-	if choice["name"] != "modern_tool" {
-		t.Fatalf("tool choice name = %#v, want modern_tool", choice["name"])
+	if string(normalized.ToolChoice) != `{"type":"function","name":"modern_tool"}` {
+		t.Fatalf("tool choice = %s", string(normalized.ToolChoice))
 	}
 }
 

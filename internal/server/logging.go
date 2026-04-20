@@ -14,17 +14,13 @@ func (a *App) logUpstreamRequestFailure(c *gin.Context, endpoint, accountID stri
 		return
 	}
 
-	attrs := []any{
-		"request_id", middleware.GetRequestID(c),
-		"path", c.Request.URL.Path,
-		"endpoint", endpoint,
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs,
 		"status", status,
 		"error_code", code,
 		"error", logErrorText(err),
-	}
-	if accountID != "" {
-		attrs = append(attrs, "account_id", accountID)
-	}
+	)
+	attrs = appendStringAttr(attrs, "account_id", accountID)
 
 	a.logger.Error("upstream request failed", attrs...)
 }
@@ -34,18 +30,10 @@ func (a *App) logUpstreamStreamFailure(c *gin.Context, endpoint, accountID, resp
 		return
 	}
 
-	attrs := []any{
-		"request_id", middleware.GetRequestID(c),
-		"path", c.Request.URL.Path,
-		"endpoint", endpoint,
-		"error", logErrorText(err),
-	}
-	if accountID != "" {
-		attrs = append(attrs, "account_id", accountID)
-	}
-	if responseID != "" {
-		attrs = append(attrs, "response_id", responseID)
-	}
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs, "error", logErrorText(err))
+	attrs = appendStringAttr(attrs, "account_id", accountID)
+	attrs = appendStringAttr(attrs, "response_id", responseID)
 
 	a.logger.Error("upstream stream failed", attrs...)
 }
@@ -63,14 +51,9 @@ func (a *App) logCompatibilityWarnings(c *gin.Context, endpoint string, warnings
 	}
 
 	for _, warning := range warnings {
-		a.logger.Warn("request compatibility warning",
-			"request_id", middleware.GetRequestID(c),
-			"path", c.Request.URL.Path,
-			"endpoint", endpoint,
-			"field", warning.Field,
-			"behavior", warning.Behavior,
-			"detail", warning.Detail,
-		)
+		attrs := contextLogAttrs(c, endpoint)
+		attrs = append(attrs, "field", warning.Field, "behavior", warning.Behavior, "detail", warning.Detail)
+		a.logger.Warn("request compatibility warning", attrs...)
 	}
 }
 
@@ -79,14 +62,23 @@ func (a *App) logTupleReconversionWarning(c *gin.Context, endpoint, responseID s
 		return
 	}
 
-	attrs := []any{
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs, "error", logErrorText(err))
+	attrs = appendStringAttr(attrs, "response_id", responseID)
+	a.logger.Warn("tuple reconversion failed", attrs...)
+}
+
+func contextLogAttrs(c *gin.Context, endpoint string) []any {
+	return []any{
 		"request_id", middleware.GetRequestID(c),
 		"path", c.Request.URL.Path,
 		"endpoint", endpoint,
-		"error", logErrorText(err),
 	}
-	if responseID != "" {
-		attrs = append(attrs, "response_id", responseID)
+}
+
+func appendStringAttr(attrs []any, key, value string) []any {
+	if value == "" {
+		return attrs
 	}
-	a.logger.Warn("tuple reconversion failed", attrs...)
+	return append(attrs, key, value)
 }

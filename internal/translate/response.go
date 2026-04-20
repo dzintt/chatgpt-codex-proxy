@@ -265,14 +265,14 @@ func ResponseEventJSON(eventType string, responseID string, payload map[string]a
 	return data
 }
 
-func usageObject(usage *codex.Usage) any {
+func usageObject(usage *codex.Usage) *UsageSummary {
 	if usage == nil {
 		return nil
 	}
-	return map[string]any{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-		"total_tokens":  usage.InputTokens + usage.OutputTokens,
+	return &UsageSummary{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.InputTokens + usage.OutputTokens,
 	}
 }
 

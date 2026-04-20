@@ -27,22 +27,20 @@ type eventStream interface {
 func (a *App) handleChatCompletions(c *gin.Context) {
 	var req openai.ChatCompletionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
+		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
 
 	normalized, err := translate.ChatCompletions(req, a.cfg.DefaultModel)
 	if err != nil {
-		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
+		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
 	a.logCompatibilityWarnings(c, "chat_completions", normalized.CompatibilityWarnings)
 
 	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
-		status, code, message := a.classifyUpstreamError(account.ID, err)
-		a.logUpstreamRequestFailure(c, "chat_completions", account.ID, status, code, err)
-		a.writeOpenAIError(c, status, code, message, "api_error")
+		a.respondOpenAIUpstreamRequestError(c, "chat_completions", account.ID, err)
 		return
 	}
 	defer stream.Close()
@@ -57,9 +55,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 
 	accumulator, err := a.collectEvents(account, normalized, stream)
 	if err != nil {
-		status, code, message := a.classifyUpstreamError(account.ID, err)
-		a.logUpstreamStreamFailure(c, "chat_completions", account.ID, "", err)
-		a.writeOpenAIError(c, status, code, message, "api_error")
+		a.respondOpenAIUpstreamStreamError(c, "chat_completions", account.ID, "", err)
 		return
 	}
 	response := accumulator.ChatCompletionObject()
@@ -72,13 +68,13 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 func (a *App) handleResponses(c *gin.Context) {
 	var req openai.ResponsesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
+		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
 
 	normalized, err := translate.Responses(req, a.cfg.DefaultModel)
 	if err != nil {
-		a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
+		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
 	a.logCompatibilityWarnings(c, "responses", normalized.CompatibilityWarnings)
@@ -101,9 +97,7 @@ func (a *App) handleResponses(c *gin.Context) {
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
 		accountID := firstString(account.ID, preferredID)
-		status, code, message := a.classifyUpstreamError(accountID, err)
-		a.logUpstreamRequestFailure(c, "responses", accountID, status, code, err)
-		a.writeOpenAIError(c, status, code, message, "api_error")
+		a.respondOpenAIUpstreamRequestError(c, "responses", accountID, err)
 		return
 	}
 	defer stream.Close()
@@ -118,9 +112,7 @@ func (a *App) handleResponses(c *gin.Context) {
 
 	accumulator, err := a.collectEvents(account, normalized, stream)
 	if err != nil {
-		status, code, message := a.classifyUpstreamError(account.ID, err)
-		a.logUpstreamStreamFailure(c, "responses", account.ID, "", err)
-		a.writeOpenAIError(c, status, code, message, "api_error")
+		a.respondOpenAIUpstreamStreamError(c, "responses", account.ID, "", err)
 		return
 	}
 	response := accumulator.ResponsesObject()
@@ -138,7 +130,7 @@ func (a *App) openStream(ctx context.Context, normalized translate.NormalizedReq
 }
 
 func (a *App) openHTTPStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	account, err := a.accountMgr.AcquireReady(ctx, preferredID)
+	account, err := a.acquireReadyAccount(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
@@ -151,7 +143,7 @@ func (a *App) openHTTPStream(ctx context.Context, normalized translate.Normalize
 }
 
 func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	account, err := a.accountMgr.AcquireReady(ctx, preferredID)
+	account, err := a.acquireReadyAccount(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
@@ -195,10 +187,7 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 }
 
 func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) {
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Status(http.StatusOK)
+	prepareStreamResponse(c)
 
 	accumulator := translate.NewAccumulator(normalized)
 	toolCallIndex := make(map[string]int)
@@ -214,15 +203,11 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			if err == io.EOF {
 				break
 			}
-			a.logUpstreamStreamFailure(c, "chat_completions", account.ID, accumulator.ResponseID, err)
-			writeSSE(c.Writer, "", translate.MustJSON(gin.H{"error": err.Error()}))
-			c.Writer.Flush()
+			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
 			return
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.logUpstreamStreamFailure(c, "chat_completions", account.ID, accumulator.ResponseID, upstreamErr)
-			writeSSE(c.Writer, "", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
-			c.Writer.Flush()
+			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
@@ -274,10 +259,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 }
 
 func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) {
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Status(http.StatusOK)
+	prepareStreamResponse(c)
 
 	accumulator := translate.NewAccumulator(normalized)
 	var tupleTextBuffer strings.Builder
@@ -287,15 +269,11 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 			if err == io.EOF {
 				break
 			}
-			a.logUpstreamStreamFailure(c, "responses", account.ID, accumulator.ResponseID, err)
-			writeSSE(c.Writer, "error", translate.MustJSON(gin.H{"error": err.Error()}))
-			c.Writer.Flush()
+			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
 			return
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.logUpstreamStreamFailure(c, "responses", account.ID, accumulator.ResponseID, upstreamErr)
-			writeSSE(c.Writer, "error", translate.MustJSON(gin.H{"error": upstreamErr.Error()}))
-			c.Writer.Flush()
+			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
@@ -446,10 +424,10 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 		response["status"] = "completed"
 	}
 	if accumulator.Usage != nil {
-		response["usage"] = map[string]any{
-			"input_tokens":  accumulator.Usage.InputTokens,
-			"output_tokens": accumulator.Usage.OutputTokens,
-			"total_tokens":  accumulator.Usage.InputTokens + accumulator.Usage.OutputTokens,
+		response["usage"] = translate.UsageSummary{
+			InputTokens:  accumulator.Usage.InputTokens,
+			OutputTokens: accumulator.Usage.OutputTokens,
+			TotalTokens:  accumulator.Usage.InputTokens + accumulator.Usage.OutputTokens,
 		}
 	}
 	payload["response"] = response
@@ -592,4 +570,37 @@ func deserializeContinuationInput(items []map[string]any) []codex.InputItem {
 		return nil
 	}
 	return decoded
+}
+
+func prepareStreamResponse(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Status(http.StatusOK)
+}
+
+func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
+	a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
+}
+
+func (a *App) respondOpenAIUpstreamRequestError(c *gin.Context, endpoint, accountID string, err error) {
+	status, code, message := a.classifyUpstreamError(accountID, err)
+	a.logUpstreamRequestFailure(c, endpoint, accountID, status, code, err)
+	a.writeOpenAIError(c, status, code, message, "api_error")
+}
+
+func (a *App) respondOpenAIUpstreamStreamError(c *gin.Context, endpoint, accountID, responseID string, err error) {
+	status, code, message := a.classifyUpstreamError(accountID, err)
+	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
+	a.writeOpenAIError(c, status, code, message, "api_error")
+}
+
+func (a *App) respondStreamError(c *gin.Context, endpoint, accountID, responseID, eventName string, err error) {
+	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
+	writeSSE(c.Writer, eventName, translate.MustJSON(gin.H{"error": err.Error()}))
+	c.Writer.Flush()
+}
+
+func (a *App) acquireReadyAccount(ctx context.Context, preferredID string) (accounts.Record, error) {
+	return a.accountMgr.AcquireReady(ctx, preferredID)
 }
