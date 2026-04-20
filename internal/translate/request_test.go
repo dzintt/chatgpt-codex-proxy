@@ -183,76 +183,84 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsTranslationSupportsWebSearchTool(t *testing.T) {
+func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 	t.Parallel()
 
-	request := openai.ChatCompletionsRequest{
-		Model: "codex",
-		Messages: []openai.ChatMessage{{
-			Role:    "user",
-			Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
-		}},
-		Tools: []openai.ToolDefinition{{
-			Type: "web_search",
-		}},
-		ToolChoice: json.RawMessage(`{"type":"web_search"}`),
-	}
-
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
-	if err != nil {
-		t.Fatalf("ChatCompletions() error = %v", err)
-	}
-
-	if len(normalized.Tools) != 1 {
-		t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
-	}
-	if normalized.Tools[0].Type != "web_search" {
-		t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
-	}
-	if string(normalized.ToolChoice) != `{"type":"web_search"}` {
-		t.Fatalf("tool choice = %s, want web_search", string(normalized.ToolChoice))
-	}
-}
-
-func TestChatCompletionsTranslationSupportsWebSearchPreviewAlias(t *testing.T) {
-	t.Parallel()
-
-	request := openai.ChatCompletionsRequest{
-		Model: "codex",
-		Messages: []openai.ChatMessage{{
-			Role:    "user",
-			Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
-		}},
-		Tools: []openai.ToolDefinition{{
-			Type:              "web_search_preview",
-			SearchContextSize: "high",
-			UserLocation: map[string]any{
-				"type":    "approximate",
-				"country": "US",
+	tests := []struct {
+		name       string
+		tool       openai.ToolDefinition
+		toolChoice json.RawMessage
+		assertTool func(*testing.T, openai.ToolDefinition, NormalizedRequest)
+	}{
+		{
+			name: "native web_search tool",
+			tool: openai.ToolDefinition{
+				Type: "web_search",
 			},
-		}},
-		ToolChoice: json.RawMessage(`{"type":"web_search_preview"}`),
+			toolChoice: json.RawMessage(`{"type":"web_search"}`),
+			assertTool: func(t *testing.T, _ openai.ToolDefinition, normalized NormalizedRequest) {
+				t.Helper()
+
+				if normalized.Tools[0].Type != "web_search" {
+					t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
+				}
+			},
+		},
+		{
+			name: "web_search_preview alias",
+			tool: openai.ToolDefinition{
+				Type:              "web_search_preview",
+				SearchContextSize: "high",
+				UserLocation: map[string]any{
+					"type":    "approximate",
+					"country": "US",
+				},
+			},
+			toolChoice: json.RawMessage(`{"type":"web_search_preview"}`),
+			assertTool: func(t *testing.T, _ openai.ToolDefinition, normalized NormalizedRequest) {
+				t.Helper()
+
+				if normalized.Tools[0].Type != "web_search" {
+					t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
+				}
+				if normalized.Tools[0].SearchContextSize != "high" {
+					t.Fatalf("search_context_size = %q, want high", normalized.Tools[0].SearchContextSize)
+				}
+				if country := normalized.Tools[0].UserLocation["country"]; country != "US" {
+					t.Fatalf("user_location.country = %#v, want US", country)
+				}
+			},
+		},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
-	if err != nil {
-		t.Fatalf("ChatCompletions() error = %v", err)
-	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	if len(normalized.Tools) != 1 {
-		t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
-	}
-	if normalized.Tools[0].Type != "web_search" {
-		t.Fatalf("tool type = %q, want web_search", normalized.Tools[0].Type)
-	}
-	if normalized.Tools[0].SearchContextSize != "high" {
-		t.Fatalf("search_context_size = %q, want high", normalized.Tools[0].SearchContextSize)
-	}
-	if country := normalized.Tools[0].UserLocation["country"]; country != "US" {
-		t.Fatalf("user_location.country = %#v, want US", country)
-	}
-	if string(normalized.ToolChoice) != `{"type":"web_search"}` {
-		t.Fatalf("tool choice = %s, want web_search", string(normalized.ToolChoice))
+			request := openai.ChatCompletionsRequest{
+				Model: "codex",
+				Messages: []openai.ChatMessage{{
+					Role:    "user",
+					Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
+				}},
+				Tools:      []openai.ToolDefinition{tc.tool},
+				ToolChoice: tc.toolChoice,
+			}
+
+			normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+			if err != nil {
+				t.Fatalf("ChatCompletions() error = %v", err)
+			}
+
+			if len(normalized.Tools) != 1 {
+				t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
+			}
+			tc.assertTool(t, tc.tool, normalized)
+			if string(normalized.ToolChoice) != `{"type":"web_search"}` {
+				t.Fatalf("tool choice = %s, want web_search", string(normalized.ToolChoice))
+			}
+		})
 	}
 }
 
