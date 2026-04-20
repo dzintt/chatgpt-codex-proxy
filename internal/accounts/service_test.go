@@ -431,6 +431,68 @@ func TestObserveQuotaUsesFallbackBlockWhenLimitReachedWithoutReset(t *testing.T)
 	}
 }
 
+func TestExpiredFallbackBlockWithoutResetDoesNotReinstallFromSameSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	expired := now.Add(-time.Minute)
+	usedPercent := 100.0
+	svc, err := NewService(&memoryStore{state: State{
+		Records: []*Record{
+			{
+				ID:        "acct_fallback_once",
+				AccountID: "upstream_fallback_once",
+				Status:    StatusActive,
+				CachedQuota: &QuotaSnapshot{
+					FetchedAt: now,
+					RateLimit: RateLimitWindow{
+						Allowed:      true,
+						LimitReached: true,
+						UsedPercent:  &usedPercent,
+					},
+				},
+				BlockState: BlockState{
+					Reason:     BlockQuotaPrimary,
+					Until:      &expired,
+					ObservedAt: &now,
+				},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}}, RotationLeastUsed, ServiceOptions{QuotaFallback: 5 * time.Minute})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	record, ok := svc.Get("acct_fallback_once")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.BlockState.Reason != BlockNone {
+		t.Fatalf("block_reason after expiry = %q, want none", record.BlockState.Reason)
+	}
+	if record.BlockState.ObservedAt == nil || !record.BlockState.ObservedAt.Equal(now) {
+		t.Fatalf("observed_at = %v, want %v to remember the consumed snapshot", record.BlockState.ObservedAt, now)
+	}
+
+	acquired, err := svc.Acquire("")
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if acquired.ID != "acct_fallback_once" {
+		t.Fatalf("Acquire() = %q, want acct_fallback_once", acquired.ID)
+	}
+
+	record, ok = svc.Get("acct_fallback_once")
+	if !ok {
+		t.Fatal("Get(second) returned false")
+	}
+	if record.BlockState.Reason != BlockNone {
+		t.Fatalf("block_reason after reacquire = %q, want none", record.BlockState.Reason)
+	}
+}
+
 func TestPatchActiveClearsTransientBlock(t *testing.T) {
 	t.Parallel()
 

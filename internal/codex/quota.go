@@ -12,7 +12,7 @@ func ParseQuotaFromHeaders(headers http.Header) *accounts.QuotaSnapshot {
 	primary := parseRateWindow(headers, "x-codex-primary")
 	secondary := parseRateWindow(headers, "x-codex-secondary")
 	credits := parseCredits(headers, "x-codex")
-	if primary == nil && secondary == nil && credits == nil {
+	if primary == nil && secondary == nil {
 		return nil
 	}
 	snapshot := &accounts.QuotaSnapshot{

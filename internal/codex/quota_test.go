@@ -42,6 +42,21 @@ func TestParseQuotaFromHeadersIncludesSecondaryAndCredits(t *testing.T) {
 	}
 }
 
+func TestParseQuotaFromHeadersIgnoresCreditsOnly(t *testing.T) {
+	t.Parallel()
+
+	headers := http.Header{}
+	headers.Set("X-Codex-Credits-Has-Credits", "true")
+	headers.Set("X-Codex-Credits-Unlimited", "false")
+	headers.Set("X-Codex-Credits-Balance", "19.5")
+	headers.Set("X-Codex-Active-Limit", "plus")
+
+	snapshot := ParseQuotaFromHeaders(headers)
+	if snapshot != nil {
+		t.Fatalf("ParseQuotaFromHeaders() = %#v, want nil for credits-only headers", snapshot)
+	}
+}
+
 func TestParseQuotaFromEvent(t *testing.T) {
 	t.Parallel()
 

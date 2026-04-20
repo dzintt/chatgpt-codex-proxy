@@ -650,6 +650,9 @@ func (s *Service) syncBlockFromQuotaLocked(record *Record, now time.Time) bool {
 		return false
 	}
 	if reason, until := activeBlockFromQuota(record.CachedQuota, now); reason != BlockNone {
+		if until == nil && fallbackBlockAlreadyConsumed(record) {
+			return false
+		}
 		if record.BlockState.Reason == reason &&
 			timesEqual(record.BlockState.Until, until) &&
 			strings.TrimSpace(record.BlockState.Message) == strings.TrimSpace(record.LastError) {
@@ -691,7 +694,11 @@ func (s *Service) clearExpiredBlockLocked(record *Record, now time.Time) bool {
 	if now.Before(*record.BlockState.Until) {
 		return false
 	}
-	record.BlockState = BlockState{Reason: BlockNone}
+	observedAt := cloneTime(record.BlockState.ObservedAt)
+	record.BlockState = BlockState{
+		Reason:     BlockNone,
+		ObservedAt: observedAt,
+	}
 	return true
 }
 
@@ -835,6 +842,16 @@ func shouldClearBlockFromSnapshot(record *Record) bool {
 		return true
 	}
 	return !record.CachedQuota.FetchedAt.Before(*record.BlockState.ObservedAt)
+}
+
+func fallbackBlockAlreadyConsumed(record *Record) bool {
+	if record == nil || record.CachedQuota == nil || record.CachedQuota.FetchedAt.IsZero() {
+		return false
+	}
+	if record.BlockState.Reason != BlockNone || record.BlockState.ObservedAt == nil {
+		return false
+	}
+	return !record.CachedQuota.FetchedAt.After(*record.BlockState.ObservedAt)
 }
 
 func blockUntilFromQuota(snapshot *QuotaSnapshot, reason BlockReason) *time.Time {
