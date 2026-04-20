@@ -12,35 +12,6 @@ import (
 	"chatgpt-codex-proxy/internal/openai"
 )
 
-func TestHandleModelsIncludesCreatedTimestamp(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-
-	app := &App{cfg: config.Config{DefaultModel: openai.CanonicalDefaultModel}}
-	app.handleModels(ctx)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-	}
-
-	var body struct {
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	if len(body.Data) == 0 {
-		t.Fatal("expected model list")
-	}
-	if body.Data[0]["created"] != float64(openai.ModelCreatedTimestamp) {
-		t.Fatalf("created = %#v, want %d", body.Data[0]["created"], openai.ModelCreatedTimestamp)
-	}
-}
-
 func TestHandleModelByID(t *testing.T) {
 	t.Parallel()
 

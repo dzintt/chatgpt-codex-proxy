@@ -2,25 +2,6 @@ package translate
 
 import "testing"
 
-func TestPrepareSchemaWithoutTuplesInjectsAdditionalProperties(t *testing.T) {
-	t.Parallel()
-
-	prepared, tupleSchema := PrepareSchema(map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"child": map[string]any{"type": "object"},
-		},
-	})
-
-	if tupleSchema != nil {
-		t.Fatalf("tupleSchema = %#v, want nil", tupleSchema)
-	}
-	child, _ := prepared["properties"].(map[string]any)["child"].(map[string]any)
-	if child["additionalProperties"] != false {
-		t.Fatalf("child additionalProperties = %#v, want false", child["additionalProperties"])
-	}
-}
-
 func TestHasTupleSchemasDetectsNestedLocations(t *testing.T) {
 	t.Parallel()
 

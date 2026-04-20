@@ -5,11 +5,20 @@ import "time"
 type Status string
 
 const (
-	StatusActive         Status = "active"
-	StatusDisabled       Status = "disabled"
-	StatusExpired        Status = "expired"
-	StatusRateLimited    Status = "rate_limited"
-	StatusQuotaExhausted Status = "quota_exhausted"
+	StatusActive   Status = "active"
+	StatusDisabled Status = "disabled"
+	StatusExpired  Status = "expired"
+	StatusBanned   Status = "banned"
+)
+
+type BlockReason string
+
+const (
+	BlockNone           BlockReason = "none"
+	BlockRateLimit      BlockReason = "rate_limit"
+	BlockQuotaPrimary   BlockReason = "quota_primary"
+	BlockQuotaSecondary BlockReason = "quota_secondary"
+	BlockCodeReview     BlockReason = "code_review"
 )
 
 type OAuthToken struct {
@@ -26,24 +35,48 @@ type RateLimitWindow struct {
 	LimitWindowSeconds *int       `json:"limit_window_seconds,omitempty"`
 }
 
+type CreditsSnapshot struct {
+	HasCredits bool     `json:"has_credits"`
+	Unlimited  bool     `json:"unlimited"`
+	Balance    *float64 `json:"balance,omitempty"`
+	ActiveLimit string  `json:"active_limit,omitempty"`
+}
+
 type QuotaSnapshot struct {
-	PlanType           string           `json:"plan_type"`
-	RateLimit          RateLimitWindow  `json:"rate_limit"`
-	SecondaryRateLimit *RateLimitWindow `json:"secondary_rate_limit,omitempty"`
-	Source             string           `json:"source"`
-	FetchedAt          time.Time        `json:"fetched_at"`
+	PlanType            string           `json:"plan_type"`
+	RateLimit           RateLimitWindow  `json:"rate_limit"`
+	SecondaryRateLimit  *RateLimitWindow `json:"secondary_rate_limit,omitempty"`
+	CodeReviewRateLimit *RateLimitWindow `json:"code_review_rate_limit,omitempty"`
+	Credits             *CreditsSnapshot `json:"credits,omitempty"`
+	Source              string           `json:"source"`
+	FetchedAt           time.Time        `json:"fetched_at"`
+}
+
+type BlockState struct {
+	Reason     BlockReason `json:"reason"`
+	Until      *time.Time  `json:"until,omitempty"`
+	ObservedAt *time.Time  `json:"observed_at,omitempty"`
+	Message    string      `json:"message,omitempty"`
 }
 
 type LocalUsage struct {
-	InputTokens  int64      `json:"input_tokens"`
-	OutputTokens int64      `json:"output_tokens"`
-	RequestCount int64      `json:"request_count"`
-	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	InputTokens           int64      `json:"input_tokens"`
+	OutputTokens          int64      `json:"output_tokens"`
+	RequestCount          int64      `json:"request_count"`
+	EmptyResponseCount    int64      `json:"empty_response_count"`
+	LastUsedAt            *time.Time `json:"last_used_at,omitempty"`
+	WindowResetAt         *time.Time `json:"window_reset_at,omitempty"`
+	LimitWindowSeconds    *int       `json:"limit_window_seconds,omitempty"`
+	WindowRequestCount    int64      `json:"window_request_count"`
+	WindowInputTokens     int64      `json:"window_input_tokens"`
+	WindowOutputTokens    int64      `json:"window_output_tokens"`
+	WindowCountersResetAt *time.Time `json:"window_counters_reset_at,omitempty"`
 }
 
 type Record struct {
 	ID          string            `json:"id"`
 	AccountID   string            `json:"account_id"`
+	UserID      string            `json:"user_id,omitempty"`
 	Email       string            `json:"email,omitempty"`
 	PlanType    string            `json:"plan_type,omitempty"`
 	Label       string            `json:"label,omitempty"`
@@ -52,6 +85,7 @@ type Record struct {
 	Token       OAuthToken        `json:"token"`
 	Cookies     map[string]string `json:"cookies,omitempty"`
 	CachedQuota *QuotaSnapshot    `json:"cached_quota,omitempty"`
+	BlockState  BlockState        `json:"block_state"`
 	LocalUsage  LocalUsage        `json:"local_usage"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`

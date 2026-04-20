@@ -65,7 +65,11 @@ func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (Usag
 		return UsageResponse{}, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return UsageResponse{}, nil, fmt.Errorf("codex usage failed: %s", payload)
+		return UsageResponse{}, nil, &UpstreamError{
+			Op:         "codex usage",
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(payload),
+		}
 	}
 
 	var decoded UsageResponse
@@ -109,7 +113,11 @@ func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record,
 	if streamResp.StatusCode < 200 || streamResp.StatusCode >= 300 {
 		data, _ := io.ReadAll(streamResp)
 		streamResp.Close()
-		return nil, fmt.Errorf("codex response failed (%d): %s", streamResp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, &UpstreamError{
+			Op:         "codex response",
+			StatusCode: streamResp.StatusCode,
+			Body:       strings.TrimSpace(string(data)),
+		}
 	}
 
 	return &StreamReader{

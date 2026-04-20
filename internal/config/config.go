@@ -26,6 +26,10 @@ const (
 	defaultUsageCacheTTLSeconds  = 20
 	defaultContinuationTTLMinute = 60
 	defaultRequestTimeoutSecond  = 120
+	defaultUsageSnapshotMinutes  = 5
+	defaultHistoryRetentionDays  = 7
+	defaultRateLimitFallbackSec  = 60
+	defaultQuotaFallbackSec      = 300
 )
 
 type Config struct {
@@ -45,6 +49,10 @@ type Config struct {
 	ContinuationTTL       time.Duration
 	RequestTimeout        time.Duration
 	RefreshSkew           time.Duration
+	UsageSnapshotInterval time.Duration
+	UsageHistoryRetention time.Duration
+	RateLimitFallback     time.Duration
+	QuotaFallback         time.Duration
 	LogLevel              slogLevel
 	UserAgentTemplate     string
 	ChromiumVersion       string
@@ -86,6 +94,10 @@ func Load() (Config, error) {
 		ContinuationTTL:       time.Duration(envInt("CONTINUATION_TTL_MINUTES", defaultContinuationTTLMinute)) * time.Minute,
 		RequestTimeout:        time.Duration(envInt("REQUEST_TIMEOUT_SECONDS", defaultRequestTimeoutSecond)) * time.Second,
 		RefreshSkew:           60 * time.Second,
+		UsageSnapshotInterval: time.Duration(envInt("USAGE_SNAPSHOT_INTERVAL_MINUTES", defaultUsageSnapshotMinutes)) * time.Minute,
+		UsageHistoryRetention: time.Duration(envInt("USAGE_HISTORY_RETENTION_DAYS", defaultHistoryRetentionDays)) * 24 * time.Hour,
+		RateLimitFallback:     time.Duration(envInt("RATE_LIMIT_FALLBACK_SECONDS", defaultRateLimitFallbackSec)) * time.Second,
+		QuotaFallback:         time.Duration(envInt("QUOTA_FALLBACK_BLOCK_SECONDS", defaultQuotaFallbackSec)) * time.Second,
 		LogLevel:              slogLevel(strings.ToLower(envOr("LOG_LEVEL", "info"))),
 		UserAgentTemplate:     envOr("USER_AGENT_TEMPLATE", "Codex Desktop/26.409.61251 ({platform}; {arch})"),
 		ChromiumVersion:       envOr("CHROMIUM_VERSION", "144"),
@@ -118,6 +130,9 @@ func Load() (Config, error) {
 
 	if cfg.ProxyAPIKey == "" {
 		return Config{}, fmt.Errorf("PROXY_API_KEY must be set")
+	}
+	if raw := strings.TrimSpace(os.Getenv("USAGE_SNAPSHOT_INTERVAL_MINUTES")); raw != "" && cfg.UsageSnapshotInterval <= 0 {
+		return Config{}, fmt.Errorf("USAGE_SNAPSHOT_INTERVAL_MINUTES must be a positive integer")
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {

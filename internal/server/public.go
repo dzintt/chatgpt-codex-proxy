@@ -24,6 +24,8 @@ type eventStream interface {
 	Headers() http.Header
 }
 
+var errIncompleteResponse = errors.New("upstream stream ended before response.completed")
+
 func (a *App) handleChatCompletions(c *gin.Context) {
 	var req openai.ChatCompletionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -40,13 +42,11 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 
 	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
-		a.respondOpenAIUpstreamRequestError(c, "chat_completions", account.ID, err)
+		a.handleOpenStreamError(c, "chat_completions", account.ID, account.ID, err)
 		return
 	}
 	defer stream.Close()
-	if quota != nil {
-		_ = a.accounts.UpdateQuota(account.ID, quota)
-	}
+	a.observeQuotaSnapshot(account.ID, quota)
 
 	if normalized.Stream {
 		a.streamChatCompletion(c, account, normalized, stream)
@@ -96,14 +96,12 @@ func (a *App) handleResponses(c *gin.Context) {
 	}
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
-		accountID := firstString(account.ID, preferredID)
-		a.respondOpenAIUpstreamRequestError(c, "responses", accountID, err)
+		reportedAccountID := firstString(account.ID, preferredID)
+		a.handleOpenStreamError(c, "responses", account.ID, reportedAccountID, err)
 		return
 	}
 	defer stream.Close()
-	if quota != nil {
-		_ = a.accounts.UpdateQuota(account.ID, quota)
-	}
+	a.observeQuotaSnapshot(account.ID, quota)
 
 	if normalized.Stream {
 		a.streamResponses(c, account, normalized, stream)
@@ -165,6 +163,7 @@ func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedR
 
 func (a *App) collectEvents(account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) (*translate.Accumulator, error) {
 	accumulator := translate.NewAccumulator(normalized)
+	completed := false
 	for {
 		event, err := stream.NextEvent()
 		if err != nil {
@@ -173,15 +172,23 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 			}
 			return nil, err
 		}
+		if a.observeQuotaEvent(account, event) {
+			continue
+		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
 			return nil, upstreamErr
 		}
 		accumulator.Apply(event)
+		if event.Type == "response.completed" {
+			completed = true
+		}
 	}
 
-	if accumulator.Usage != nil {
-		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
+	if !completed {
+		return nil, errIncompleteResponse
 	}
+
+	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	return accumulator, nil
 }
@@ -194,6 +201,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	toolCallSawDelta := make(map[string]bool)
 	nextToolCallIndex := 0
 	var tupleTextBuffer strings.Builder
+	completed := false
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk("", normalized.Model, map[string]any{"role": "assistant"}, "")))
 	c.Writer.Flush()
 
@@ -201,16 +209,26 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		event, err := stream.NextEvent()
 		if err != nil {
 			if err == io.EOF {
+				if !completed {
+					a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", errIncompleteResponse)
+					return
+				}
 				break
 			}
 			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
 			return
+		}
+		if a.observeQuotaEvent(account, event) {
+			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
 			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
+		if event.Type == "response.completed" {
+			completed = true
+		}
 		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallSawDelta, &nextToolCallIndex); emitted {
 			c.Writer.Flush()
 			continue
@@ -248,9 +266,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		}
 	}
 
-	if accumulator.Usage != nil {
-		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
-	}
+	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
@@ -263,20 +279,31 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 
 	accumulator := translate.NewAccumulator(normalized)
 	var tupleTextBuffer strings.Builder
+	completed := false
 	for {
 		event, err := stream.NextEvent()
 		if err != nil {
 			if err == io.EOF {
+				if !completed {
+					a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", errIncompleteResponse)
+					return
+				}
 				break
 			}
 			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
 			return
+		}
+		if a.observeQuotaEvent(account, event) {
+			continue
 		}
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
 			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
 			return
 		}
 		accumulator.Apply(event)
+		if event.Type == "response.completed" {
+			completed = true
+		}
 		if normalized.TupleSchema != nil {
 			switch event.Type {
 			case "response.output_text.delta":
@@ -313,9 +340,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		c.Writer.Flush()
 	}
 
-	if accumulator.Usage != nil {
-		_ = a.accounts.RecordUsage(account.ID, accumulator.Usage.InputTokens, accumulator.Usage.OutputTokens)
-	}
+	a.recordAttemptUsage(account.ID, accumulator, completed, completed)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
@@ -579,6 +604,68 @@ func prepareStreamResponse(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+func (a *App) observeQuotaSnapshot(accountID string, quota *accounts.QuotaSnapshot) {
+	if quota == nil || strings.TrimSpace(accountID) == "" {
+		return
+	}
+	if err := a.accounts.ObserveQuota(accountID, quota); err != nil {
+		a.logger.Warn("persist quota snapshot failed", "account_id", accountID, "error", err.Error())
+	}
+}
+
+func (a *App) observeQuotaEvent(account accounts.Record, event *codex.StreamEvent) bool {
+	if event == nil || event.Type != "codex.rate_limits" {
+		return false
+	}
+	quota := codex.ParseQuotaFromEvent(event, firstString(account.PlanType, "unknown"))
+	a.observeQuotaSnapshot(account.ID, quota)
+	return true
+}
+
+func (a *App) recordAttemptUsage(accountID string, accumulator *translate.Accumulator, countRequest bool, completed bool) {
+	if strings.TrimSpace(accountID) == "" || accumulator == nil || !countRequest {
+		return
+	}
+
+	var inputTokens int64
+	var outputTokens int64
+	if accumulator.Usage != nil {
+		inputTokens = accumulator.Usage.InputTokens
+		outputTokens = accumulator.Usage.OutputTokens
+	}
+
+	if err := a.accounts.RecordUsage(accountID, inputTokens, outputTokens); err != nil {
+		a.logger.Warn("record usage failed", "account_id", accountID, "error", err.Error())
+	}
+	if completed && isEmptySuccessfulResponse(accumulator) {
+		if err := a.accounts.RecordEmptyResponse(accountID); err != nil {
+			a.logger.Warn("record empty response failed", "account_id", accountID, "error", err.Error())
+		}
+	}
+}
+
+func (a *App) recordRateLimitedAttempt(accountID string) {
+	if strings.TrimSpace(accountID) == "" {
+		return
+	}
+	if err := a.accounts.RecordUsage(accountID, 0, 0); err != nil {
+		a.logger.Warn("record rate-limited attempt failed", "account_id", accountID, "error", err.Error())
+	}
+}
+
+func isEmptySuccessfulResponse(accumulator *translate.Accumulator) bool {
+	if accumulator == nil {
+		return false
+	}
+	if strings.TrimSpace(accumulator.Text()) != "" {
+		return false
+	}
+	if len(accumulator.ToolCalls) > 0 {
+		return false
+	}
+	return len(accumulator.Output) == 0
+}
+
 func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
 	a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
 }
@@ -586,6 +673,13 @@ func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
 func (a *App) respondOpenAIUpstreamRequestError(c *gin.Context, endpoint, accountID string, err error) {
 	status, code, message := a.classifyUpstreamError(accountID, err)
 	a.logUpstreamRequestFailure(c, endpoint, accountID, status, code, err)
+	a.writeOpenAIError(c, status, code, message, "api_error")
+}
+
+func (a *App) handleOpenStreamError(c *gin.Context, endpoint, actualAccountID, reportedAccountID string, err error) {
+	status, code, message := a.classifyUpstreamError(strings.TrimSpace(actualAccountID), err)
+	logAccountID := firstString(actualAccountID, reportedAccountID)
+	a.logUpstreamRequestFailure(c, endpoint, logAccountID, status, code, err)
 	a.writeOpenAIError(c, status, code, message, "api_error")
 }
 

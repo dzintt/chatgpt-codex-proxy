@@ -2,7 +2,9 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -76,11 +78,18 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"account_id":    record.ID,
-		"status":        record.Status,
-		"cached_quota":  quota,
-		"local_usage":   record.LocalUsage,
-		"oauth_expires": record.Token.ExpiresAt,
+		"account_id":          record.ID,
+		"upstream_account_id": record.AccountID,
+		"user_id":             record.UserID,
+		"status":              record.Status,
+		"block_state":         record.BlockState,
+		"cached_quota":        record.CachedQuota,
+		"quota_runtime":       quota,
+		"quota_source":        quotaSource(quota),
+		"quota_fetched_at":    quotaFetchedAt(quota),
+		"local_usage":         record.LocalUsage,
+		"last_error":          record.LastError,
+		"oauth_expires":       record.Token.ExpiresAt,
 	})
 }
 
@@ -120,5 +129,64 @@ func (a *App) handleAdminRotationPut(c *gin.Context) {
 }
 
 func (a *App) handleAdminUsageSummary(c *gin.Context) {
-	c.JSON(http.StatusOK, a.accounts.Summary())
+	live := a.accounts.Summary()
+	if a.usageHistory == nil {
+		c.JSON(http.StatusOK, live)
+		return
+	}
+
+	summary, err := a.usageHistory.CumulativeSummary(live)
+	if err != nil {
+		a.logger.Warn("compute cumulative usage summary failed", "error", err.Error())
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
+func (a *App) handleAdminUsageHistory(c *gin.Context) {
+	if a.usageHistory == nil {
+		a.writeAdminError(c, http.StatusServiceUnavailable, "usage_history_unavailable", "usage history store is not configured")
+		return
+	}
+
+	granularity := strings.TrimSpace(c.DefaultQuery("granularity", "hourly"))
+	switch granularity {
+	case "raw", "hourly", "daily":
+	default:
+		a.writeAdminError(c, http.StatusBadRequest, "invalid_granularity", "granularity must be raw, hourly, or daily")
+		return
+	}
+
+	hours := 24
+	if raw := strings.TrimSpace(c.Query("hours")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			a.writeAdminError(c, http.StatusBadRequest, "invalid_hours", "hours must be a positive integer")
+			return
+		}
+		if parsed > 24*30 {
+			parsed = 24 * 30
+		}
+		hours = parsed
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"granularity": granularity,
+		"hours":       hours,
+		"points":      a.usageHistory.History(hours, granularity, time.Now().UTC()),
+	})
+}
+
+func quotaSource(snapshot *accounts.QuotaSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.Source
+}
+
+func quotaFetchedAt(snapshot *accounts.QuotaSnapshot) *time.Time {
+	if snapshot == nil || snapshot.FetchedAt.IsZero() {
+		return nil
+	}
+	ts := snapshot.FetchedAt.UTC()
+	return &ts
 }

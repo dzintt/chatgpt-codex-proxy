@@ -112,7 +112,7 @@ func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (
 	if err != nil {
 		return record, nil, err
 	}
-	if err := m.accounts.UpdateQuota(record.ID, quota); err != nil {
+	if err := m.accounts.ObserveQuota(record.ID, quota); err != nil {
 		return record, nil, err
 	}
 	updated, _ := m.accounts.Get(record.ID)

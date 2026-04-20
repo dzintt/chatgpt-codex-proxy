@@ -11,6 +11,7 @@ import (
 type tokenMetadata struct {
 	Email    string
 	PlanType string
+	UserID   string
 }
 
 func metadataFromToken(token OAuthToken) tokenMetadata {
@@ -22,17 +23,24 @@ func metadataFromToken(token OAuthToken) tokenMetadata {
 	metadata := tokenMetadata{
 		Email:    strings.TrimSpace(jsonutil.StringValue(claims["email"])),
 		PlanType: strings.TrimSpace(jsonutil.StringValue(claims["chatgpt_plan_type"])),
+		UserID:   strings.TrimSpace(jsonutil.StringValue(claims["chatgpt_user_id"])),
 	}
 
 	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
 		if metadata.Email == "" {
 			metadata.Email = strings.TrimSpace(jsonutil.StringValue(profile["email"]))
 		}
+		if metadata.UserID == "" {
+			metadata.UserID = strings.TrimSpace(jsonutil.StringValue(profile["chatgpt_user_id"]))
+		}
 	}
 
 	if authPayload, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
 		if metadata.PlanType == "" {
 			metadata.PlanType = strings.TrimSpace(jsonutil.StringValue(authPayload["chatgpt_plan_type"]))
+		}
+		if metadata.UserID == "" {
+			metadata.UserID = strings.TrimSpace(jsonutil.StringValue(authPayload["chatgpt_user_id"]))
 		}
 	}
 

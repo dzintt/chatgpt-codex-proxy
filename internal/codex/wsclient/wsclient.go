@@ -3,7 +3,6 @@ package wsclient
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/textproto"
@@ -30,7 +29,13 @@ func (c *Client) Connect(ctx context.Context, endpoint string, headers http.Head
 	conn, resp, err := dialer.DialContext(ctx, endpoint, headers)
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("websocket dial failed: %s", resp.Status)
+			payload, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, &codex.UpstreamError{
+				Op:         "websocket dial",
+				StatusCode: resp.StatusCode,
+				Body:       strings.TrimSpace(string(payload)),
+			}
 		}
 		return nil, err
 	}

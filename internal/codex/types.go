@@ -96,6 +96,7 @@ type UsageResponse struct {
 		LimitReached  bool         `json:"limit_reached"`
 		PrimaryWindow *UsageWindow `json:"primary_window"`
 	} `json:"code_review_rate_limit"`
+	Credits any `json:"credits"`
 }
 
 type UsageWindow struct {
@@ -115,4 +116,3 @@ type RateWindow struct {
 	LimitWindowSeconds int
 	ResetAt            time.Time
 }
-

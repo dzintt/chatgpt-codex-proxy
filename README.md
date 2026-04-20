@@ -15,7 +15,7 @@ Use it for local or small-scale deployments.
 - Streams upstream events back as OpenAI-style JSON or SSE
 - Manages one or more Codex accounts authenticated through ChatGPT device login
 - Rotates requests across healthy accounts
-- Provides a small admin API for onboarding, quota checks, and rotation control
+- Provides a small admin API for onboarding, quota checks, routing visibility, and usage history
 
 ## What It Supports
 
@@ -33,6 +33,7 @@ Use it for local or small-scale deployments.
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
 - Local JSON persistence for accounts and usage state
+- Automatic recovery when upstream rate-limit or quota reset windows expire
 
 ## What It Does Not Try To Be
 
@@ -246,7 +247,7 @@ Authenticated service health endpoint.
 ### Accounts
 
 - `GET /admin/accounts`
-  List locally known accounts and cached state.
+  List locally known accounts, permanent status, transient availability block state, cached quota, and expanded local usage counters.
 - `DELETE /admin/accounts/:account_id`
   Remove an account from local persistence.
 - `PATCH /admin/accounts/:account_id`
@@ -254,7 +255,7 @@ Authenticated service health endpoint.
 - `POST /admin/accounts/:account_id/refresh`
   Force an OAuth token refresh.
 - `GET /admin/accounts/:account_id/usage`
-  Fetch upstream quota and local usage counters.
+  Fetch the runtime quota view, raw cached quota metadata, and local usage counters for one account.
 
 ### Device login
 
@@ -279,13 +280,23 @@ Valid strategies:
 ### Usage summary
 
 - `GET /admin/usage/summary`
-  Return aggregate local usage counters across all accounts.
+  Return aggregate local usage counters plus account counts by permanent status and transient availability.
+- `GET /admin/usage/history?granularity=raw|hourly|daily&hours=24`
+  Return snapshot-based usage history from `usage-history.json`.
+
+### Status model
+
+- Permanent account status is one of `active`, `disabled`, `expired`, or `banned`.
+- Transient routing availability is tracked separately in `block_state.reason`.
+- Active block reasons are `rate_limit`, `quota_primary`, `quota_secondary`, and `code_review`.
+- Exhausted quota windows are treated as temporary routing blocks. Accounts automatically become eligible again after the cached reset time passes.
 
 ## Persistence
 
 Account state is stored locally in:
 
 - `data/accounts.json`
+- `data/usage-history.json`
 
 That file includes:
 
@@ -295,6 +306,8 @@ That file includes:
 - Cached quota snapshots
 - Local token and request counters
 - Admin labels and status flags
+
+`usage-history.json` stores periodic cumulative usage snapshots plus a baseline accumulator so removing or resetting local account entries does not erase aggregate history.
 
 Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
 
@@ -320,6 +333,10 @@ Supported environment variables:
 - `LOGIN_TIMEOUT_SECONDS`
 - `USAGE_CACHE_TTL_SECONDS`
 - `CONTINUATION_TTL_MINUTES`
+- `USAGE_SNAPSHOT_INTERVAL_MINUTES`
+- `USAGE_HISTORY_RETENTION_DAYS`
+- `RATE_LIMIT_FALLBACK_SECONDS`
+- `QUOTA_FALLBACK_BLOCK_SECONDS`
 
 ### Upstream Codex
 
@@ -360,13 +377,15 @@ Key translation rules:
 ## Account Rotation
 
 - `least_used`
-  Prefer accounts with lower cached quota pressure, then lower request count, then older last-used time.
+  Prefer healthy accounts with lower effective exhaustion rank, earlier known reset windows, lower quota pressure, then lower request count and older last-used time.
 - `round_robin`
   Cycle healthy accounts in order.
 - `sticky`
   Reuse the most recently used healthy account.
 
 Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
+
+Quota observations are updated from upstream response headers, explicit `/codex/usage` fetches, and `codex.rate_limits` stream events. Internal `codex.rate_limits` events are consumed by the proxy and are not forwarded to downstream OpenAI clients.
 
 ## Observability
 
