@@ -50,17 +50,7 @@ Use it for local or small-scale deployments.
 3. That normalized request is translated into the upstream Codex backend shape.
 4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
 
-```mermaid
-flowchart LR
-    A["OpenAI Client<br/>SDK, curl, app"] --> B["chatgpt-codex-proxy"]
-    B --> C["Normalize OpenAI request"]
-    C --> D["Translate into Codex request"]
-    D --> E["Pick a healthy Codex account"]
-    E --> F["Send request to ChatGPT Codex backend"]
-    F --> G["Receive streaming Codex events"]
-    G --> H["Translate events into OpenAI response format"]
-    H --> I["Return JSON or SSE to client"]
-```
+<img width="1533" height="691" alt="image" src="https://github.com/user-attachments/assets/74a9f7d6-5cd1-4d1b-af8b-7edbca3d7b93" />
 
 The proxy talks to:
 
