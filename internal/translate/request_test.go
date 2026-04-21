@@ -490,6 +490,46 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	}
 }
 
+func TestResponsesTranslationCoercesToolOutputTextPartsToOutputText(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model: "gpt-5.4",
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{
+				{
+					Type:   "function_call_output",
+					CallID: "call_1",
+					OutputContent: openai.MessageContent{{
+						Type: "input_text",
+						Text: "tool result",
+					}},
+				},
+				{
+					Type:   "custom_tool_call_output",
+					CallID: "call_2",
+					OutputContent: openai.MessageContent{{
+						Type: "text",
+						Text: "custom result",
+					}},
+				},
+			},
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if normalized.Input[0].OutputContent[0].Type != "output_text" {
+		t.Fatalf("function output part type = %q, want output_text", normalized.Input[0].OutputContent[0].Type)
+	}
+	if normalized.Input[1].OutputContent[0].Type != "output_text" {
+		t.Fatalf("custom output part type = %q, want output_text", normalized.Input[1].OutputContent[0].Type)
+	}
+}
+
 func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 	t.Parallel()
 
