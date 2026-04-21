@@ -34,18 +34,19 @@ type outputItemState struct {
 }
 
 type Accumulator struct {
-	Normalized      NormalizedRequest
-	ResponseID      string
-	Model           string
-	TextBuilder     strings.Builder
-	Usage           *codex.Usage
-	ToolCalls       []*ToolCallState
-	toolCallByID    map[string]*ToolCallState
-	OutputItems     []*outputItemState
-	outputItemByKey map[string]*outputItemState
-	Status          string
-	RawFinal        map[string]any
-	nextOutputIndex int
+	Normalized              NormalizedRequest
+	ResponseID              string
+	Model                   string
+	TextBuilder             strings.Builder
+	ReasoningSummaryBuilder strings.Builder
+	Usage                   *codex.Usage
+	ToolCalls               []*ToolCallState
+	toolCallByID            map[string]*ToolCallState
+	OutputItems             []*outputItemState
+	outputItemByKey         map[string]*outputItemState
+	Status                  string
+	RawFinal                map[string]any
+	nextOutputIndex         int
 }
 
 func NewAccumulator(normalized NormalizedRequest) *Accumulator {
@@ -87,6 +88,10 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	case "response.output_text.delta":
 		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
 			a.TextBuilder.WriteString(delta)
+		}
+	case "response.reasoning_summary_text.delta":
+		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
+			a.ReasoningSummaryBuilder.WriteString(delta)
 		}
 	case "response.output_text.done":
 		if a.TextBuilder.Len() == 0 {
@@ -157,6 +162,13 @@ func (a *Accumulator) Text() string {
 
 func (a *Accumulator) IsCompleted() bool {
 	return a != nil && a.RawFinal != nil
+}
+
+func (a *Accumulator) ReasoningSummary() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.ReasoningSummaryBuilder.String())
 }
 
 func (a *Accumulator) ResponsesStreamEventsForEvent(event *codex.StreamEvent) ([]ResponseStreamEvent, bool) {
@@ -274,6 +286,11 @@ func (a *Accumulator) ChatCompletionObject() map[string]any {
 		"role":    "assistant",
 		"content": a.Text(),
 	}
+	if a.Normalized.Reasoning != nil {
+		if summary := a.ReasoningSummary(); summary != "" {
+			message["reasoning_content"] = summary
+		}
+	}
 	if toolCalls := a.chatCompletionToolCalls(); len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
@@ -282,7 +299,7 @@ func (a *Accumulator) ChatCompletionObject() map[string]any {
 		"object":  "chat.completion",
 		"model":   jsonutil.FirstNonEmpty(a.Model, a.Normalized.Model),
 		"choices": []map[string]any{{"index": 0, "message": message, "finish_reason": finishReason(a)}},
-		"usage":   usageObject(a.Usage),
+		"usage":   a.ChatUsageObject(),
 	}
 }
 
@@ -296,7 +313,7 @@ func (a *Accumulator) ResponsesObject() map[string]any {
 		"status":      jsonutil.FirstNonEmpty(a.Status, "completed"),
 		"output":      output,
 		"output_text": text,
-		"usage":       usageObject(a.Usage),
+		"usage":       a.ResponsesUsageObject(),
 	}
 }
 
@@ -396,6 +413,14 @@ func ChatChunk(responseID, model string, delta map[string]any, finishReason stri
 	}
 }
 
+func ChatChunkWithUsage(responseID, model string, delta map[string]any, finishReason string, usage map[string]any) map[string]any {
+	chunk := ChatChunk(responseID, model, delta, finishReason)
+	if usage != nil {
+		chunk["usage"] = usage
+	}
+	return chunk
+}
+
 func ResponseEventJSON(eventType string, responseID string, payload map[string]any) []byte {
 	eventPayload := make(map[string]any, len(payload)+2)
 	for key, value := range payload {
@@ -409,15 +434,46 @@ func ResponseEventJSON(eventType string, responseID string, payload map[string]a
 	return data
 }
 
-func usageObject(usage *codex.Usage) *UsageSummary {
+func (a *Accumulator) ChatUsageObject() map[string]any {
+	return usageObject(
+		a.Usage,
+		"prompt_tokens",
+		"completion_tokens",
+		"prompt_tokens_details",
+		"completion_tokens_details",
+	)
+}
+
+func (a *Accumulator) ResponsesUsageObject() map[string]any {
+	return usageObject(
+		a.Usage,
+		"input_tokens",
+		"output_tokens",
+		"input_tokens_details",
+		"output_tokens_details",
+	)
+}
+
+func usageObject(usage *codex.Usage, inputKey, outputKey, inputDetailsKey, outputDetailsKey string) map[string]any {
 	if usage == nil {
 		return nil
 	}
-	return &UsageSummary{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	result := map[string]any{
+		inputKey:       usage.InputTokens,
+		outputKey:      usage.OutputTokens,
+		"total_tokens": usage.InputTokens + usage.OutputTokens,
 	}
+	if usage.CachedTokens != nil {
+		result[inputDetailsKey] = map[string]any{
+			"cached_tokens": *usage.CachedTokens,
+		}
+	}
+	if usage.ReasoningTokens != nil {
+		result[outputDetailsKey] = map[string]any{
+			"reasoning_tokens": *usage.ReasoningTokens,
+		}
+	}
+	return result
 }
 
 func finishReason(a *Accumulator) string {
@@ -661,10 +717,19 @@ func usageFromRaw(value any) *codex.Usage {
 	}
 	switch mapped := value.(type) {
 	case map[string]any:
+		cachedTokens := optionalInt64Value(mapped["cached_tokens"])
+		if details := jsonutil.MapValue(mapped, "input_tokens_details"); details != nil {
+			cachedTokens = firstInt64Ptr(cachedTokens, optionalInt64Value(details["cached_tokens"]))
+		}
+		reasoningTokens := optionalInt64Value(mapped["reasoning_tokens"])
+		if details := jsonutil.MapValue(mapped, "output_tokens_details"); details != nil {
+			reasoningTokens = firstInt64Ptr(reasoningTokens, optionalInt64Value(details["reasoning_tokens"]))
+		}
 		return &codex.Usage{
-			InputTokens:  int64(numberValue(mapped["input_tokens"])),
-			OutputTokens: int64(numberValue(mapped["output_tokens"])),
-			CachedTokens: int64(numberValue(mapped["cached_tokens"])),
+			InputTokens:     int64(numberValue(mapped["input_tokens"])),
+			OutputTokens:    int64(numberValue(mapped["output_tokens"])),
+			CachedTokens:    cachedTokens,
+			ReasoningTokens: reasoningTokens,
 		}
 	case codex.Usage:
 		cloned := mapped
@@ -710,6 +775,43 @@ func intValue(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func optionalInt64Value(value any) *int64 {
+	switch typed := value.(type) {
+	case int:
+		number := int64(typed)
+		return &number
+	case int32:
+		number := int64(typed)
+		return &number
+	case int64:
+		number := typed
+		return &number
+	case float64:
+		number := int64(typed)
+		return &number
+	case json.Number:
+		number, err := typed.Int64()
+		if err == nil {
+			return &number
+		}
+	case string:
+		parsed, err := json.Number(strings.TrimSpace(typed)).Int64()
+		if err == nil {
+			return &parsed
+		}
+	}
+	return nil
+}
+
+func firstInt64Ptr(values ...*int64) *int64 {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func firstMap(values ...map[string]any) map[string]any {

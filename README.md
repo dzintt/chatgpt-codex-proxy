@@ -30,6 +30,8 @@ Use it for local or small-scale deployments.
 - Structured outputs
 - Text and image inputs on Chat Completions
 - Text, image, and file inputs on Responses
+- Chat Completions reasoning summaries via `reasoning_content`
+- Responses reasoning-item replay, including `encrypted_content`
 - Supported public model IDs: `gpt-5.4`, `gpt-5.2-codex`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
@@ -234,11 +236,13 @@ Supported behavior:
 - Hosted web search passthrough
 - Structured outputs via `response_format.type = "json_schema"` and `response_format.type = "json_object"`
 - Reasoning effort
+- Reasoning summaries surfaced as `reasoning_content` when the client requested reasoning via `reasoning_effort`
 - Text and image input parts
 
 Compatibility notes:
 
 - Legacy requests are normalized onto the modern tool-calling response shape; responses still use `tool_calls` rather than the older assistant `function_call` field.
+- Chat usage is returned in OpenAI Chat Completions shape: `prompt_tokens`, `completion_tokens`, `total_tokens`, plus token-detail objects when known.
 - The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are logged as compatibility warnings when present.
 
 ### `POST /v1/responses`
@@ -251,11 +255,13 @@ Supported behavior:
 - Tools, including the modern Responses API function tool shape
 - Structured outputs
 - Text, image, and file inputs
+- Reasoning items in `input[]`, including `summary`, `content`, and `encrypted_content`
 - Explicit `previous_response_id` continuation
 - Follow-up turns that replay prior `output_text` items from the OpenAI Responses shape
 
 Compatibility notes:
 
+- Native Responses reasoning summary events are passed through as-is.
 - Structured-output schemas are normalized before they are sent upstream, including tuple-schema handling and stricter object-shape normalization for Codex compatibility.
 - Known unsupported fields are logged as compatibility warnings when present.
 
@@ -401,6 +407,7 @@ Key translation rules:
 - Assistant tool calls become upstream `function_call` items
 - Tool outputs become upstream `function_call_output` items
 - Text, image, and file content are mapped to `input_text`, `input_image`, and `input_file`
+- Responses reasoning items are preserved and can be replayed on later turns
 - Responses API assistant replay content such as `output_text` is accepted for stateless continuation reconstruction
 - Function tools are accepted in both Chat Completions-style nested form and the modern Responses API top-level form
 - Unsupported content types return `400` instead of being dropped silently

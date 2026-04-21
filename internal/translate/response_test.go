@@ -1,6 +1,10 @@
 package translate
 
-import "testing"
+import (
+	"testing"
+
+	"chatgpt-codex-proxy/internal/codex"
+)
 
 func TestResponsesObjectIncludesFunctionCalls(t *testing.T) {
 	t.Parallel()
@@ -195,5 +199,163 @@ func TestResponsesObjectPreservesToolCallOrderByOutputIndex(t *testing.T) {
 	}
 	if output[1]["call_id"] != "call_late" {
 		t.Fatalf("output[1].call_id = %#v, want call_late", output[1]["call_id"])
+	}
+}
+
+func TestChatCompletionObjectIncludesReasoningContentAndStrictUsage(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint:  EndpointChat,
+		Model:     "gpt-5.4",
+		Reasoning: &codex.Reasoning{Effort: "high"},
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.reasoning_summary_text.delta",
+		Raw: map[string]any{
+			"delta": "Reasoning summary",
+		},
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.completed",
+		Raw: map[string]any{
+			"response": map[string]any{
+				"id":          "resp_reasoning",
+				"model":       "gpt-5.4",
+				"status":      "completed",
+				"output_text": "Final answer",
+				"usage": map[string]any{
+					"input_tokens":  12,
+					"output_tokens": 7,
+					"input_tokens_details": map[string]any{
+						"cached_tokens": 5,
+					},
+					"output_tokens_details": map[string]any{
+						"reasoning_tokens": 3,
+					},
+				},
+			},
+		},
+	})
+
+	response := accumulator.ChatCompletionObject()
+	choices, _ := response["choices"].([]map[string]any)
+	message, _ := choices[0]["message"].(map[string]any)
+	if message["reasoning_content"] != "Reasoning summary" {
+		t.Fatalf("message.reasoning_content = %#v, want reasoning summary", message["reasoning_content"])
+	}
+	usage, _ := response["usage"].(map[string]any)
+	if usage["prompt_tokens"] != int64(12) {
+		t.Fatalf("prompt_tokens = %#v, want 12", usage["prompt_tokens"])
+	}
+	if usage["completion_tokens"] != int64(7) {
+		t.Fatalf("completion_tokens = %#v, want 7", usage["completion_tokens"])
+	}
+	if usage["total_tokens"] != int64(19) {
+		t.Fatalf("total_tokens = %#v, want 19", usage["total_tokens"])
+	}
+	promptDetails, _ := usage["prompt_tokens_details"].(map[string]any)
+	if promptDetails["cached_tokens"] != int64(5) {
+		t.Fatalf("cached_tokens = %#v, want 5", promptDetails["cached_tokens"])
+	}
+	completionDetails, _ := usage["completion_tokens_details"].(map[string]any)
+	if completionDetails["reasoning_tokens"] != int64(3) {
+		t.Fatalf("reasoning_tokens = %#v, want 3", completionDetails["reasoning_tokens"])
+	}
+}
+
+func TestAccumulatorReasoningSummaryDoesNotUseCompletedOutputFallback(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint:  EndpointChat,
+		Model:     "gpt-5.4",
+		Reasoning: &codex.Reasoning{Effort: "high"},
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.completed",
+		Raw: map[string]any{
+			"response": map[string]any{
+				"id":          "resp_reasoning_fallback",
+				"model":       "gpt-5.4",
+				"status":      "completed",
+				"output_text": "Final answer",
+				"output": []any{
+					map[string]any{
+						"type":   "reasoning",
+						"id":     "rs_1",
+						"status": "completed",
+						"summary": []any{
+							map[string]any{
+								"type": "summary_text",
+								"text": "Recovered summary",
+							},
+						},
+					},
+					map[string]any{
+						"type":   "message",
+						"role":   "assistant",
+						"status": "completed",
+						"content": []any{
+							map[string]any{
+								"type": "output_text",
+								"text": "Final answer",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if summary := accumulator.ReasoningSummary(); summary != "" {
+		t.Fatalf("ReasoningSummary() = %q, want empty without streamed reasoning delta", summary)
+	}
+}
+
+func TestResponsesObjectUsageIncludesDetailFields(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Model:    "gpt-5.4",
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.completed",
+		Raw: map[string]any{
+			"response": map[string]any{
+				"id":          "resp_usage",
+				"model":       "gpt-5.4",
+				"status":      "completed",
+				"output_text": "done",
+				"usage": map[string]any{
+					"input_tokens":  10,
+					"output_tokens": 4,
+					"input_tokens_details": map[string]any{
+						"cached_tokens": 2,
+					},
+					"output_tokens_details": map[string]any{
+						"reasoning_tokens": 1,
+					},
+				},
+			},
+		},
+	})
+
+	response := accumulator.ResponsesObject()
+	usage, _ := response["usage"].(map[string]any)
+	if usage["input_tokens"] != int64(10) {
+		t.Fatalf("input_tokens = %#v, want 10", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != int64(4) {
+		t.Fatalf("output_tokens = %#v, want 4", usage["output_tokens"])
+	}
+	inputDetails, _ := usage["input_tokens_details"].(map[string]any)
+	if inputDetails["cached_tokens"] != int64(2) {
+		t.Fatalf("cached_tokens = %#v, want 2", inputDetails["cached_tokens"])
+	}
+	outputDetails, _ := usage["output_tokens_details"].(map[string]any)
+	if outputDetails["reasoning_tokens"] != int64(1) {
+		t.Fatalf("reasoning_tokens = %#v, want 1", outputDetails["reasoning_tokens"])
 	}
 }

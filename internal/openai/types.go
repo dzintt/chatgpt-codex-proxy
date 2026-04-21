@@ -224,11 +224,20 @@ func (r *ResponsesInput) UnmarshalJSON(data []byte) error {
 }
 
 type ResponsesInputItem struct {
-	Type      string         `json:"type,omitempty"`
-	Role      string         `json:"role,omitempty"`
-	Content   MessageContent `json:"content,omitempty"`
-	CallID    string         `json:"call_id,omitempty"`
-	Output    string         `json:"output,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Arguments string         `json:"arguments,omitempty"`
+	Type             string          `json:"type,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          MessageContent  `json:"content,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Output           string          `json:"output,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Arguments        string          `json:"arguments,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Summary          []ReasoningPart `json:"summary,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+}
+
+type ReasoningPart struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }

@@ -235,6 +235,14 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			continue
 		}
 		switch event.Type {
+		case "response.reasoning_summary_text.delta":
+			if normalized.Reasoning != nil {
+				delta := jsonutil.StringValue(event.Raw["delta"])
+				if delta != "" {
+					writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{"reasoning_content": delta}, "")))
+					c.Writer.Flush()
+				}
+			}
 		case "response.output_text.delta":
 			delta := jsonutil.StringValue(event.Raw["delta"])
 			if delta == "" {
@@ -273,7 +281,9 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	a.accounts.NoteSuccess(account.ID)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
-	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
+	finalResponse := accumulator.ChatCompletionObject()
+	finalUsage, _ := finalResponse["usage"].(map[string]any)
+	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunkWithUsage(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator), finalUsage)))
 	_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
 	c.Writer.Flush()
 }
@@ -462,12 +472,8 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 	if accumulator.Model != "" && strings.TrimSpace(jsonutil.StringValue(response["model"])) == "" {
 		response["model"] = accumulator.Model
 	}
-	if accumulator.Usage != nil {
-		response["usage"] = translate.UsageSummary{
-			InputTokens:  accumulator.Usage.InputTokens,
-			OutputTokens: accumulator.Usage.OutputTokens,
-			TotalTokens:  accumulator.Usage.InputTokens + accumulator.Usage.OutputTokens,
-		}
+	if rebuilt := accumulator.ResponsesUsageObject(); rebuilt != nil {
+		response["usage"] = rebuilt
 	}
 	payload["response"] = response
 	return payload
@@ -625,29 +631,75 @@ func serverIntValue(value any) (int, bool) {
 	}
 }
 
+func responseMapsFromAny(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return append([]map[string]any(nil), typed...)
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]any); ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func continuationInputHistory(accumulator *translate.Accumulator) []accounts.ContinuationInputItem {
-	history := make([]accounts.ContinuationInputItem, 0, len(accumulator.Normalized.Input)+1)
+	history := make([]accounts.ContinuationInputItem, 0, len(accumulator.Normalized.Input))
 	for _, item := range accumulator.Normalized.Input {
 		history = append(history, continuationInputItemFromCodex(item))
 	}
-	if assistant, ok := continuationAssistantTurn(accumulator); ok {
-		history = append(history, assistant)
+	history = append(history, continuationOutputHistory(accumulator)...)
+	return history
+}
+
+func continuationOutputHistory(accumulator *translate.Accumulator) []accounts.ContinuationInputItem {
+	if accumulator == nil {
+		return nil
+	}
+	response := accumulator.ResponsesObject()
+	output, ok := response["output"].([]map[string]any)
+	if !ok || len(output) == 0 {
+		return nil
+	}
+	history := make([]accounts.ContinuationInputItem, 0, len(output))
+	for _, item := range output {
+		converted, ok := continuationInputItemFromResponseOutput(item)
+		if ok {
+			history = append(history, converted)
+		}
 	}
 	return history
 }
 
-func continuationAssistantTurn(accumulator *translate.Accumulator) (accounts.ContinuationInputItem, bool) {
-	text := strings.TrimSpace(accumulator.Text())
-	if text == "" {
+func continuationInputItemFromResponseOutput(item map[string]any) (accounts.ContinuationInputItem, bool) {
+	if len(item) == 0 {
 		return accounts.ContinuationInputItem{}, false
 	}
-	return accounts.ContinuationInputItem{
-		Role: "assistant",
-		Content: []accounts.ContinuationContentPart{{
-			Type: "output_text",
-			Text: text,
-		}},
-	}, true
+	out := continuationInputItemBase(
+		jsonutil.StringValue(item["role"]),
+		jsonutil.StringValue(item["type"]),
+		jsonutil.StringValue(item["call_id"]),
+		jsonutil.StringValue(item["name"]),
+		jsonutil.StringValue(item["arguments"]),
+		jsonutil.StringValue(item["output"]),
+		jsonutil.StringValue(item["id"]),
+		jsonutil.StringValue(item["status"]),
+		jsonutil.StringValue(item["encrypted_content"]),
+	)
+	out.Summary = continuationSummaryPartsFromMaps(responseMapsFromAny(item["summary"]))
+	out.Content = continuationContentPartsFromMaps(responseMapsFromAny(item["content"]))
+	if out.Role == "" && out.Type == "message" {
+		out.Role = "assistant"
+	}
+	if out.Role == "" && out.Type == "" && len(out.Content) == 0 && out.CallID == "" && out.ID == "" {
+		return accounts.ContinuationInputItem{}, false
+	}
+	return out, true
 }
 
 func continuationInputItemsToCodex(items []accounts.ContinuationInputItem) []codex.InputItem {
@@ -662,57 +714,151 @@ func continuationInputItemsToCodex(items []accounts.ContinuationInputItem) []cod
 }
 
 func continuationInputItemFromCodex(item codex.InputItem) accounts.ContinuationInputItem {
-	out := accounts.ContinuationInputItem{
-		Role:      item.Role,
-		Type:      item.Type,
-		CallID:    item.CallID,
-		Name:      item.Name,
-		Arguments: item.Arguments,
-		Output:    item.Output,
-		ID:        item.ID,
-	}
-	if len(item.Content) > 0 {
-		out.Content = make([]accounts.ContinuationContentPart, 0, len(item.Content))
-		for _, part := range item.Content {
-			out.Content = append(out.Content, accounts.ContinuationContentPart{
-				Type:     part.Type,
-				Text:     part.Text,
-				ImageURL: part.ImageURL,
-				Detail:   part.Detail,
-				FileURL:  part.FileURL,
-				FileData: part.FileData,
-				FileID:   part.FileID,
-				Filename: part.Filename,
-			})
-		}
-	}
+	out := continuationInputItemBase(
+		item.Role,
+		item.Type,
+		item.CallID,
+		item.Name,
+		item.Arguments,
+		item.Output,
+		item.ID,
+		item.Status,
+		item.EncryptedContent,
+	)
+	out.Summary = continuationSummaryPartsFromReasoning(item.Summary)
+	out.Content = continuationContentPartsFromCodex(item.Content)
 	return out
 }
 
 func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.InputItem {
 	out := codex.InputItem{
-		Role:      item.Role,
-		Type:      item.Type,
-		CallID:    item.CallID,
-		Name:      item.Name,
-		Arguments: item.Arguments,
-		Output:    item.Output,
-		ID:        item.ID,
+		Role:             item.Role,
+		Type:             item.Type,
+		CallID:           item.CallID,
+		Name:             item.Name,
+		Arguments:        item.Arguments,
+		Output:           item.Output,
+		ID:               item.ID,
+		Status:           item.Status,
+		EncryptedContent: item.EncryptedContent,
 	}
-	if len(item.Content) > 0 {
-		out.Content = make([]codex.ContentPart, 0, len(item.Content))
-		for _, part := range item.Content {
-			out.Content = append(out.Content, codex.ContentPart{
-				Type:     part.Type,
-				Text:     part.Text,
-				ImageURL: part.ImageURL,
-				Detail:   part.Detail,
-				FileURL:  part.FileURL,
-				FileData: part.FileData,
-				FileID:   part.FileID,
-				Filename: part.Filename,
-			})
-		}
+	out.Summary = reasoningPartsFromContinuation(item.Summary)
+	out.Content = codexContentPartsFromContinuation(item.Content)
+	return out
+}
+
+func continuationInputItemBase(role, itemType, callID, name, arguments, output, id, status, encryptedContent string) accounts.ContinuationInputItem {
+	return accounts.ContinuationInputItem{
+		Role:             role,
+		Type:             itemType,
+		CallID:           callID,
+		Name:             name,
+		Arguments:        arguments,
+		Output:           output,
+		ID:               id,
+		Status:           status,
+		EncryptedContent: encryptedContent,
+	}
+}
+
+func continuationSummaryPartsFromMaps(parts []map[string]any) []accounts.ContinuationSummaryPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]accounts.ContinuationSummaryPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, accounts.ContinuationSummaryPart{
+			Type: jsonutil.StringValue(part["type"]),
+			Text: jsonutil.StringValue(part["text"]),
+		})
+	}
+	return out
+}
+
+func continuationSummaryPartsFromReasoning(parts []openai.ReasoningPart) []accounts.ContinuationSummaryPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]accounts.ContinuationSummaryPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, accounts.ContinuationSummaryPart{
+			Type: part.Type,
+			Text: part.Text,
+		})
+	}
+	return out
+}
+
+func reasoningPartsFromContinuation(parts []accounts.ContinuationSummaryPart) []openai.ReasoningPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]openai.ReasoningPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, openai.ReasoningPart{
+			Type: part.Type,
+			Text: part.Text,
+		})
+	}
+	return out
+}
+
+func continuationContentPartsFromMaps(parts []map[string]any) []accounts.ContinuationContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]accounts.ContinuationContentPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, accounts.ContinuationContentPart{
+			Type:     jsonutil.StringValue(part["type"]),
+			Text:     jsonutil.StringValue(part["text"]),
+			ImageURL: jsonutil.StringValue(part["image_url"]),
+			Detail:   jsonutil.StringValue(part["detail"]),
+			FileURL:  jsonutil.StringValue(part["file_url"]),
+			FileData: jsonutil.StringValue(part["file_data"]),
+			FileID:   jsonutil.StringValue(part["file_id"]),
+			Filename: jsonutil.StringValue(part["filename"]),
+		})
+	}
+	return out
+}
+
+func continuationContentPartsFromCodex(parts []codex.ContentPart) []accounts.ContinuationContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]accounts.ContinuationContentPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, accounts.ContinuationContentPart{
+			Type:     part.Type,
+			Text:     part.Text,
+			ImageURL: part.ImageURL,
+			Detail:   part.Detail,
+			FileURL:  part.FileURL,
+			FileData: part.FileData,
+			FileID:   part.FileID,
+			Filename: part.Filename,
+		})
+	}
+	return out
+}
+
+func codexContentPartsFromContinuation(parts []accounts.ContinuationContentPart) []codex.ContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]codex.ContentPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, codex.ContentPart{
+			Type:     part.Type,
+			Text:     part.Text,
+			ImageURL: part.ImageURL,
+			Detail:   part.Detail,
+			FileURL:  part.FileURL,
+			FileData: part.FileData,
+			FileID:   part.FileID,
+			Filename: part.Filename,
+		})
 	}
 	return out
 }

@@ -66,6 +66,9 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning = %#v, want explicit effort override", normalized.Reasoning)
 	}
+	if len(normalized.Include) != 1 || normalized.Include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %#v, want reasoning.encrypted_content only", normalized.Include)
+	}
 	if normalized.Instructions != "System rules\n\nDeveloper rules" {
 		t.Fatalf("instructions = %q", normalized.Instructions)
 	}
@@ -136,6 +139,41 @@ func TestResponsesTranslation(t *testing.T) {
 	}
 	if len(normalized.Input) != 2 {
 		t.Fatalf("input len = %d", len(normalized.Input))
+	}
+	if len(normalized.Include) != 0 {
+		t.Fatalf("include = %#v, want empty when reasoning disabled", normalized.Include)
+	}
+}
+
+func TestResponsesTranslationUsesReasoningObject(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model: "gpt-5.4",
+		Reasoning: &openai.Reasoning{
+			Effort: "high",
+		},
+		Input: openai.ResponsesInput{
+			String: "Think carefully",
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if normalized.Reasoning == nil {
+		t.Fatalf("reasoning = nil, want explicit reasoning object to populate it")
+	}
+	if normalized.Reasoning.Effort != "high" {
+		t.Fatalf("reasoning effort = %q, want high", normalized.Reasoning.Effort)
+	}
+	if normalized.Reasoning.Summary != "auto" {
+		t.Fatalf("reasoning summary = %q, want auto", normalized.Reasoning.Summary)
+	}
+	if len(normalized.Include) != 1 || normalized.Include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %#v, want reasoning.encrypted_content only", normalized.Include)
 	}
 }
 
@@ -343,6 +381,58 @@ func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 	}
 	if parts[1].FileData == "" || parts[1].Filename != "sample.pdf" {
 		t.Fatalf("file part = %#v", parts[1])
+	}
+}
+
+func TestResponsesTranslationAcceptsReasoningItemReplay(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model: "gpt-5.4",
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{{
+				Type:             "reasoning",
+				ID:               "rs_123",
+				Status:           "completed",
+				EncryptedContent: "encrypted-reasoning",
+				Summary: []openai.ReasoningPart{{
+					Type: "summary_text",
+					Text: "Summarized reasoning",
+				}},
+				Content: openai.MessageContent{{
+					Type: "reasoning_text",
+					Text: "Full reasoning text",
+				}},
+			}},
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if len(normalized.Input) != 1 {
+		t.Fatalf("input len = %d, want 1", len(normalized.Input))
+	}
+	item := normalized.Input[0]
+	if item.Type != "reasoning" {
+		t.Fatalf("item.Type = %q, want reasoning", item.Type)
+	}
+	if item.ID != "rs_123" {
+		t.Fatalf("item.ID = %q, want rs_123", item.ID)
+	}
+	if item.Status != "completed" {
+		t.Fatalf("item.Status = %q, want completed", item.Status)
+	}
+	if item.EncryptedContent != "encrypted-reasoning" {
+		t.Fatalf("item.EncryptedContent = %q, want encrypted-reasoning", item.EncryptedContent)
+	}
+	if len(item.Summary) != 1 || item.Summary[0].Text != "Summarized reasoning" {
+		t.Fatalf("item.Summary = %#v", item.Summary)
+	}
+	if len(item.Content) != 1 || item.Content[0].Type != "reasoning_text" {
+		t.Fatalf("item.Content = %#v", item.Content)
 	}
 }
 

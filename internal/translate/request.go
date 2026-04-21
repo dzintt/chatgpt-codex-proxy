@@ -29,7 +29,7 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 		Tools:                 normalizeTools(tools),
 		Reasoning:             reasoning,
 		ServiceTier:           serviceTier,
-		Include:               []string{"reasoning.encrypted_content"},
+		Include:               reasoningInclude(reasoning),
 		CompatibilityWarnings: collectChatCompatibilityWarnings(req),
 	}
 	if len(req.Tools) > 0 {
@@ -115,14 +115,15 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	if err != nil {
 		return NormalizedRequest{}, err
 	}
-	if req.Reasoning != nil && reasoning == nil {
-		reasoning = &codex.Reasoning{
+	if req.Reasoning != nil {
+		explicit := &codex.Reasoning{
 			Effort:  req.Reasoning.Effort,
 			Summary: req.Reasoning.Summary,
 		}
-		if reasoning.Effort != "" && reasoning.Summary == "" {
-			reasoning.Summary = "auto"
+		if explicit.Effort != "" && explicit.Summary == "" {
+			explicit.Summary = "auto"
 		}
+		reasoning = explicit
 	}
 
 	out := NormalizedRequest{
@@ -135,7 +136,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 		Reasoning:             reasoning,
 		ServiceTier:           serviceTier,
 		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
-		Include:               []string{"reasoning.encrypted_content"},
+		Include:               reasoningInclude(reasoning),
 		CompatibilityWarnings: collectResponsesCompatibilityWarnings(req),
 	}
 
@@ -184,6 +185,19 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 				Type:   "function_call_output",
 				CallID: item.CallID,
 				Output: item.Output,
+			})
+		case item.Type == "reasoning":
+			parts, err := normalizeContentPartsChecked(item.Content)
+			if err != nil {
+				return NormalizedRequest{}, err
+			}
+			out.Input = append(out.Input, codex.InputItem{
+				Type:             "reasoning",
+				ID:               strings.TrimSpace(item.ID),
+				Status:           strings.TrimSpace(item.Status),
+				Content:          parts,
+				Summary:          append([]openai.ReasoningPart(nil), item.Summary...),
+				EncryptedContent: strings.TrimSpace(item.EncryptedContent),
 			})
 		default:
 			parts, err := normalizeContentPartsChecked(item.Content)
@@ -364,6 +378,13 @@ func normalizeContentParts(parts openai.MessageContent) []codex.ContentPart {
 	return out
 }
 
+func reasoningInclude(reasoning *codex.Reasoning) []string {
+	if reasoning == nil {
+		return nil
+	}
+	return []string{"reasoning.encrypted_content"}
+}
+
 func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentPart, error) {
 	if len(parts) == 0 {
 		return nil, nil
@@ -371,10 +392,12 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 	out := make([]codex.ContentPart, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
-		case "", "text", "input_text", "output_text":
+		case "", "text", "input_text", "output_text", "reasoning_text":
 			contentType := "input_text"
 			if part.Type == "output_text" {
 				contentType = "output_text"
+			} else if part.Type == "reasoning_text" {
+				contentType = "reasoning_text"
 			}
 			out = append(out, codex.ContentPart{
 				Type: contentType,
@@ -416,7 +439,7 @@ func flattenContent(content openai.MessageContent) (string, error) {
 	var parts []string
 	for _, part := range content {
 		switch part.Type {
-		case "", "text", "input_text", "output_text":
+		case "", "text", "input_text", "output_text", "reasoning_text":
 			if strings.TrimSpace(part.Text) != "" {
 				parts = append(parts, part.Text)
 			}

@@ -34,14 +34,17 @@ type TextConfig struct {
 }
 
 type InputItem struct {
-	Role      string        `json:"role,omitempty"`
-	Type      string        `json:"type,omitempty"`
-	Content   []ContentPart `json:"content,omitempty"`
-	CallID    string        `json:"call_id,omitempty"`
-	Name      string        `json:"name,omitempty"`
-	Arguments string        `json:"arguments,omitempty"`
-	Output    string        `json:"output,omitempty"`
-	ID        string        `json:"id,omitempty"`
+	Role             string                 `json:"role,omitempty"`
+	Type             string                 `json:"type,omitempty"`
+	Content          []ContentPart          `json:"content,omitempty"`
+	CallID           string                 `json:"call_id,omitempty"`
+	Name             string                 `json:"name,omitempty"`
+	Arguments        string                 `json:"arguments,omitempty"`
+	Output           string                 `json:"output,omitempty"`
+	ID               string                 `json:"id,omitempty"`
+	Status           string                 `json:"status,omitempty"`
+	Summary          []openai.ReasoningPart `json:"summary,omitempty"`
+	EncryptedContent string                 `json:"encrypted_content,omitempty"`
 }
 
 type ContentPart struct {
@@ -56,10 +59,10 @@ type ContentPart struct {
 }
 
 type Usage struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	CachedTokens    int64 `json:"cached_tokens,omitempty"`
-	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	CachedTokens    *int64 `json:"cached_tokens,omitempty"`
+	ReasoningTokens *int64 `json:"reasoning_tokens,omitempty"`
 }
 
 type StreamEvent struct {

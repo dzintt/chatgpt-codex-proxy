@@ -60,14 +60,17 @@ type Record struct {
 }
 
 type ContinuationInputItem struct {
-	Role      string                    `json:"role,omitempty"`
-	Type      string                    `json:"type,omitempty"`
-	Content   []ContinuationContentPart `json:"content,omitempty"`
-	CallID    string                    `json:"call_id,omitempty"`
-	Name      string                    `json:"name,omitempty"`
-	Arguments string                    `json:"arguments,omitempty"`
-	Output    string                    `json:"output,omitempty"`
-	ID        string                    `json:"id,omitempty"`
+	Role             string                    `json:"role,omitempty"`
+	Type             string                    `json:"type,omitempty"`
+	Content          []ContinuationContentPart `json:"content,omitempty"`
+	CallID           string                    `json:"call_id,omitempty"`
+	Name             string                    `json:"name,omitempty"`
+	Arguments        string                    `json:"arguments,omitempty"`
+	Output           string                    `json:"output,omitempty"`
+	ID               string                    `json:"id,omitempty"`
+	Status           string                    `json:"status,omitempty"`
+	Summary          []ContinuationSummaryPart `json:"summary,omitempty"`
+	EncryptedContent string                    `json:"encrypted_content,omitempty"`
 }
 
 type ContinuationContentPart struct {
@@ -79,6 +82,11 @@ type ContinuationContentPart struct {
 	FileData string `json:"file_data,omitempty"`
 	FileID   string `json:"file_id,omitempty"`
 	Filename string `json:"filename,omitempty"`
+}
+
+type ContinuationSummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 type ContinuationRecord struct {

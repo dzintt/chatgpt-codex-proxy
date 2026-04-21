@@ -736,6 +736,482 @@ func TestContinuationInputHistoryIncludesAssistantReplay(t *testing.T) {
 	}
 }
 
+func TestStreamChatCompletionEmitsReasoningContentAndStrictUsage(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_chat_reasoning",
+		AccountID: "upstream_chat_reasoning",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_chat_reasoning")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.reasoning_summary_text.delta",
+				Raw: map[string]any{
+					"response_id": "resp_chat_reasoning",
+					"delta":       "Reasoning summary",
+				},
+			},
+			{
+				Type: "response.output_text.delta",
+				Raw: map[string]any{
+					"response_id": "resp_chat_reasoning",
+					"delta":       "Final answer",
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":          "resp_chat_reasoning",
+						"model":       "gpt-5.4",
+						"status":      "completed",
+						"output_text": "Final answer",
+						"usage": map[string]any{
+							"input_tokens":  12,
+							"output_tokens": 5,
+							"input_tokens_details": map[string]any{
+								"cached_tokens": 4,
+							},
+							"output_tokens_details": map[string]any{
+								"reasoning_tokens": 2,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
+		Endpoint:  translate.EndpointChat,
+		Model:     "gpt-5.4",
+		Stream:    true,
+		Reasoning: &codex.Reasoning{Effort: "high"},
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	if len(events) != 5 {
+		t.Fatalf("event count = %d, want 5", len(events))
+	}
+	reasoningDelta := events[1].Data
+	choices := sliceOfMapsFromAny(reasoningDelta["choices"])
+	delta := nestedMapFromAny(choices[0]["delta"])
+	if delta["reasoning_content"] != "Reasoning summary" {
+		t.Fatalf("reasoning_content = %#v, want reasoning summary", delta["reasoning_content"])
+	}
+	finalChunk := events[3].Data
+	usage := nestedMapFromAny(finalChunk["usage"])
+	if usage["prompt_tokens"] != float64(12) {
+		t.Fatalf("prompt_tokens = %#v, want 12", usage["prompt_tokens"])
+	}
+	if usage["completion_tokens"] != float64(5) {
+		t.Fatalf("completion_tokens = %#v, want 5", usage["completion_tokens"])
+	}
+	promptDetails := nestedMapFromAny(usage["prompt_tokens_details"])
+	if promptDetails["cached_tokens"] != float64(4) {
+		t.Fatalf("cached_tokens = %#v, want 4", promptDetails["cached_tokens"])
+	}
+	completionDetails := nestedMapFromAny(usage["completion_tokens_details"])
+	if completionDetails["reasoning_tokens"] != float64(2) {
+		t.Fatalf("reasoning_tokens = %#v, want 2", completionDetails["reasoning_tokens"])
+	}
+}
+
+func TestStreamChatCompletionDoesNotSynthesizeReasoningContentFromCompletedOutput(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_chat_reasoning_fallback",
+		AccountID: "upstream_chat_reasoning_fallback",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_chat_reasoning_fallback")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.output_text.delta",
+				Raw: map[string]any{
+					"response_id": "resp_chat_reasoning_fallback",
+					"delta":       "Final answer",
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":          "resp_chat_reasoning_fallback",
+						"model":       "gpt-5.4",
+						"status":      "completed",
+						"output_text": "Final answer",
+						"output": []any{
+							map[string]any{
+								"type":   "reasoning",
+								"id":     "rs_1",
+								"status": "completed",
+								"summary": []any{
+									map[string]any{
+										"type": "summary_text",
+										"text": "Recovered summary",
+									},
+								},
+							},
+							map[string]any{
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": "Final answer",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
+		Endpoint:  translate.EndpointChat,
+		Model:     "gpt-5.4",
+		Stream:    true,
+		Reasoning: &codex.Reasoning{Effort: "high"},
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	if len(events) != 4 {
+		t.Fatalf("event count = %d, want 4", len(events))
+	}
+	textDelta := events[1].Data
+	choices := sliceOfMapsFromAny(textDelta["choices"])
+	delta := nestedMapFromAny(choices[0]["delta"])
+	if _, ok := delta["reasoning_content"]; ok {
+		t.Fatalf("unexpected synthesized reasoning_content = %#v", delta["reasoning_content"])
+	}
+}
+
+func TestStreamResponsesPreservesReasoningItemsAndEvents(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_responses_reasoning",
+		AccountID: "upstream_responses_reasoning",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_responses_reasoning")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.reasoning_summary_text.delta",
+				Raw: map[string]any{
+					"response_id": "resp_responses_reasoning",
+					"delta":       "Reasoning summary",
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_responses_reasoning",
+						"model":  "gpt-5.4",
+						"status": "completed",
+						"output": []any{
+							map[string]any{
+								"type":              "reasoning",
+								"id":                "rs_1",
+								"status":            "completed",
+								"encrypted_content": "encrypted-reasoning",
+								"summary": []any{
+									map[string]any{
+										"type": "summary_text",
+										"text": "Reasoning summary",
+									},
+								},
+							},
+							map[string]any{
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": "Final answer",
+									},
+								},
+							},
+						},
+						"output_text": "Final answer",
+						"usage": map[string]any{
+							"input_tokens":  8,
+							"output_tokens": 3,
+							"output_tokens_details": map[string]any{
+								"reasoning_tokens": 1,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.reasoning_summary_text.delta",
+		"response.completed",
+		"done",
+	)
+	completed := events[1].Data
+	response := nestedMapFromAny(completed["response"])
+	output := sliceOfMapsFromAny(response["output"])
+	if len(output) != 2 {
+		t.Fatalf("response.output len = %d, want 2", len(output))
+	}
+	if output[0]["type"] != "reasoning" {
+		t.Fatalf("output[0].type = %#v, want reasoning", output[0]["type"])
+	}
+	if output[0]["encrypted_content"] != "encrypted-reasoning" {
+		t.Fatalf("output[0].encrypted_content = %#v, want encrypted-reasoning", output[0]["encrypted_content"])
+	}
+	usage := nestedMapFromAny(response["usage"])
+	outputDetails := nestedMapFromAny(usage["output_tokens_details"])
+	if outputDetails["reasoning_tokens"] != float64(1) {
+		t.Fatalf("reasoning_tokens = %#v, want 1", outputDetails["reasoning_tokens"])
+	}
+}
+
+func TestStreamResponsesDoesNotSynthesizeReasoningSummaryEventFromCompletedOutput(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_responses_reasoning_fallback",
+		AccountID: "upstream_responses_reasoning_fallback",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_responses_reasoning_fallback")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_responses_reasoning_fallback",
+						"model":  "gpt-5.4",
+						"status": "completed",
+						"output": []any{
+							map[string]any{
+								"type":   "reasoning",
+								"id":     "rs_1",
+								"status": "completed",
+								"summary": []any{
+									map[string]any{
+										"type": "summary_text",
+										"text": "Recovered summary",
+									},
+								},
+							},
+							map[string]any{
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": "Final answer",
+									},
+								},
+							},
+						},
+						"output_text": "Final answer",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.completed",
+		"done",
+	)
+}
+
+func TestContinuationInputHistoryIncludesReasoningReplay(t *testing.T) {
+	t.Parallel()
+
+	accumulator := translate.NewAccumulator(translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Input: []codex.InputItem{{
+			Role: "user",
+			Content: []codex.ContentPart{{
+				Type: "input_text",
+				Text: "hello",
+			}},
+		}},
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.completed",
+		Raw: map[string]any{
+			"response": map[string]any{
+				"id":     "resp_continuation_reasoning",
+				"model":  "gpt-5.4",
+				"status": "completed",
+				"output": []any{
+					map[string]any{
+						"type":              "reasoning",
+						"id":                "rs_1",
+						"status":            "completed",
+						"encrypted_content": "encrypted-reasoning",
+						"summary": []any{
+							map[string]any{
+								"type": "summary_text",
+								"text": "Reasoning summary",
+							},
+						},
+					},
+					map[string]any{
+						"type":   "message",
+						"role":   "assistant",
+						"status": "completed",
+						"content": []any{
+							map[string]any{
+								"type": "output_text",
+								"text": "assistant replay",
+							},
+						},
+					},
+				},
+				"output_text": "assistant replay",
+			},
+		},
+	})
+
+	history := continuationInputHistory(accumulator)
+	if len(history) != 3 {
+		t.Fatalf("history len = %d, want 3", len(history))
+	}
+	if history[1].Type != "reasoning" {
+		t.Fatalf("history[1].Type = %q, want reasoning", history[1].Type)
+	}
+	if history[1].EncryptedContent != "encrypted-reasoning" {
+		t.Fatalf("history[1].EncryptedContent = %q, want encrypted-reasoning", history[1].EncryptedContent)
+	}
+	if len(history[1].Summary) != 1 || history[1].Summary[0].Text != "Reasoning summary" {
+		t.Fatalf("history[1].Summary = %#v", history[1].Summary)
+	}
+
+	replayed := continuationInputItemsToCodex(history)
+	if len(replayed) != 3 {
+		t.Fatalf("replayed len = %d, want 3", len(replayed))
+	}
+	if replayed[1].Type != "reasoning" {
+		t.Fatalf("replayed[1].Type = %q, want reasoning", replayed[1].Type)
+	}
+	if replayed[1].EncryptedContent != "encrypted-reasoning" {
+		t.Fatalf("replayed[1].EncryptedContent = %q, want encrypted-reasoning", replayed[1].EncryptedContent)
+	}
+}
+
 func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 	t.Parallel()
 
