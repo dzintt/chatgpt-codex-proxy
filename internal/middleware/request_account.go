@@ -20,25 +20,21 @@ func SetRequestAccount(c *gin.Context, accountID, upstreamAccountID string) {
 }
 
 func GetRequestAccountID(c *gin.Context) string {
-	if c == nil {
-		return ""
-	}
-	value, ok := c.Get(RequestAccountIDKey)
-	if !ok {
-		return ""
-	}
-	accountID, _ := value.(string)
-	return accountID
+	return getContextString(c, RequestAccountIDKey)
 }
 
 func GetRequestUpstreamAccountID(c *gin.Context) string {
+	return getContextString(c, RequestUpstreamAccountIDKey)
+}
+
+func getContextString(c *gin.Context, key string) string {
 	if c == nil {
 		return ""
 	}
-	value, ok := c.Get(RequestUpstreamAccountIDKey)
+	value, ok := c.Get(key)
 	if !ok {
 		return ""
 	}
-	accountID, _ := value.(string)
-	return accountID
+	text, _ := value.(string)
+	return text
 }

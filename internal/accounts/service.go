@@ -347,10 +347,10 @@ func (s *Service) Acquire(preferredID string) (Record, error) {
 		if sticky := s.selectStickyLocked(candidates, now); sticky != nil {
 			return cloneRecord(sticky), nil
 		}
-		record := selectLeastUsed(candidates, now, &s.roundRobinIndex)
+		record := selectLeastUsed(candidates, &s.roundRobinIndex)
 		return cloneRecord(record), nil
 	default:
-		record := selectLeastUsed(candidates, now, &s.roundRobinIndex)
+		record := selectLeastUsed(candidates, &s.roundRobinIndex)
 		return cloneRecord(record), nil
 	}
 }
@@ -478,7 +478,7 @@ func selectRoundRobin(candidates []*Record, index *int) *Record {
 	return selected
 }
 
-func selectLeastUsed(candidates []*Record, now time.Time, index *int) *Record {
+func selectLeastUsed(candidates []*Record, index *int) *Record {
 	withQuota := make([]*Record, 0, len(candidates))
 	for _, candidate := range candidates {
 		if hasUsableQuota(candidate) {

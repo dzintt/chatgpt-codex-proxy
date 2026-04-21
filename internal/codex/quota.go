@@ -263,9 +263,6 @@ func parseFloat(value any) (float64, bool) {
 		return float64(typed), true
 	case int64:
 		return float64(typed), true
-	case jsonNumber:
-		parsed, err := strconv.ParseFloat(string(typed), 64)
-		return parsed, err == nil
 	default:
 		return 0, false
 	}
@@ -279,9 +276,6 @@ func parseInt(value any) (int, bool) {
 		return int(typed), true
 	case float64:
 		return int(typed), true
-	case jsonNumber:
-		parsed, err := strconv.Atoi(string(typed))
-		return parsed, err == nil
 	default:
 		return 0, false
 	}
@@ -307,18 +301,10 @@ func parseUnixTime(value any) (time.Time, bool) {
 		return time.Unix(int64(typed), 0).UTC(), true
 	case float64:
 		return time.Unix(int64(typed), 0).UTC(), true
-	case jsonNumber:
-		parsed, err := strconv.ParseInt(string(typed), 10, 64)
-		if err != nil {
-			return time.Time{}, false
-		}
-		return time.Unix(parsed, 0).UTC(), true
 	default:
 		return time.Time{}, false
 	}
 }
-
-type jsonNumber string
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

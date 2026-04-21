@@ -261,20 +261,14 @@ func primaryQuotaReset(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Ti
 	if snapshot == nil {
 		return nil
 	}
-	return activeWindowReset(&snapshot.RateLimit, now)
+	return firstActiveWindowReset(now, &snapshot.RateLimit)
 }
 
 func quotaResetForCooldown(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Time {
 	if snapshot == nil {
 		return nil
 	}
-	if reset := activeWindowReset(&snapshot.RateLimit, now); reset != nil {
-		return reset
-	}
-	if reset := activeWindowReset(snapshot.SecondaryRateLimit, now); reset != nil {
-		return reset
-	}
-	return nil
+	return firstActiveWindowReset(now, &snapshot.RateLimit, snapshot.SecondaryRateLimit)
 }
 
 func activeWindowReset(window *accounts.RateLimitWindow, now time.Time) *time.Time {
@@ -299,6 +293,15 @@ func activeWindowReset(window *accounts.RateLimitWindow, now time.Time) *time.Ti
 	}
 	ts := window.ResetAt.UTC()
 	return &ts
+}
+
+func firstActiveWindowReset(now time.Time, windows ...*accounts.RateLimitWindow) *time.Time {
+	for _, window := range windows {
+		if reset := activeWindowReset(window, now); reset != nil {
+			return reset
+		}
+	}
+	return nil
 }
 
 func fallbackUntil(now time.Time, duration time.Duration) *time.Time {
