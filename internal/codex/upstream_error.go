@@ -70,30 +70,45 @@ func parseUpstreamErrorBody(body string) (string, int) {
 		return "", 0
 	}
 
-	var payload map[string]any
+	var payload upstreamErrorEnvelope
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		return "", 0
 	}
 
-	nested := payload
-	if rawError, ok := payload["error"].(map[string]any); ok && rawError != nil {
-		nested = rawError
+	nested := upstreamErrorFields{
+		Code:            payload.Code,
+		ResetsInSeconds: payload.ResetsInSeconds,
+		RetryAfter:      payload.RetryAfter,
+		ResetsAt:        payload.ResetsAt,
 	}
-
-	code, _ := nested["code"].(string)
-	if retryAfter, ok := parseRetryAfterValue(nested["resets_in_seconds"]); ok {
-		return strings.TrimSpace(code), retryAfter
-	}
-	if retryAfter, ok := parseRetryAfterValue(nested["retry_after"]); ok {
-		return strings.TrimSpace(code), retryAfter
-	}
-	if resetAt, ok := parseUnixTimestamp(nested["resets_at"]); ok {
-		retryAfter := int(time.Until(resetAt).Seconds())
-		if retryAfter > 0 {
-			return strings.TrimSpace(code), retryAfter
+	if payload.Error != nil {
+		if nested.Code == "" {
+			nested.Code = payload.Error.Code
+		}
+		if nested.ResetsInSeconds == nil {
+			nested.ResetsInSeconds = payload.Error.ResetsInSeconds
+		}
+		if nested.RetryAfter == nil {
+			nested.RetryAfter = payload.Error.RetryAfter
+		}
+		if nested.ResetsAt == nil {
+			nested.ResetsAt = payload.Error.ResetsAt
 		}
 	}
-	return strings.TrimSpace(code), 0
+
+	if retryAfter, ok := parseRetryAfterValue(nested.ResetsInSeconds); ok {
+		return strings.TrimSpace(nested.Code), retryAfter
+	}
+	if retryAfter, ok := parseRetryAfterValue(nested.RetryAfter); ok {
+		return strings.TrimSpace(nested.Code), retryAfter
+	}
+	if resetAt, ok := parseUnixTimestamp(nested.ResetsAt); ok {
+		retryAfter := int(time.Until(resetAt).Seconds())
+		if retryAfter > 0 {
+			return strings.TrimSpace(nested.Code), retryAfter
+		}
+	}
+	return strings.TrimSpace(nested.Code), 0
 }
 
 func parseRetryAfterHeaders(headers http.Header) int {
@@ -114,6 +129,21 @@ func parseRetryAfterHeaders(headers http.Header) int {
 		}
 	}
 	return 0
+}
+
+type upstreamErrorEnvelope struct {
+	Error           *upstreamErrorFields `json:"error"`
+	Code            string               `json:"code"`
+	ResetsInSeconds any                  `json:"resets_in_seconds"`
+	RetryAfter      any                  `json:"retry_after"`
+	ResetsAt        any                  `json:"resets_at"`
+}
+
+type upstreamErrorFields struct {
+	Code            string `json:"code"`
+	ResetsInSeconds any    `json:"resets_in_seconds"`
+	RetryAfter      any    `json:"retry_after"`
+	ResetsAt        any    `json:"resets_at"`
 }
 
 func parseRetryAfterValue(value any) (int, bool) {

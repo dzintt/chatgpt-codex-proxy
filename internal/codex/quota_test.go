@@ -141,11 +141,7 @@ func TestQuotaFromUsageResponseIncludesCodeReviewRateLimit(t *testing.T) {
 		LimitWindowSeconds: 3600,
 		ResetAt:            time.Now().UTC().Add(time.Hour).Unix(),
 	}
-	payload.CodeReviewRateLimit = &struct {
-		Allowed       bool         `json:"allowed"`
-		LimitReached  bool         `json:"limit_reached"`
-		PrimaryWindow *UsageWindow `json:"primary_window"`
-	}{
+	payload.CodeReviewRateLimit = &UsageResponseCodeReviewRateLimit{
 		Allowed:      true,
 		LimitReached: true,
 		PrimaryWindow: &UsageWindow{

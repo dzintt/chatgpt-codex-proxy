@@ -25,8 +25,6 @@ const (
 	defaultLoginTimeoutSeconds   = 900
 	defaultContinuationTTLMinute = 60
 	defaultRequestTimeoutSecond  = 120
-	defaultRateLimitFallbackSec  = 60
-	defaultQuotaFallbackSec      = 300
 )
 
 type Config struct {
@@ -45,8 +43,6 @@ type Config struct {
 	ContinuationTTL       time.Duration
 	RequestTimeout        time.Duration
 	RefreshSkew           time.Duration
-	RateLimitFallback     time.Duration
-	QuotaFallback         time.Duration
 	LogLevel              slogLevel
 	UserAgentTemplate     string
 	ChromiumVersion       string
@@ -95,8 +91,6 @@ func Load() (Config, error) {
 		ContinuationTTL:       time.Duration(defaultContinuationTTLMinute) * time.Minute,
 		RequestTimeout:        time.Duration(defaultRequestTimeoutSecond) * time.Second,
 		RefreshSkew:           60 * time.Second,
-		RateLimitFallback:     time.Duration(defaultRateLimitFallbackSec) * time.Second,
-		QuotaFallback:         time.Duration(defaultQuotaFallbackSec) * time.Second,
 		LogLevel:              slogLevel("info"),
 		UserAgentTemplate:     "Codex Desktop/26.409.61251 ({platform}; {arch})",
 		ChromiumVersion:       "147",

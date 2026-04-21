@@ -3,6 +3,7 @@ package codex
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"chatgpt-codex-proxy/internal/accounts"
@@ -73,8 +74,8 @@ func QuotaFromUsageResponse(payload UsageResponse) *accounts.QuotaSnapshot {
 			}),
 		}
 	}
-	if credits := parseCreditsFromUsage(payload.Credits); credits != nil {
-		snapshot.Credits = credits
+	if payload.Credits != nil {
+		snapshot.Credits = parseCreditsFromUsage(payload.Credits)
 	}
 	return snapshot
 }
@@ -204,27 +205,27 @@ func parseCredits(headers http.Header, prefix string) *accounts.CreditsSnapshot 
 	return credits
 }
 
-func parseCreditsFromUsage(value any) *accounts.CreditsSnapshot {
-	raw, _ := value.(map[string]any)
-	if raw == nil {
+func parseCreditsFromUsage(value *UsageResponseCredits) *accounts.CreditsSnapshot {
+	if value == nil {
 		return nil
 	}
 	hasAny := false
 	credits := &accounts.CreditsSnapshot{}
-	if parsed, ok := parseBool(raw["has_credits"]); ok {
-		credits.HasCredits = parsed
+	if value.HasCredits != nil {
+		credits.HasCredits = *value.HasCredits
 		hasAny = true
 	}
-	if parsed, ok := parseBool(raw["unlimited"]); ok {
-		credits.Unlimited = parsed
+	if value.Unlimited != nil {
+		credits.Unlimited = *value.Unlimited
 		hasAny = true
 	}
-	if parsed, ok := parseFloat(raw["balance"]); ok {
-		credits.Balance = &parsed
+	if value.Balance != nil {
+		balance := *value.Balance
+		credits.Balance = &balance
 		hasAny = true
 	}
-	if parsed, ok := raw["active_limit"].(string); ok && parsed != "" {
-		credits.ActiveLimit = parsed
+	if value.ActiveLimit != nil && strings.TrimSpace(*value.ActiveLimit) != "" {
+		credits.ActiveLimit = strings.TrimSpace(*value.ActiveLimit)
 		hasAny = true
 	}
 	if !hasAny {

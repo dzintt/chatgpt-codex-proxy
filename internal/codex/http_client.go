@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +11,8 @@ import (
 	"net/textproto"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	httpcloak "github.com/sardanioss/httpcloak/client"
 
@@ -26,6 +26,8 @@ type HTTPClient struct {
 	mu       sync.Mutex
 	sessions map[string]*httpcloak.Client
 }
+
+var requestSequence uint64
 
 func NewHTTPClient(cfg config.Config) *HTTPClient {
 	return &HTTPClient{
@@ -211,12 +213,5 @@ func JoinURL(base, path string) string {
 }
 
 func NewRequestID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "00000000-0000-4000-8000-000000000000"
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40
-	buf[8] = (buf[8] & 0x3f) | 0x80
-	hexValue := hex.EncodeToString(buf)
-	return fmt.Sprintf("%s-%s-%s-%s-%s", hexValue[0:8], hexValue[8:12], hexValue[12:16], hexValue[16:20], hexValue[20:32])
+	return fmt.Sprintf("req_%d_%08x", time.Now().UTC().UnixNano(), atomic.AddUint64(&requestSequence, 1))
 }

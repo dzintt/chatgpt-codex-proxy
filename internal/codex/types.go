@@ -10,6 +10,9 @@ import (
 type Reasoning = openai.Reasoning
 type TextFormat = openai.ResponsesTextFormat
 
+// Tool shares the OpenAI tool definition schema.
+type Tool = openai.ToolDefinition
+
 type Request struct {
 	Model              string          `json:"model"`
 	Instructions       string          `json:"instructions,omitempty"`
@@ -28,16 +31,6 @@ type Request struct {
 
 type TextConfig struct {
 	Format TextFormat `json:"format"`
-}
-
-type Tool struct {
-	Type              string         `json:"type"`
-	Name              string         `json:"name,omitempty"`
-	Description       string         `json:"description,omitempty"`
-	Parameters        map[string]any `json:"parameters,omitempty"`
-	Strict            bool           `json:"strict,omitempty"`
-	SearchContextSize string         `json:"search_context_size,omitempty"`
-	UserLocation      map[string]any `json:"user_location,omitempty"`
 }
 
 type InputItem struct {
@@ -74,29 +67,31 @@ type StreamEvent struct {
 	Raw  map[string]any
 }
 
-type ResponseEnvelope struct {
-	ID     string           `json:"id"`
-	Object string           `json:"object"`
-	Model  string           `json:"model"`
-	Output []map[string]any `json:"output,omitempty"`
-	Usage  *Usage           `json:"usage,omitempty"`
-	Status string           `json:"status,omitempty"`
+type UsageResponseRateLimit struct {
+	Allowed         bool         `json:"allowed"`
+	LimitReached    bool         `json:"limit_reached"`
+	PrimaryWindow   *UsageWindow `json:"primary_window"`
+	SecondaryWindow *UsageWindow `json:"secondary_window,omitempty"`
+}
+
+type UsageResponseCodeReviewRateLimit struct {
+	Allowed       bool         `json:"allowed"`
+	LimitReached  bool         `json:"limit_reached"`
+	PrimaryWindow *UsageWindow `json:"primary_window"`
+}
+
+type UsageResponseCredits struct {
+	HasCredits  *bool    `json:"has_credits,omitempty"`
+	Unlimited   *bool    `json:"unlimited,omitempty"`
+	Balance     *float64 `json:"balance,omitempty"`
+	ActiveLimit *string  `json:"active_limit,omitempty"`
 }
 
 type UsageResponse struct {
-	PlanType  string `json:"plan_type"`
-	RateLimit struct {
-		Allowed         bool         `json:"allowed"`
-		LimitReached    bool         `json:"limit_reached"`
-		PrimaryWindow   *UsageWindow `json:"primary_window"`
-		SecondaryWindow *UsageWindow `json:"secondary_window"`
-	} `json:"rate_limit"`
-	CodeReviewRateLimit *struct {
-		Allowed       bool         `json:"allowed"`
-		LimitReached  bool         `json:"limit_reached"`
-		PrimaryWindow *UsageWindow `json:"primary_window"`
-	} `json:"code_review_rate_limit"`
-	Credits any `json:"credits"`
+	PlanType            string                            `json:"plan_type"`
+	RateLimit           UsageResponseRateLimit            `json:"rate_limit"`
+	CodeReviewRateLimit *UsageResponseCodeReviewRateLimit `json:"code_review_rate_limit,omitempty"`
+	Credits             *UsageResponseCredits             `json:"credits,omitempty"`
 }
 
 type UsageWindow struct {
@@ -104,11 +99,6 @@ type UsageWindow struct {
 	LimitWindowSeconds int     `json:"limit_window_seconds"`
 	ResetAfterSeconds  int     `json:"reset_after_seconds"`
 	ResetAt            int64   `json:"reset_at"`
-}
-
-type ParsedRateLimits struct {
-	Primary   *RateWindow
-	Secondary *RateWindow
 }
 
 type RateWindow struct {

@@ -48,7 +48,7 @@ func TestGetUsageCachedBypassesEnsureReady(t *testing.T) {
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
 		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	}}, accounts.RotationLeastUsed)
 	if err != nil {
 		t.Fatalf("accounts.NewService() error = %v", err)
 	}

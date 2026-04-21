@@ -59,6 +59,28 @@ type Record struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
+type ContinuationInputItem struct {
+	Role      string                    `json:"role,omitempty"`
+	Type      string                    `json:"type,omitempty"`
+	Content   []ContinuationContentPart `json:"content,omitempty"`
+	CallID    string                    `json:"call_id,omitempty"`
+	Name      string                    `json:"name,omitempty"`
+	Arguments string                    `json:"arguments,omitempty"`
+	Output    string                    `json:"output,omitempty"`
+	ID        string                    `json:"id,omitempty"`
+}
+
+type ContinuationContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	FileURL  string `json:"file_url,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
 type ContinuationRecord struct {
 	ResponseID   string
 	AccountID    string
@@ -66,7 +88,7 @@ type ContinuationRecord struct {
 	TurnState    string
 	Instructions string
 	Model        string
-	InputHistory []map[string]any
+	InputHistory []ContinuationInputItem
 	ExpiresAt    time.Time
 }
 

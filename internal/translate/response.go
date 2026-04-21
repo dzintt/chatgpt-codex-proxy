@@ -60,14 +60,14 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	if event == nil {
 		return
 	}
-	if response := nestedMap(event.Raw, "response"); response != nil {
-		if id := stringValue(response["id"]); id != "" {
+	if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
+		if id := jsonutil.StringValue(response["id"]); id != "" {
 			a.ResponseID = id
 		}
-		if model := stringValue(response["model"]); model != "" {
+		if model := jsonutil.StringValue(response["model"]); model != "" {
 			a.Model = model
 		}
-		if status := stringValue(response["status"]); status != "" {
+		if status := jsonutil.StringValue(response["status"]); status != "" {
 			a.Status = status
 		}
 		if usage := usageFromRaw(response["usage"]); usage != nil {
@@ -77,47 +77,47 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 			a.replaceOutputItems(output)
 		}
 	}
-	if id := stringValue(event.Raw["response_id"]); id != "" && a.ResponseID == "" {
+	if id := jsonutil.StringValue(event.Raw["response_id"]); id != "" && a.ResponseID == "" {
 		a.ResponseID = id
 	}
-	if model := stringValue(event.Raw["model"]); model != "" && a.Model == "" {
+	if model := jsonutil.StringValue(event.Raw["model"]); model != "" && a.Model == "" {
 		a.Model = model
 	}
 	switch event.Type {
 	case "response.output_text.delta":
-		if delta := stringValue(event.Raw["delta"]); delta != "" {
+		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
 			a.TextBuilder.WriteString(delta)
 		}
 	case "response.output_text.done":
 		if a.TextBuilder.Len() == 0 {
-			a.TextBuilder.WriteString(stringValue(event.Raw["text"]))
+			a.TextBuilder.WriteString(jsonutil.StringValue(event.Raw["text"]))
 		}
 	case "response.content_part.done":
 		if a.TextBuilder.Len() == 0 {
-			part := nestedMap(event.Raw, "part")
-			if text := stringValue(part["text"]); text != "" {
+			part := jsonutil.MapValue(event.Raw, "part")
+			if text := jsonutil.StringValue(part["text"]); text != "" {
 				a.TextBuilder.WriteString(text)
 			}
 		}
 	case "response.completed":
 		if a.TextBuilder.Len() == 0 {
-			if response := nestedMap(event.Raw, "response"); response != nil {
-				if text := stringValue(response["output_text"]); text != "" {
+			if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
+				if text := jsonutil.StringValue(response["output_text"]); text != "" {
 					a.TextBuilder.WriteString(text)
 				}
 			}
 		}
 	}
-	if delta := firstString(
-		stringValue(event.Raw["output_text"]),
-		stringValue(nestedMap(event.Raw, "item")["text"]),
+	if delta := jsonutil.FirstNonEmpty(
+		jsonutil.StringValue(event.Raw["output_text"]),
+		jsonutil.StringValue(jsonutil.MapValue(event.Raw, "item")["text"]),
 	); delta != "" && a.TextBuilder.Len() == 0 && strings.Contains(event.Type, "text") {
 		a.TextBuilder.WriteString(delta)
 	}
 	if strings.HasPrefix(event.Type, "response.function_call_arguments.") {
 		a.applyToolArgumentEvent(event)
 	}
-	if item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item")); item != nil {
+	if item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item")); item != nil {
 		a.captureOutputItem(item, outputIndexFromMap(event.Raw))
 	}
 	if output := sliceOfMaps(event.Raw["output"]); len(output) > 0 {
@@ -128,7 +128,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	}
 	if event.Type == "response.completed" {
 		a.RawFinal = event.Raw
-		if response := nestedMap(event.Raw, "response"); response != nil {
+		if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
 			if usage := usageFromRaw(response["usage"]); usage != nil {
 				a.Usage = usage
 			}
@@ -144,9 +144,9 @@ func (a *Accumulator) Text() string {
 		return text
 	}
 	for _, item := range a.sortedOutputItems() {
-		if itemType := stringValue(item["type"]); itemType == "message" {
+		if itemType := jsonutil.StringValue(item["type"]); itemType == "message" {
 			for _, content := range sliceOfMaps(item["content"]) {
-				if text := stringValue(content["text"]); text != "" {
+				if text := jsonutil.StringValue(content["text"]); text != "" {
 					return text
 				}
 			}
@@ -171,7 +171,7 @@ func (a *Accumulator) ResponsesStreamEventsForEvent(event *codex.StreamEvent) ([
 			return nil, false
 		}
 		events := a.ensureResponseOutputItemAdded(state)
-		if delta := stringValue(event.Raw["delta"]); delta != "" {
+		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
 			events = append(events, ResponseStreamEvent{
 				Type: "response.function_call_arguments.delta",
 				Payload: map[string]any{
@@ -221,10 +221,10 @@ func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) 
 		return
 	}
 
-	itemType := stringValue(item["type"])
+	itemType := jsonutil.StringValue(item["type"])
 	if itemType == "function_call" {
-		callID := firstString(stringValue(item["call_id"]), stringValue(item["id"]))
-		itemID := firstString(stringValue(item["id"]), callID)
+		callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["call_id"]), jsonutil.StringValue(item["id"]))
+		itemID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["id"]), callID)
 		if callID == "" && itemID == "" {
 			return
 		}
@@ -232,13 +232,13 @@ func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) 
 		if state == nil {
 			return
 		}
-		if name := stringValue(item["name"]); name != "" {
+		if name := jsonutil.StringValue(item["name"]); name != "" {
 			state.Name = name
 		}
-		if arguments := stringValue(item["arguments"]); arguments != "" {
+		if arguments := jsonutil.StringValue(item["arguments"]); arguments != "" {
 			state.Arguments = arguments
 		}
-		if status := stringValue(item["status"]); status != "" {
+		if status := jsonutil.StringValue(item["status"]); status != "" {
 			state.Status = status
 		}
 		return
@@ -246,7 +246,7 @@ func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) 
 
 	index := a.resolveOutputIndex(explicitIndex)
 	key := outputItemKey(item, index)
-	cloned := cloneMap(item)
+	cloned := jsonutil.CloneMap(item)
 	if existing, ok := a.outputItemByKey[key]; ok {
 		existing.Item = cloned
 		existing.OutputIndex = index
@@ -278,9 +278,9 @@ func (a *Accumulator) ChatCompletionObject() map[string]any {
 		message["tool_calls"] = toolCalls
 	}
 	return map[string]any{
-		"id":      firstString(a.ResponseID, "chatcmpl_proxy"),
+		"id":      jsonutil.FirstNonEmpty(a.ResponseID, "chatcmpl_proxy"),
 		"object":  "chat.completion",
-		"model":   firstString(a.Model, a.Normalized.Model),
+		"model":   jsonutil.FirstNonEmpty(a.Model, a.Normalized.Model),
 		"choices": []map[string]any{{"index": 0, "message": message, "finish_reason": finishReason(a)}},
 		"usage":   usageObject(a.Usage),
 	}
@@ -290,10 +290,10 @@ func (a *Accumulator) ResponsesObject() map[string]any {
 	text := a.Text()
 	output := a.responsesOutput(text)
 	return map[string]any{
-		"id":          firstString(a.ResponseID, "resp_proxy"),
+		"id":          jsonutil.FirstNonEmpty(a.ResponseID, "resp_proxy"),
 		"object":      "response",
-		"model":       firstString(a.Model, a.Normalized.Model),
-		"status":      firstString(a.Status, "completed"),
+		"model":       jsonutil.FirstNonEmpty(a.Model, a.Normalized.Model),
+		"status":      jsonutil.FirstNonEmpty(a.Status, "completed"),
 		"output":      output,
 		"output_text": text,
 		"usage":       usageObject(a.Usage),
@@ -318,13 +318,13 @@ func (a *Accumulator) responsesOutput(text string) []map[string]any {
 
 	baseOrder := len(entries)
 	for order, state := range a.OutputItems {
-		cloned := cloneMap(state.Item)
-		if stringValue(cloned["type"]) == "message" {
+		cloned := jsonutil.CloneMap(state.Item)
+		if jsonutil.StringValue(cloned["type"]) == "message" {
 			content := sliceOfMaps(cloned["content"])
 			if len(content) == 0 && strings.TrimSpace(text) != "" {
 				cloned["content"] = responseTextContent(text)
 			}
-			if stringValue(cloned["status"]) == "" {
+			if jsonutil.StringValue(cloned["status"]) == "" {
 				cloned["status"] = "completed"
 			}
 		}
@@ -389,7 +389,7 @@ func ChatChunk(responseID, model string, delta map[string]any, finishReason stri
 		choice["finish_reason"] = finishReason
 	}
 	return map[string]any{
-		"id":      firstString(responseID, "chatcmpl_proxy"),
+		"id":      jsonutil.FirstNonEmpty(responseID, "chatcmpl_proxy"),
 		"object":  "chat.completion.chunk",
 		"model":   model,
 		"choices": []map[string]any{choice},
@@ -428,8 +428,8 @@ func finishReason(a *Accumulator) string {
 }
 
 func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
-	responseItemID := stringValue(event.Raw["item_id"])
-	callID := firstString(stringValue(event.Raw["call_id"]), responseItemID)
+	responseItemID := jsonutil.StringValue(event.Raw["item_id"])
+	callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(event.Raw["call_id"]), responseItemID)
 	if callID == "" && responseItemID == "" {
 		return
 	}
@@ -438,16 +438,16 @@ func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
 	if state == nil {
 		return
 	}
-	if name := stringValue(event.Raw["name"]); name != "" {
+	if name := jsonutil.StringValue(event.Raw["name"]); name != "" {
 		state.Name = name
 	}
 
 	switch event.Type {
 	case "response.function_call_arguments.delta":
-		state.Arguments += stringValue(event.Raw["delta"])
+		state.Arguments += jsonutil.StringValue(event.Raw["delta"])
 		state.SawArgumentDelta = true
 	case "response.function_call_arguments.done":
-		if args := stringValue(event.Raw["arguments"]); args != "" {
+		if args := jsonutil.StringValue(event.Raw["arguments"]); args != "" {
 			state.Arguments = args
 		}
 		state.Status = "completed"
@@ -471,8 +471,8 @@ func (a *Accumulator) ensureToolCallState(itemID, callID string, explicitIndex i
 		if explicitIndex >= 0 {
 			existing.OutputIndex = a.resolveOutputIndex(explicitIndex)
 		}
-		existing.ItemID = firstString(existing.ItemID, itemID)
-		existing.CallID = firstString(existing.CallID, callID)
+		existing.ItemID = jsonutil.FirstNonEmpty(existing.ItemID, itemID)
+		existing.CallID = jsonutil.FirstNonEmpty(existing.CallID, callID)
 		a.registerToolCallAliases(existing, existing.CallID, existing.ItemID)
 		return existing
 	}
@@ -504,16 +504,16 @@ func (a *Accumulator) toolCallStateForEvent(event *codex.StreamEvent) *ToolCallS
 
 	switch event.Type {
 	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
-		itemID := stringValue(event.Raw["item_id"])
-		callID := firstString(stringValue(event.Raw["call_id"]), itemID)
+		itemID := jsonutil.StringValue(event.Raw["item_id"])
+		callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(event.Raw["call_id"]), itemID)
 		return firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID])
 	case "response.output_item.added", "response.output_item.done":
-		item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item"))
-		if stringValue(item["type"]) != "function_call" {
+		item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item"))
+		if jsonutil.StringValue(item["type"]) != "function_call" {
 			return nil
 		}
-		itemID := firstString(stringValue(item["id"]), stringValue(event.Raw["item_id"]))
-		callID := firstString(stringValue(item["call_id"]), itemID)
+		itemID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["id"]), jsonutil.StringValue(event.Raw["item_id"]))
+		callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["call_id"]), itemID)
 		return firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID])
 	default:
 		return nil
@@ -525,7 +525,7 @@ func (a *Accumulator) ensureResponseOutputItemAdded(state *ToolCallState) []Resp
 		return nil
 	}
 	state.AddedEmitted = true
-	state.Status = firstString(state.Status, "in_progress")
+	state.Status = jsonutil.FirstNonEmpty(state.Status, "in_progress")
 	return []ResponseStreamEvent{{
 		Type: "response.output_item.added",
 		Payload: map[string]any{
@@ -609,7 +609,7 @@ func (t *ToolCallState) responseOutputItem(status string) map[string]any {
 	if t == nil {
 		return nil
 	}
-	itemStatus := firstString(status, t.Status, "completed")
+	itemStatus := jsonutil.FirstNonEmpty(status, t.Status, "completed")
 	return map[string]any{
 		"type":      "function_call",
 		"id":        t.ItemID,
@@ -631,25 +631,13 @@ func outputIndexFromMap(raw map[string]any) int {
 }
 
 func outputItemKey(item map[string]any, outputIndex int) string {
-	if id := stringValue(item["id"]); id != "" {
+	if id := jsonutil.StringValue(item["id"]); id != "" {
 		return "id:" + id
 	}
 	if outputIndex >= 0 {
 		return fmt.Sprintf("index:%d", outputIndex)
 	}
 	return fmt.Sprintf("anon:%p", item)
-}
-
-func nestedMap(raw map[string]any, key string) map[string]any {
-	if raw == nil {
-		return nil
-	}
-	value, ok := raw[key]
-	if !ok {
-		return nil
-	}
-	mapped, _ := value.(map[string]any)
-	return mapped
 }
 
 func sliceOfMaps(value any) []map[string]any {
@@ -688,10 +676,6 @@ func usageFromRaw(value any) *codex.Usage {
 	}
 }
 
-func stringValue(value any) string {
-	return jsonutil.StringValue(value)
-}
-
 func numberValue(value any) float64 {
 	switch typed := value.(type) {
 	case float64:
@@ -728,15 +712,6 @@ func intValue(value any) (int, bool) {
 	}
 }
 
-func firstString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func firstMap(values ...map[string]any) map[string]any {
 	for _, value := range values {
 		if len(value) > 0 {
@@ -761,17 +736,6 @@ func MustJSON(value any) []byte {
 		return []byte(fmt.Sprintf(`{"error":"%v"}`, err))
 	}
 	return data
-}
-
-func cloneMap(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
 }
 
 func ReconvertJSONText(text string, schema map[string]any) (string, error) {
@@ -802,12 +766,12 @@ func PatchChatCompletionObjectForTuple(object map[string]any, schema map[string]
 		return nil
 	}
 
-	message := nestedMap(choices[0], "message")
+	message := jsonutil.MapValue(choices[0], "message")
 	if message == nil {
 		return nil
 	}
 
-	reconverted, err := ReconvertJSONText(stringValue(message["content"]), schema)
+	reconverted, err := ReconvertJSONText(jsonutil.StringValue(message["content"]), schema)
 	if err != nil {
 		return err
 	}
@@ -820,7 +784,7 @@ func PatchResponsesObjectForTuple(object map[string]any, schema map[string]any) 
 		return nil
 	}
 
-	if text := stringValue(object["output_text"]); strings.TrimSpace(text) != "" {
+	if text := jsonutil.StringValue(object["output_text"]); strings.TrimSpace(text) != "" {
 		reconverted, err := ReconvertJSONText(text, schema)
 		if err != nil {
 			return err
@@ -829,14 +793,14 @@ func PatchResponsesObjectForTuple(object map[string]any, schema map[string]any) 
 	}
 
 	for _, item := range sliceOfMaps(object["output"]) {
-		if stringValue(item["type"]) != "message" {
+		if jsonutil.StringValue(item["type"]) != "message" {
 			continue
 		}
 		for _, content := range sliceOfMaps(item["content"]) {
-			if stringValue(content["type"]) != "output_text" {
+			if jsonutil.StringValue(content["type"]) != "output_text" {
 				continue
 			}
-			reconverted, err := ReconvertJSONText(stringValue(content["text"]), schema)
+			reconverted, err := ReconvertJSONText(jsonutil.StringValue(content["text"]), schema)
 			if err != nil {
 				return err
 			}
@@ -852,12 +816,12 @@ func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[st
 		return nil
 	}
 
-	response := nestedMap(payload, "response")
+	response := jsonutil.MapValue(payload, "response")
 	if response == nil {
 		return nil
 	}
 
-	if text := stringValue(response["output_text"]); strings.TrimSpace(text) != "" {
+	if text := jsonutil.StringValue(response["output_text"]); strings.TrimSpace(text) != "" {
 		reconverted, err := ReconvertJSONText(text, schema)
 		if err != nil {
 			return err
@@ -866,14 +830,14 @@ func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[st
 	}
 
 	for _, item := range sliceOfMaps(response["output"]) {
-		if stringValue(item["type"]) != "message" {
+		if jsonutil.StringValue(item["type"]) != "message" {
 			continue
 		}
 		for _, content := range sliceOfMaps(item["content"]) {
-			if stringValue(content["type"]) != "output_text" {
+			if jsonutil.StringValue(content["type"]) != "output_text" {
 				continue
 			}
-			reconverted, err := ReconvertJSONText(stringValue(content["text"]), schema)
+			reconverted, err := ReconvertJSONText(jsonutil.StringValue(content["text"]), schema)
 			if err != nil {
 				return err
 			}

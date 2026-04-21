@@ -36,10 +36,7 @@ type App struct {
 
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	accountsStore := store.NewJSONAccountsStore(cfg.DataDir)
-	accountsSvc, err := accounts.NewService(accountsStore, accounts.RotationStrategy(cfg.RotationStrategy), accounts.ServiceOptions{
-		RateLimitFallback: cfg.RateLimitFallback,
-		QuotaFallback:     cfg.QuotaFallback,
-	})
+	accountsSvc, err := accounts.NewService(accountsStore, accounts.RotationStrategy(cfg.RotationStrategy))
 	if err != nil {
 		return nil, err
 	}
@@ -188,20 +185,20 @@ func (a *App) rateLimitCooldownUntil(accountID string, cause error, now time.Tim
 		return fallbackUntil(now, retryAfter)
 	}
 	if record, ok := a.accounts.Get(accountID); ok {
-		if reset := primaryQuotaReset(record.CachedQuota, now); reset != nil {
+		if reset := accounts.PrimaryRateLimitReset(record.CachedQuota, now); reset != nil {
 			return reset
 		}
 	}
-	return fallbackUntil(now, a.accounts.RateLimitFallback())
+	return fallbackUntil(now, accounts.DefaultRateLimitFallback)
 }
 
 func (a *App) quotaCooldownUntil(accountID string, now time.Time) *time.Time {
 	if record, ok := a.accounts.Get(accountID); ok {
-		if reset := quotaResetForCooldown(record.CachedQuota, now); reset != nil {
+		if reset := accounts.QuotaReset(record.CachedQuota, now); reset != nil {
 			return reset
 		}
 	}
-	return fallbackUntil(now, a.accounts.QuotaFallback())
+	return fallbackUntil(now, accounts.DefaultQuotaFallback)
 }
 
 func retryAfterFromError(err error) time.Duration {
@@ -255,53 +252,6 @@ func looksLikeCloudflareBlock(text string) bool {
 	return strings.Contains(normalized, "cf_chl") ||
 		strings.Contains(normalized, "<!doctype") ||
 		strings.Contains(normalized, "<html")
-}
-
-func primaryQuotaReset(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Time {
-	if snapshot == nil {
-		return nil
-	}
-	return firstActiveWindowReset(now, &snapshot.RateLimit)
-}
-
-func quotaResetForCooldown(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Time {
-	if snapshot == nil {
-		return nil
-	}
-	return firstActiveWindowReset(now, &snapshot.RateLimit, snapshot.SecondaryRateLimit)
-}
-
-func activeWindowReset(window *accounts.RateLimitWindow, now time.Time) *time.Time {
-	if window == nil {
-		return nil
-	}
-	if !window.Allowed {
-		if window.ResetAt == nil {
-			return nil
-		}
-		if window.ResetAt.After(now) {
-			ts := window.ResetAt.UTC()
-			return &ts
-		}
-		return nil
-	}
-	if !window.LimitReached || window.ResetAt == nil {
-		return nil
-	}
-	if !window.ResetAt.After(now) {
-		return nil
-	}
-	ts := window.ResetAt.UTC()
-	return &ts
-}
-
-func firstActiveWindowReset(now time.Time, windows ...*accounts.RateLimitWindow) *time.Time {
-	for _, window := range windows {
-		if reset := activeWindowReset(window, now); reset != nil {
-			return reset
-		}
-	}
-	return nil
 }
 
 func fallbackUntil(now time.Time, duration time.Duration) *time.Time {

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/jsonutil"
 	"chatgpt-codex-proxy/internal/middleware"
 	"chatgpt-codex-proxy/internal/openai"
 	"chatgpt-codex-proxy/internal/translate"
@@ -93,7 +93,7 @@ func (a *App) handleResponses(c *gin.Context) {
 		}
 		preferredID = record.AccountID
 		turnState = record.TurnState
-		if history := deserializeContinuationInput(record.InputHistory); len(history) > 0 {
+		if history := continuationInputItemsToCodex(record.InputHistory); len(history) > 0 {
 			normalized.Input = append(history, normalized.Input...)
 			normalized.PreviousResponseID = ""
 		}
@@ -101,7 +101,7 @@ func (a *App) handleResponses(c *gin.Context) {
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
 		a.setRequestAccount(c, account)
-		reportedAccountID := firstString(account.ID, preferredID)
+		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, preferredID)
 		a.handleOpenStreamError(c, "responses", account.ID, reportedAccountID, err)
 		return
 	}
@@ -236,7 +236,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		}
 		switch event.Type {
 		case "response.output_text.delta":
-			delta := serverStringValue(event.Raw["delta"])
+			delta := jsonutil.StringValue(event.Raw["delta"])
 			if delta == "" {
 				continue
 			}
@@ -244,11 +244,11 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 				tupleTextBuffer.WriteString(delta)
 				continue
 			}
-			writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{"content": delta}, "")))
+			writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{"content": delta}, "")))
 			c.Writer.Flush()
 		case "response.output_text.done":
 			if normalized.TupleSchema != nil {
-				if text := serverStringValue(event.Raw["text"]); text != "" {
+				if text := jsonutil.StringValue(event.Raw["text"]); text != "" {
 					tupleTextBuffer.Reset()
 					tupleTextBuffer.WriteString(text)
 				}
@@ -261,7 +261,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 				} else {
 					reconverted = patched
 				}
-				writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{"content": reconverted}, "")))
+				writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{"content": reconverted}, "")))
 				c.Writer.Flush()
 			}
 		}
@@ -273,7 +273,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	a.accounts.NoteSuccess(account.ID)
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 
-	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
+	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{}, chatStreamFinishReason(accumulator))))
 	_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
 	c.Writer.Flush()
 }
@@ -307,10 +307,10 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		if normalized.TupleSchema != nil {
 			switch event.Type {
 			case "response.output_text.delta":
-				tupleTextBuffer.WriteString(serverStringValue(event.Raw["delta"]))
+				tupleTextBuffer.WriteString(jsonutil.StringValue(event.Raw["delta"]))
 				continue
 			case "response.output_text.done":
-				if text := serverStringValue(event.Raw["text"]); text != "" {
+				if text := jsonutil.StringValue(event.Raw["text"]); text != "" {
 					tupleTextBuffer.Reset()
 					tupleTextBuffer.WriteString(text)
 				}
@@ -369,7 +369,7 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 		return false
 	}
 
-	callID := firstString(serverStringValue(event.Raw["call_id"]), serverStringValue(event.Raw["item_id"]))
+	callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(event.Raw["call_id"]), jsonutil.StringValue(event.Raw["item_id"]))
 	if callID == "" {
 		return false
 	}
@@ -379,13 +379,13 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 		idx = *nextToolCallIndex
 		toolCallIndex[callID] = idx
 		*nextToolCallIndex = *nextToolCallIndex + 1
-		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{{
 				"index": idx,
 				"id":    callID,
 				"type":  "function",
 				"function": map[string]any{
-					"name":      serverStringValue(event.Raw["name"]),
+					"name":      jsonutil.StringValue(event.Raw["name"]),
 					"arguments": "",
 				},
 			}},
@@ -394,12 +394,12 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 
 	switch event.Type {
 	case "response.function_call_arguments.delta":
-		delta := serverStringValue(event.Raw["delta"])
+		delta := jsonutil.StringValue(event.Raw["delta"])
 		if delta == "" {
 			return false
 		}
 		toolCallSawDelta[callID] = true
-		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{{
 				"index": idx,
 				"function": map[string]any{
@@ -412,8 +412,8 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 		if toolCallSawDelta[callID] {
 			return false
 		}
-		arguments := serverStringValue(event.Raw["arguments"])
-		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, firstString(accumulator.Model, normalized.Model), map[string]any{
+		arguments := jsonutil.StringValue(event.Raw["arguments"])
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{{
 				"index": idx,
 				"function": map[string]any{
@@ -442,7 +442,7 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 		return event.Raw
 	}
 
-	payload := cloneAnyMap(event.Raw)
+	payload := jsonutil.CloneMap(event.Raw)
 	response, _ := payload["response"].(map[string]any)
 	if response == nil {
 		response = map[string]any{}
@@ -450,16 +450,16 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 
 	text := accumulator.Text()
 	response["output"] = accumulator.ResponsesObject()["output"]
-	if strings.TrimSpace(serverStringValue(response["output_text"])) == "" && strings.TrimSpace(text) != "" {
+	if strings.TrimSpace(jsonutil.StringValue(response["output_text"])) == "" && strings.TrimSpace(text) != "" {
 		response["output_text"] = text
 	}
-	if strings.TrimSpace(serverStringValue(response["status"])) == "" {
+	if strings.TrimSpace(jsonutil.StringValue(response["status"])) == "" {
 		response["status"] = "completed"
 	}
-	if accumulator.ResponseID != "" && strings.TrimSpace(serverStringValue(response["id"])) == "" {
+	if accumulator.ResponseID != "" && strings.TrimSpace(jsonutil.StringValue(response["id"])) == "" {
 		response["id"] = accumulator.ResponseID
 	}
-	if accumulator.Model != "" && strings.TrimSpace(serverStringValue(response["model"])) == "" {
+	if accumulator.Model != "" && strings.TrimSpace(jsonutil.StringValue(response["model"])) == "" {
 		response["model"] = accumulator.Model
 	}
 	if accumulator.Usage != nil {
@@ -482,7 +482,7 @@ func (a *App) rememberContinuation(accountID string, accumulator *translate.Accu
 		AccountID:    accountID,
 		UpstreamID:   accumulator.ResponseID,
 		TurnState:    strings.TrimSpace(turnState),
-		Model:        firstString(accumulator.Model, accumulator.Normalized.Model),
+		Model:        jsonutil.FirstNonEmpty(accumulator.Model, accumulator.Normalized.Model),
 		InputHistory: continuationInputHistory(accumulator),
 		ExpiresAt:    timeNowUTC().Add(a.cfg.ContinuationTTL),
 	})
@@ -493,15 +493,6 @@ func websocketEndpoint(baseURL string) string {
 	value = strings.Replace(value, "https://", "wss://", 1)
 	value = strings.Replace(value, "http://", "ws://", 1)
 	return value + "/codex/responses"
-}
-
-func firstString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func timeNowUTC() time.Time {
@@ -527,29 +518,34 @@ func extractUpstreamEventDetails(event *codex.StreamEvent) *codex.UpstreamError 
 		return nil
 	}
 
-	nested := firstNestedMap(
-		serverNestedMap(event.Raw, "error"),
-		serverNestedPathMap(event.Raw, "response", "error"),
-	)
-	message := firstString(
-		serverStringValueFromMap(nested, "message"),
-		serverStringValueFromMap(nested, "detail"),
-		serverStringValue(event.Raw["message"]),
-		serverStringValue(event.Raw["detail"]),
+	nested := jsonutil.MapValue(event.Raw, "error")
+	if nested == nil {
+		nested = jsonutil.PathMapValue(event.Raw, "response", "error")
+	}
+	message := jsonutil.FirstNonEmpty(
+		jsonutil.StringValue(nested["message"]),
+		jsonutil.StringValue(nested["detail"]),
+		jsonutil.StringValue(event.Raw["message"]),
+		jsonutil.StringValue(event.Raw["detail"]),
 	)
 	if message == "" {
 		message = fmt.Sprintf("upstream %s", event.Type)
 	}
 
-	code := firstString(
-		serverStringValueFromMap(nested, "code"),
-		serverStringValueFromMap(nested, "type"),
-		serverStringValue(event.Raw["code"]),
-		serverStringValue(event.Raw["type"]),
+	code := jsonutil.FirstNonEmpty(
+		jsonutil.StringValue(nested["code"]),
+		jsonutil.StringValue(nested["type"]),
+		jsonutil.StringValue(event.Raw["code"]),
+		jsonutil.StringValue(event.Raw["type"]),
 	)
-	statusCode, ok := serverIntValueFromMap(nested, "status_code")
+	statusCode, ok := 0, false
+	if nested != nil {
+		statusCode, ok = serverIntValue(nested["status_code"])
+	}
 	if !ok {
-		statusCode, ok = serverIntValueFromMap(nested, "status")
+		if nested != nil {
+			statusCode, ok = serverIntValue(nested["status"])
+		}
 	}
 	if !ok {
 		statusCode, ok = serverIntValue(event.Raw["status_code"])
@@ -611,48 +607,6 @@ func firstRetryAfterSeconds(values ...map[string]any) int {
 	return 0
 }
 
-func serverNestedMap(raw map[string]any, key string) map[string]any {
-	if raw == nil {
-		return nil
-	}
-	value, _ := raw[key].(map[string]any)
-	return value
-}
-
-func serverStringValue(value any) string {
-	str, _ := value.(string)
-	return str
-}
-
-func serverNestedPathMap(raw map[string]any, keys ...string) map[string]any {
-	current := raw
-	for idx, key := range keys {
-		if current == nil {
-			return nil
-		}
-		value, _ := current[key].(map[string]any)
-		if idx == len(keys)-1 {
-			return value
-		}
-		current = value
-	}
-	return nil
-}
-
-func serverStringValueFromMap(raw map[string]any, key string) string {
-	if raw == nil {
-		return ""
-	}
-	return serverStringValue(raw[key])
-}
-
-func serverIntValueFromMap(raw map[string]any, key string) (int, bool) {
-	if raw == nil {
-		return 0, false
-	}
-	return serverIntValue(raw[key])
-}
-
 func serverIntValue(value any) (int, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -671,85 +625,96 @@ func serverIntValue(value any) (int, bool) {
 	}
 }
 
-func firstNestedMap(values ...map[string]any) map[string]any {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
+func continuationInputHistory(accumulator *translate.Accumulator) []accounts.ContinuationInputItem {
+	history := make([]accounts.ContinuationInputItem, 0, len(accumulator.Normalized.Input)+1)
+	for _, item := range accumulator.Normalized.Input {
+		history = append(history, continuationInputItemFromCodex(item))
 	}
-	return nil
-}
-
-func cloneAnyMap(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for key, value := range src {
-		if mapped, ok := value.(map[string]any); ok {
-			dst[key] = cloneAnyMap(mapped)
-			continue
-		}
-		dst[key] = value
-	}
-	return dst
-}
-
-func continuationInputHistory(accumulator *translate.Accumulator) []map[string]any {
-	history := serializeContinuationInput(accumulator.Normalized.Input)
-	if assistant := continuationAssistantTurn(accumulator); assistant != nil {
+	if assistant, ok := continuationAssistantTurn(accumulator); ok {
 		history = append(history, assistant)
 	}
 	return history
 }
 
-func continuationAssistantTurn(accumulator *translate.Accumulator) map[string]any {
+func continuationAssistantTurn(accumulator *translate.Accumulator) (accounts.ContinuationInputItem, bool) {
 	text := strings.TrimSpace(accumulator.Text())
 	if text == "" {
-		return nil
+		return accounts.ContinuationInputItem{}, false
 	}
-	item := codex.InputItem{
+	return accounts.ContinuationInputItem{
 		Role: "assistant",
-		Content: []codex.ContentPart{{
+		Content: []accounts.ContinuationContentPart{{
 			Type: "output_text",
 			Text: text,
 		}},
-	}
-	serialized := serializeContinuationInput([]codex.InputItem{item})
-	if len(serialized) == 0 {
-		return nil
-	}
-	return serialized[0]
+	}, true
 }
 
-func serializeContinuationInput(items []codex.InputItem) []map[string]any {
+func continuationInputItemsToCodex(items []accounts.ContinuationInputItem) []codex.InputItem {
 	if len(items) == 0 {
 		return nil
 	}
-	payload, err := json.Marshal(items)
-	if err != nil {
-		return nil
+	out := make([]codex.InputItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, continuationInputItemToCodex(item))
 	}
-	var cloned []map[string]any
-	if err := json.Unmarshal(payload, &cloned); err != nil {
-		return nil
-	}
-	return cloned
+	return out
 }
 
-func deserializeContinuationInput(items []map[string]any) []codex.InputItem {
-	if len(items) == 0 {
-		return nil
+func continuationInputItemFromCodex(item codex.InputItem) accounts.ContinuationInputItem {
+	out := accounts.ContinuationInputItem{
+		Role:      item.Role,
+		Type:      item.Type,
+		CallID:    item.CallID,
+		Name:      item.Name,
+		Arguments: item.Arguments,
+		Output:    item.Output,
+		ID:        item.ID,
 	}
-	payload, err := json.Marshal(items)
-	if err != nil {
-		return nil
+	if len(item.Content) > 0 {
+		out.Content = make([]accounts.ContinuationContentPart, 0, len(item.Content))
+		for _, part := range item.Content {
+			out.Content = append(out.Content, accounts.ContinuationContentPart{
+				Type:     part.Type,
+				Text:     part.Text,
+				ImageURL: part.ImageURL,
+				Detail:   part.Detail,
+				FileURL:  part.FileURL,
+				FileData: part.FileData,
+				FileID:   part.FileID,
+				Filename: part.Filename,
+			})
+		}
 	}
-	var decoded []codex.InputItem
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil
+	return out
+}
+
+func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.InputItem {
+	out := codex.InputItem{
+		Role:      item.Role,
+		Type:      item.Type,
+		CallID:    item.CallID,
+		Name:      item.Name,
+		Arguments: item.Arguments,
+		Output:    item.Output,
+		ID:        item.ID,
 	}
-	return decoded
+	if len(item.Content) > 0 {
+		out.Content = make([]codex.ContentPart, 0, len(item.Content))
+		for _, part := range item.Content {
+			out.Content = append(out.Content, codex.ContentPart{
+				Type:     part.Type,
+				Text:     part.Text,
+				ImageURL: part.ImageURL,
+				Detail:   part.Detail,
+				FileURL:  part.FileURL,
+				FileData: part.FileData,
+				FileID:   part.FileID,
+				Filename: part.Filename,
+			})
+		}
+	}
+	return out
 }
 
 func prepareStreamResponse(c *gin.Context) {
@@ -772,7 +737,7 @@ func (a *App) observeQuotaEvent(account accounts.Record, event *codex.StreamEven
 	if event == nil || event.Type != "codex.rate_limits" {
 		return false
 	}
-	quota := codex.ParseQuotaFromEvent(event, firstString(account.PlanType, "unknown"))
+	quota := codex.ParseQuotaFromEvent(event, account.PlanType)
 	a.observeQuotaSnapshot(account.ID, quota)
 	return true
 }
@@ -783,7 +748,7 @@ func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
 
 func (a *App) handleOpenStreamError(c *gin.Context, endpoint, actualAccountID, reportedAccountID string, err error) {
 	status, code, message := a.classifyUpstreamError(strings.TrimSpace(actualAccountID), err)
-	logAccountID := firstString(actualAccountID, reportedAccountID)
+	logAccountID := jsonutil.FirstNonEmpty(actualAccountID, reportedAccountID)
 	a.logUpstreamRequestFailure(c, endpoint, logAccountID, status, code, err)
 	a.writeOpenAIError(c, status, code, message, "api_error")
 }

@@ -181,9 +181,7 @@ func TestStreamChatCompletionClassifiesStructuredRateLimitFailureAndSetsCooldown
 
 	app := &App{
 		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-			ContinuationTTL:   time.Minute,
+			ContinuationTTL: time.Minute,
 		},
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:      accountsSvc,
@@ -259,9 +257,7 @@ func TestStreamResponsesClassifiesStructuredQuotaFailureAndSetsCooldown(t *testi
 
 	app := &App{
 		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-			ContinuationTTL:   time.Minute,
+			ContinuationTTL: time.Minute,
 		},
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:      accountsSvc,
@@ -331,9 +327,7 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 
 	app := &App{
 		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-			ContinuationTTL:   time.Minute,
+			ContinuationTTL: time.Minute,
 		},
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:      accountsSvc,
@@ -711,6 +705,37 @@ func TestStreamResponsesWithContinuationUsesSameFunctionCallLifecycle(t *testing
 	)
 }
 
+func TestContinuationInputHistoryIncludesAssistantReplay(t *testing.T) {
+	t.Parallel()
+
+	accumulator := translate.NewAccumulator(translate.NormalizedRequest{})
+	accumulator.Normalized.Input = []codex.InputItem{{
+		Role: "user",
+		Type: "message",
+		Content: []codex.ContentPart{{
+			Type:     "input_text",
+			Text:     "hello",
+			Detail:   "low",
+			FileURL:  "file://example",
+			FileData: "raw",
+			FileID:   "file_123",
+			Filename: "demo.txt",
+		}},
+	}}
+	accumulator.TextBuilder.WriteString("assistant replay")
+
+	history := continuationInputHistory(accumulator)
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(history))
+	}
+	if history[0].Role != "user" || history[0].Content[0].Text != "hello" {
+		t.Fatalf("history[0] = %#v", history[0])
+	}
+	if history[1].Role != "assistant" || history[1].Content[0].Text != "assistant replay" {
+		t.Fatalf("history[1] = %#v", history[1])
+	}
+}
+
 func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 	t.Parallel()
 
@@ -741,10 +766,7 @@ func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 	)
 
 	app := &App{
-		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-		},
+		cfg:      config.Config{},
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts: accountsSvc,
 	}
@@ -782,7 +804,7 @@ func newServerAccounts(t *testing.T, records ...*accounts.Record) *accounts.Serv
 
 	svc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
 		Records: records,
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	}}, accounts.RotationLeastUsed)
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}

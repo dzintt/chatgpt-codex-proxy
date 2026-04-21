@@ -75,7 +75,7 @@ func TestPatchChatCompletionObjectForTuple(t *testing.T) {
 	}
 
 	choice := sliceOfMaps(object["choices"])[0]
-	message := nestedMap(choice, "message")
+	message, _ := choice["message"].(map[string]any)
 	if message["content"] != `{"pair":["left",2]}` {
 		t.Fatalf("message.content = %#v, want reconverted tuple JSON", message["content"])
 	}

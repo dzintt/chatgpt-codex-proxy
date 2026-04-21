@@ -457,6 +457,31 @@ func TestUpsertFromTokenFillsMissingStoredUserID(t *testing.T) {
 	}
 }
 
+func TestMetadataFromTokenUsesNestedProfileAndAuthClaims(t *testing.T) {
+	t.Parallel()
+
+	metadata := metadataFromToken(makeTestOAuthToken(t, map[string]any{
+		"https://api.openai.com/profile": map[string]any{
+			"email":           "profile@example.com",
+			"chatgpt_user_id": "user_profile",
+		},
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_plan_type": "team",
+			"chatgpt_user_id":   "user_auth",
+		},
+	}))
+
+	if metadata.Email != "profile@example.com" {
+		t.Fatalf("email = %q, want profile@example.com", metadata.Email)
+	}
+	if metadata.PlanType != "team" {
+		t.Fatalf("plan_type = %q, want team", metadata.PlanType)
+	}
+	if metadata.UserID != "user_profile" {
+		t.Fatalf("user_id = %q, want user_profile", metadata.UserID)
+	}
+}
+
 func newTestService(t *testing.T, strategy RotationStrategy, records ...*Record) *Service {
 	t.Helper()
 
@@ -464,7 +489,7 @@ func newTestService(t *testing.T, strategy RotationStrategy, records ...*Record)
 		Records:          records,
 		RotationStrategy: strategy,
 	}}
-	svc, err := NewService(store, strategy, ServiceOptions{})
+	svc, err := NewService(store, strategy)
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}

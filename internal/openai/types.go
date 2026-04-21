@@ -232,14 +232,3 @@ type ResponsesInputItem struct {
 	Name      string         `json:"name,omitempty"`
 	Arguments string         `json:"arguments,omitempty"`
 }
-
-type ErrorEnvelope struct {
-	Error ErrorPayload `json:"error"`
-}
-
-type ErrorPayload struct {
-	Message string  `json:"message"`
-	Type    string  `json:"type"`
-	Param   *string `json:"param"`
-	Code    *string `json:"code"`
-}

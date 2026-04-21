@@ -1,52 +1,40 @@
 package accounts
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type ServiceOptions struct {
-	RateLimitFallback time.Duration
-	QuotaFallback     time.Duration
-}
+const (
+	DefaultRateLimitFallback = 60 * time.Second
+	DefaultQuotaFallback     = 5 * time.Minute
+)
 
 type Service struct {
-	mu                sync.RWMutex
-	store             Store
-	records           map[string]*Record
-	rotationStrategy  RotationStrategy
-	roundRobinIndex   int
-	stickyAccountID   string
-	rateLimitFallback time.Duration
-	quotaFallback     time.Duration
+	mu               sync.RWMutex
+	store            Store
+	records          map[string]*Record
+	rotationStrategy RotationStrategy
+	roundRobinIndex  int
+	stickyAccountID  string
 }
 
-func NewService(accountsStore Store, defaultStrategy RotationStrategy, opts ServiceOptions) (*Service, error) {
+var accountIDSequence uint64
+
+func NewService(accountsStore Store, defaultStrategy RotationStrategy) (*Service, error) {
 	state, err := accountsStore.Load()
 	if err != nil {
 		return nil, err
 	}
 
-	rateLimitFallback := opts.RateLimitFallback
-	if rateLimitFallback <= 0 {
-		rateLimitFallback = 60 * time.Second
-	}
-	quotaFallback := opts.QuotaFallback
-	if quotaFallback <= 0 {
-		quotaFallback = 5 * time.Minute
-	}
-
 	svc := &Service{
-		store:             accountsStore,
-		records:           make(map[string]*Record),
-		rateLimitFallback: rateLimitFallback,
-		quotaFallback:     quotaFallback,
+		store:   accountsStore,
+		records: make(map[string]*Record),
 	}
 	if state.RotationStrategy != "" {
 		svc.rotationStrategy = state.RotationStrategy
@@ -147,7 +135,7 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 
 	now := time.Now().UTC()
 	record := &Record{
-		ID:        "acct_" + randomHex(8),
+		ID:        "acct_" + nextAccountID(),
 		AccountID: accountID,
 		UserID:    metadata.UserID,
 		Email:     metadata.Email,
@@ -378,18 +366,6 @@ func (s *Service) SetRotationStrategy(strategy RotationStrategy) error {
 	defer s.mu.Unlock()
 	s.rotationStrategy = strategy
 	return s.persistLocked()
-}
-
-func (s *Service) RateLimitFallback() time.Duration {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.rateLimitFallback
-}
-
-func (s *Service) QuotaFallback() time.Duration {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.quotaFallback
 }
 
 func (s *Service) selectStickyLocked(candidates []*Record, now time.Time) *Record {
@@ -733,10 +709,6 @@ func cloneCookies(cookies map[string]string) map[string]string {
 	return out
 }
 
-func randomHex(n int) string {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic(fmt.Errorf("crypto/rand failed: %w", err))
-	}
-	return hex.EncodeToString(buf)
+func nextAccountID() string {
+	return fmt.Sprintf("%d_%08x", time.Now().UTC().UnixNano(), atomic.AddUint64(&accountIDSequence, 1))
 }

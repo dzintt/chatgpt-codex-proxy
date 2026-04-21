@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
-
-	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 type tokenMetadata struct {
@@ -14,54 +12,71 @@ type tokenMetadata struct {
 	UserID   string
 }
 
+type jwtClaims struct {
+	Email    string            `json:"email"`
+	PlanType string            `json:"chatgpt_plan_type"`
+	UserID   string            `json:"chatgpt_user_id"`
+	Profile  *jwtProfileClaims `json:"https://api.openai.com/profile,omitempty"`
+	Auth     *jwtAuthClaims    `json:"https://api.openai.com/auth,omitempty"`
+}
+
+type jwtProfileClaims struct {
+	Email  string `json:"email"`
+	UserID string `json:"chatgpt_user_id"`
+}
+
+type jwtAuthClaims struct {
+	PlanType string `json:"chatgpt_plan_type"`
+	UserID   string `json:"chatgpt_user_id"`
+}
+
 func metadataFromToken(token OAuthToken) tokenMetadata {
-	claims := parseJWTClaims(token.AccessToken)
-	if len(claims) == 0 {
+	claims, ok := parseJWTClaims(token.AccessToken)
+	if !ok {
 		return tokenMetadata{}
 	}
 
 	metadata := tokenMetadata{
-		Email:    strings.TrimSpace(jsonutil.StringValue(claims["email"])),
-		PlanType: strings.TrimSpace(jsonutil.StringValue(claims["chatgpt_plan_type"])),
-		UserID:   strings.TrimSpace(jsonutil.StringValue(claims["chatgpt_user_id"])),
+		Email:    strings.TrimSpace(claims.Email),
+		PlanType: strings.TrimSpace(claims.PlanType),
+		UserID:   strings.TrimSpace(claims.UserID),
 	}
 
-	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
+	if claims.Profile != nil {
 		if metadata.Email == "" {
-			metadata.Email = strings.TrimSpace(jsonutil.StringValue(profile["email"]))
+			metadata.Email = strings.TrimSpace(claims.Profile.Email)
 		}
 		if metadata.UserID == "" {
-			metadata.UserID = strings.TrimSpace(jsonutil.StringValue(profile["chatgpt_user_id"]))
+			metadata.UserID = strings.TrimSpace(claims.Profile.UserID)
 		}
 	}
 
-	if authPayload, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
+	if claims.Auth != nil {
 		if metadata.PlanType == "" {
-			metadata.PlanType = strings.TrimSpace(jsonutil.StringValue(authPayload["chatgpt_plan_type"]))
+			metadata.PlanType = strings.TrimSpace(claims.Auth.PlanType)
 		}
 		if metadata.UserID == "" {
-			metadata.UserID = strings.TrimSpace(jsonutil.StringValue(authPayload["chatgpt_user_id"]))
+			metadata.UserID = strings.TrimSpace(claims.Auth.UserID)
 		}
 	}
 
 	return metadata
 }
 
-func parseJWTClaims(token string) map[string]any {
+func parseJWTClaims(token string) (jwtClaims, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil
+		return jwtClaims{}, false
 	}
 
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil
+		return jwtClaims{}, false
 	}
 
-	var claims map[string]any
+	var claims jwtClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil
+		return jwtClaims{}, false
 	}
-	return claims
+	return claims, true
 }
-

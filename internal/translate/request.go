@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/jsonutil"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
@@ -32,8 +33,6 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
 	} else if choice := normalizeLegacyFunctionChoice(req.FunctionCall); choice != nil {
 		out.ToolChoice = choice
-	} else if len(req.Functions) > 0 {
-		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
 	}
 	if req.ResponseFormat != nil {
 		text, tupleSchema, err := normalizeChatResponseFormat(req.ResponseFormat)
@@ -104,10 +103,7 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 		}
 	}
 
-	out.Instructions = strings.TrimSpace(strings.Join(instructions, "\n\n"))
-	if out.Instructions == "" {
-		out.Instructions = defaultInstructions
-	}
+	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
 	return out, nil
 }
 
@@ -126,7 +122,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	out := NormalizedRequest{
 		Endpoint:              EndpointResponses,
 		Model:                 model,
-		Instructions:          firstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
+		Instructions:          jsonutil.FirstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
 		Stream:                req.Stream,
 		Tools:                 normalizeTools(req.Tools),
 		ToolChoice:            normalizeToolChoice(req.ToolChoice),
@@ -465,15 +461,6 @@ func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string)
 		model = openai.ResolveDefaultModel(defaultModel)
 	}
 	return model, reasoning, strings.TrimSpace(serviceTier)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func collectChatCompatibilityWarnings(req openai.ChatCompletionsRequest) []CompatibilityWarning {

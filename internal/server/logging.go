@@ -53,7 +53,7 @@ func (a *App) logCompatibilityWarnings(c *gin.Context, endpoint string, warnings
 	for _, warning := range warnings {
 		attrs := contextLogAttrs(c, endpoint)
 		attrs = append(attrs, "field", warning.Field, "behavior", warning.Behavior, "detail", warning.Detail)
-		a.logger.Warn("request compatibility warning", attrs...)
+		// a.logger.Warn("request compatibility warning", attrs...)
 	}
 }
 
