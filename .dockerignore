@@ -1,0 +1,14 @@
+.git
+.env
+data
+tmp*
+.gocache*
+.codex*
+.claude*
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out

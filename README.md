@@ -90,6 +90,7 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - Go `1.26.x`
 - A valid `PROXY_API_KEY`
 - At least one Codex account added through the admin device-login flow
+- Docker Desktop or Docker Engine if you want to run the provided container setup
 
 ## Quick Start
 
@@ -107,14 +108,46 @@ Optional:
 
 - `PORT`
   Overrides the default listen port `8080`.
+- `DATA_DIR`
+  Overrides the default local state directory. Defaults to `data` for local runs. The Docker setup forces this to `/app/data`.
+
+You can start from the example file:
+
+```bash
+cp .env.example .env
+```
+
+`docker compose` will read `.env` automatically for variable substitution.
 
 ### 2. Run the server
+
+Recommended: Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+That will:
+
+- Build the image from this repository
+- Expose the API on `http://localhost:8080`
+- Persist account state in the named Docker volume `chatgpt-codex-proxy-data`
+- Run the service as a non-root user with a read-only root filesystem plus a writable data volume
+
+Useful container commands:
+
+```bash
+docker compose logs -f
+docker compose down
+```
+
+Alternative: run it directly with Go
 
 ```bash
 go run ./cmd/api
 ```
 
-By default the server listens on `:8080` and stores local state in `./data`.
+By default the server listens on `:8080` and stores local state in `./data` locally or `/app/data` in Docker.
 
 ### 3. Add a Codex account
 
@@ -297,6 +330,8 @@ That file includes:
 
 Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
 
+When running with `docker compose`, the same account state is stored in the named volume `chatgpt-codex-proxy-data`, mounted at `/app/data`.
+
 ## Configuration
 
 Supported environment variables:
@@ -305,13 +340,45 @@ Supported environment variables:
   Required. Protects both public and admin routes.
 - `PORT`
   Optional. Defaults to `8080`.
+- `DATA_DIR`
+  Optional. Defaults to `data` for local runs.
 
 Everything else is fixed in code on purpose:
 
-- Local state is stored in `./data`.
 - The default `codex` alias resolves to `gpt-5.3-codex`.
 - The initial rotation strategy is `least_used`, and can be changed at runtime through `PUT /admin/rotation`.
 - Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
+
+## Docker Deployment
+
+The repository includes:
+
+- `Dockerfile`
+  Multi-stage build that compiles the Go binary and runs it in a small Alpine image as a non-root user.
+- `compose.yaml`
+  Starts the proxy with only the required environment variables, publishes the configured port, forces `DATA_DIR=/app/data`, mounts a persistent Docker volume for `/app/data`, and adds basic runtime hardening.
+- `.dockerignore`
+  Keeps build context small and avoids copying local state or secrets into the image build context.
+
+If you prefer plain `docker` instead of Compose:
+
+```bash
+docker build -t chatgpt-codex-proxy .
+docker run -d \
+  --name chatgpt-codex-proxy \
+  --restart unless-stopped \
+  --env-file .env \
+  -e DATA_DIR=/app/data \
+  --read-only \
+  --tmpfs /tmp \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -p 8080:8080 \
+  -v chatgpt-codex-proxy-data:/app/data \
+  chatgpt-codex-proxy
+```
+
+If you set a non-default `PORT` in `.env`, publish that same port from the container.
 
 ## Translation Notes
 

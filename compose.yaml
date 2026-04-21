@@ -1,0 +1,31 @@
+services:
+  chatgpt-codex-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatgpt-codex-proxy
+    restart: unless-stopped
+    environment:
+      PORT: "${PORT:-8080}"
+      PROXY_API_KEY: "${PROXY_API_KEY:?set PROXY_API_KEY in .env or the shell environment}"
+      DATA_DIR: /app/data
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - chatgpt-codex-proxy-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${PORT:-8080}/health/live >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  chatgpt-codex-proxy-data:
