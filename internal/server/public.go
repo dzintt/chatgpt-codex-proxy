@@ -230,8 +230,6 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
-		if event.Type == "response.completed" {
-		}
 		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallSawDelta, &nextToolCallIndex); emitted {
 			c.Writer.Flush()
 			continue
@@ -305,8 +303,6 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
 			a.respondClassifiedStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
 			return
-		}
-		if event.Type == "response.completed" {
 		}
 		if normalized.TupleSchema != nil {
 			switch event.Type {
@@ -772,12 +768,6 @@ func (a *App) observeQuotaEvent(account accounts.Record, event *codex.StreamEven
 
 func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
 	a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
-}
-
-func (a *App) respondOpenAIUpstreamRequestError(c *gin.Context, endpoint, accountID string, err error) {
-	status, code, message := a.classifyUpstreamError(accountID, err)
-	a.logUpstreamRequestFailure(c, endpoint, accountID, status, code, err)
-	a.writeOpenAIError(c, status, code, message, "api_error")
 }
 
 func (a *App) handleOpenStreamError(c *gin.Context, endpoint, actualAccountID, reportedAccountID string, err error) {

@@ -238,10 +238,6 @@ func (s *Service) ObserveQuota(id string, quota *QuotaSnapshot) error {
 	return s.persistLocked()
 }
 
-func (s *Service) UpdateQuota(id string, quota *QuotaSnapshot) error {
-	return s.ObserveQuota(id, quota)
-}
-
 func (s *Service) UpdateAuth(id, accountID string, token OAuthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

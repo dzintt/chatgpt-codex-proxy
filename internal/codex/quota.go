@@ -255,17 +255,6 @@ func parseFloatHeader(raw string) (float64, bool) {
 	return value, true
 }
 
-func parseIntHeader(raw string) (int, bool) {
-	if raw == "" {
-		return 0, false
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, false
-	}
-	return value, true
-}
-
 func parseFloat(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:

@@ -309,19 +309,6 @@ func fallbackUntil(now time.Time, duration time.Duration) *time.Time {
 	return &until
 }
 
-func laterTime(a, b *time.Time) *time.Time {
-	switch {
-	case a == nil:
-		return b
-	case b == nil:
-		return a
-	case a.After(*b):
-		return a
-	default:
-		return b
-	}
-}
-
 func writeSSE(w io.Writer, eventName string, payload []byte) {
 	if eventName != "" {
 		_, _ = io.WriteString(w, "event: "+eventName+"\n")
