@@ -24,6 +24,10 @@ type ToolCallState struct {
 	SawArgumentDelta bool
 }
 
+func (t *ToolCallState) Completed() bool {
+	return t != nil && strings.EqualFold(strings.TrimSpace(t.Status), "completed")
+}
+
 type ResponseStreamEvent struct {
 	Type    string
 	Payload map[string]any

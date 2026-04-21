@@ -404,24 +404,38 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 		*nextToolCallIndex = *nextToolCallIndex + 1
 	}
 
+	// Cursor appears to be stricter about custom tool-call deltas than function-call
+	// argument deltas, so emit one complete custom tool call once the full input is known.
+	if state.ToolType == "custom" {
+		if toolCallInitialized[callID] || strings.TrimSpace(state.Name) == "" || !state.Completed() {
+			return false
+		}
+		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": idx,
+				"id":    callID,
+				"type":  "custom",
+				"custom": map[string]any{
+					"name":  state.Name,
+					"input": state.Input,
+				},
+			}},
+		}, "")))
+		toolCallInitialized[callID] = true
+		toolCallArgumentsSent[callID] = len(state.Input)
+		return true
+	}
+
 	emitted := false
 	if !toolCallInitialized[callID] && strings.TrimSpace(state.Name) != "" {
 		chunkToolCall := map[string]any{
 			"index": idx,
 			"id":    callID,
 		}
-		if state.ToolType == "custom" {
-			chunkToolCall["type"] = "custom"
-			chunkToolCall["custom"] = map[string]any{
-				"name":  state.Name,
-				"input": "",
-			}
-		} else {
-			chunkToolCall["type"] = "function"
-			chunkToolCall["function"] = map[string]any{
-				"name":      state.Name,
-				"arguments": "",
-			}
+		chunkToolCall["type"] = "function"
+		chunkToolCall["function"] = map[string]any{
+			"name":      state.Name,
+			"arguments": "",
 		}
 		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{chunkToolCall},
@@ -435,13 +449,6 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 	}
 
 	value := state.Arguments
-	key := "function"
-	field := "arguments"
-	if state.ToolType == "custom" {
-		value = state.Input
-		key = "custom"
-		field = "input"
-	}
 	sent := toolCallArgumentsSent[callID]
 	if sent >= len(value) {
 		return emitted
@@ -450,8 +457,8 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 	writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 		"tool_calls": []map[string]any{{
 			"index": idx,
-			key: map[string]any{
-				field: value[sent:],
+			"function": map[string]any{
+				"arguments": value[sent:],
 			},
 		}},
 	}, "")))

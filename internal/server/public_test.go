@@ -1293,12 +1293,12 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
-	if len(events) != 6 {
-		t.Fatalf("event count = %d, want 6", len(events))
+	if len(events) != 4 {
+		t.Fatalf("event count = %d, want 4", len(events))
 	}
 
-	nameChunk := events[1].Data
-	choices := sliceOfMapsFromAny(nameChunk["choices"])
+	toolChunk := events[1].Data
+	choices := sliceOfMapsFromAny(toolChunk["choices"])
 	delta := nestedMapFromAny(choices[0]["delta"])
 	toolCalls := sliceOfMapsFromAny(delta["tool_calls"])
 	if len(toolCalls) != 1 {
@@ -1314,23 +1314,14 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 	if custom["name"] != "ApplyPatch" {
 		t.Fatalf("custom.name = %#v, want ApplyPatch", custom["name"])
 	}
+	if custom["input"] != "*** Begin Patch\\n*** End Patch\\n" {
+		t.Fatalf("custom.input = %q, want complete input", custom["input"])
+	}
 
-	firstInputChunk := events[2].Data
-	choices = sliceOfMapsFromAny(firstInputChunk["choices"])
-	delta = nestedMapFromAny(choices[0]["delta"])
-	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
-	custom = nestedMapFromAny(toolCalls[0]["custom"])
-	firstInput, _ := custom["input"].(string)
-
-	secondInputChunk := events[3].Data
-	choices = sliceOfMapsFromAny(secondInputChunk["choices"])
-	delta = nestedMapFromAny(choices[0]["delta"])
-	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
-	custom = nestedMapFromAny(toolCalls[0]["custom"])
-	secondInput, _ := custom["input"].(string)
-
-	if firstInput+secondInput != "*** Begin Patch\\n*** End Patch\\n" {
-		t.Fatalf("combined custom.input = %q, want complete input", firstInput+secondInput)
+	finalChunk := events[2].Data
+	choices = sliceOfMapsFromAny(finalChunk["choices"])
+	if choices[0]["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %#v, want tool_calls", choices[0]["finish_reason"])
 	}
 }
 
