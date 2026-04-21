@@ -217,8 +217,16 @@ func (r *ResponsesInput) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
-	if data[0] == '"' {
+	switch data[0] {
+	case '"':
 		return json.Unmarshal(data, &r.String)
+	case '{':
+		var item ResponsesInputItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			return err
+		}
+		r.Items = []ResponsesInputItem{item}
+		return nil
 	}
 	return json.Unmarshal(data, &r.Items)
 }

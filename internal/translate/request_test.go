@@ -177,6 +177,55 @@ func TestResponsesTranslationUsesReasoningObject(t *testing.T) {
 	}
 }
 
+func TestResponsesTranslationExtractsInstructionRolesFromInput(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model:        "gpt-5.4",
+		Instructions: "Top-level instructions",
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{
+				{
+					Role: "system",
+					Content: openai.MessageContent{{
+						Type: "text",
+						Text: "System rules",
+					}},
+				},
+				{
+					Role: "developer",
+					Content: openai.MessageContent{{
+						Type: "text",
+						Text: "Developer rules",
+					}},
+				},
+				{
+					Role: "user",
+					Content: openai.MessageContent{{
+						Type: "text",
+						Text: "What does this project do?",
+					}},
+				},
+			},
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if normalized.Instructions != "Top-level instructions\n\nSystem rules\n\nDeveloper rules" {
+		t.Fatalf("instructions = %q", normalized.Instructions)
+	}
+	if len(normalized.Input) != 1 {
+		t.Fatalf("input len = %d, want 1", len(normalized.Input))
+	}
+	if normalized.Input[0].Role != "user" {
+		t.Fatalf("input role = %q, want user", normalized.Input[0].Role)
+	}
+}
+
 func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 	t.Parallel()
 

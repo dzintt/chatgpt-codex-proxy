@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"chatgpt-codex-proxy/internal/openai"
@@ -45,6 +46,66 @@ type InputItem struct {
 	Status           string                 `json:"status,omitempty"`
 	Summary          []openai.ReasoningPart `json:"summary,omitempty"`
 	EncryptedContent string                 `json:"encrypted_content,omitempty"`
+}
+
+func (i InputItem) MarshalJSON() ([]byte, error) {
+	payload := map[string]any{}
+	if i.Role != "" {
+		payload["role"] = i.Role
+	}
+	if i.Type != "" {
+		payload["type"] = i.Type
+	}
+	if content, ok := inputItemContentValue(i); ok {
+		payload["content"] = content
+	}
+	if i.CallID != "" {
+		payload["call_id"] = i.CallID
+	}
+	if i.Name != "" {
+		payload["name"] = i.Name
+	}
+	if i.Arguments != "" {
+		payload["arguments"] = i.Arguments
+	}
+	if i.Output != "" {
+		payload["output"] = i.Output
+	}
+	if i.ID != "" {
+		payload["id"] = i.ID
+	}
+	if i.Status != "" {
+		payload["status"] = i.Status
+	}
+	if len(i.Summary) > 0 {
+		payload["summary"] = i.Summary
+	}
+	if i.EncryptedContent != "" {
+		payload["encrypted_content"] = i.EncryptedContent
+	}
+	return json.Marshal(payload)
+}
+
+func inputItemContentValue(item InputItem) (any, bool) {
+	if len(item.Content) == 0 {
+		return nil, false
+	}
+	if item.Role == "" {
+		return item.Content, true
+	}
+
+	textParts := make([]string, 0, len(item.Content))
+	for _, part := range item.Content {
+		switch part.Type {
+		case "", "text", "input_text", "output_text", "reasoning_text":
+			if strings.TrimSpace(part.Text) != "" {
+				textParts = append(textParts, part.Text)
+			}
+		default:
+			return item.Content, true
+		}
+	}
+	return strings.Join(textParts, "\n"), true
 }
 
 type ContentPart struct {

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,13 +38,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 	}
 	a.logIncomingPayload(c, "chat_completions", body)
 
-	var req openai.ChatCompletionsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		a.respondOpenAIInvalidRequest(c, err)
-		return
-	}
-
-	normalized, err := translate.ChatCompletions(req, a.cfg.DefaultModel)
+	normalized, err := normalizeChatCompletionsBody(body, a.cfg.DefaultModel)
 	if err != nil {
 		a.respondOpenAIInvalidRequest(c, err)
 		return
@@ -890,6 +885,48 @@ func captureRequestBody(c *gin.Context) ([]byte, error) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	return body, nil
+}
+
+func normalizeChatCompletionsBody(body []byte, defaultModel string) (translate.NormalizedRequest, error) {
+	var chatReq openai.ChatCompletionsRequest
+	if err := json.Unmarshal(body, &chatReq); err != nil {
+		return translate.NormalizedRequest{}, err
+	}
+
+	if len(chatReq.Messages) > 0 {
+		return translate.ChatCompletions(chatReq, defaultModel)
+	}
+
+	var envelope struct {
+		Input              json.RawMessage `json:"input"`
+		Instructions       json.RawMessage `json:"instructions"`
+		PreviousResponseID string          `json:"previous_response_id"`
+		Text               json.RawMessage `json:"text"`
+		Reasoning          json.RawMessage `json:"reasoning"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return translate.NormalizedRequest{}, err
+	}
+
+	if len(bytes.TrimSpace(envelope.Input)) == 0 &&
+		len(bytes.TrimSpace(envelope.Instructions)) == 0 &&
+		strings.TrimSpace(envelope.PreviousResponseID) == "" &&
+		len(bytes.TrimSpace(envelope.Text)) == 0 &&
+		len(bytes.TrimSpace(envelope.Reasoning)) == 0 {
+		return translate.ChatCompletions(chatReq, defaultModel)
+	}
+
+	var responsesReq openai.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		return translate.NormalizedRequest{}, err
+	}
+
+	normalized, err := translate.Responses(responsesReq, defaultModel)
+	if err != nil {
+		return translate.NormalizedRequest{}, err
+	}
+	normalized.Endpoint = translate.EndpointChat
+	return normalized, nil
 }
 
 func prepareStreamResponse(c *gin.Context) {

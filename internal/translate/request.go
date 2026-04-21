@@ -106,6 +106,15 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 		}
 	}
 
+	if len(out.Input) == 0 {
+		out.Input = append(out.Input, codex.InputItem{
+			Role: "user",
+			Content: []codex.ContentPart{{
+				Type: "input_text",
+				Text: "",
+			}},
+		})
+	}
 	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
 	return out, nil
 }
@@ -129,7 +138,6 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	out := NormalizedRequest{
 		Endpoint:              EndpointResponses,
 		Model:                 model,
-		Instructions:          jsonutil.FirstNonEmpty(strings.TrimSpace(req.Instructions), defaultInstructions),
 		Stream:                req.Stream,
 		Tools:                 normalizeTools(req.Tools),
 		ToolChoice:            normalizeToolChoice(req.ToolChoice),
@@ -138,6 +146,10 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
 		Include:               reasoningInclude(reasoning),
 		CompatibilityWarnings: collectResponsesCompatibilityWarnings(req),
+	}
+	var instructions []string
+	if text := strings.TrimSpace(req.Instructions); text != "" {
+		instructions = append(instructions, text)
 	}
 
 	if req.Text != nil && req.Text.Format != nil {
@@ -172,6 +184,16 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	}
 
 	for _, item := range req.Input.Items {
+		if item.Type == "" && (item.Role == "system" || item.Role == "developer") {
+			text, err := flattenContent(item.Content)
+			if err != nil {
+				return NormalizedRequest{}, err
+			}
+			if strings.TrimSpace(text) != "" {
+				instructions = append(instructions, text)
+			}
+			continue
+		}
 		switch {
 		case item.Type == "function_call":
 			out.Input = append(out.Input, codex.InputItem{
@@ -215,6 +237,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 		}
 	}
 
+	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
 	return out, nil
 }
 

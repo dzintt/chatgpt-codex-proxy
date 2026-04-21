@@ -108,6 +108,117 @@ func TestObserveQuotaSnapshotUpdatesCachedQuota(t *testing.T) {
 	}
 }
 
+func TestNormalizeChatCompletionsBodyAcceptsResponsesShape(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"instructions": "Be concise.",
+		"input": {
+			"role": "user",
+			"content": [{"type": "text", "text": "hello"}]
+		},
+		"stream": true,
+		"tools": [{
+			"type": "function",
+			"name": "Shell",
+			"description": "Run a shell command",
+			"parameters": {
+				"type": "object"
+			}
+		}]
+	}`)
+
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
+	}
+
+	if normalized.Endpoint != translate.EndpointChat {
+		t.Fatalf("endpoint = %q, want %q", normalized.Endpoint, translate.EndpointChat)
+	}
+	if normalized.Instructions != "Be concise." {
+		t.Fatalf("instructions = %q, want Be concise.", normalized.Instructions)
+	}
+	if !normalized.Stream {
+		t.Fatal("stream = false, want true")
+	}
+	if len(normalized.Input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(normalized.Input))
+	}
+	if normalized.Input[0].Role != "user" {
+		t.Fatalf("input role = %q, want user", normalized.Input[0].Role)
+	}
+	if got := normalized.Input[0].Content[0].Text; got != "hello" {
+		t.Fatalf("input text = %q, want hello", got)
+	}
+	if len(normalized.Tools) != 1 || normalized.Tools[0].Name != "Shell" {
+		t.Fatalf("tools = %#v, want Shell passthrough", normalized.Tools)
+	}
+}
+
+func TestNormalizeChatCompletionsBodyLiftsInstructionRolesFromResponsesShape(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{"role": "system", "content": "You are GPT-5.4."},
+			{"role": "user", "content": "Explain this repository."},
+			{"role": "user", "content": [{"type": "input_text", "text": "<user_query>\nwhat does this project do\n</user_query>"}]}
+		],
+		"tools": [{
+			"type": "function",
+			"name": "Shell",
+			"description": "Run a shell command",
+			"parameters": {
+				"type": "object"
+			}
+		}]
+	}`)
+
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
+	}
+
+	if normalized.Endpoint != translate.EndpointChat {
+		t.Fatalf("endpoint = %q, want %q", normalized.Endpoint, translate.EndpointChat)
+	}
+	if normalized.Instructions != "You are GPT-5.4." {
+		t.Fatalf("instructions = %q, want lifted system instructions", normalized.Instructions)
+	}
+	if len(normalized.Input) != 2 {
+		t.Fatalf("len(input) = %d, want 2", len(normalized.Input))
+	}
+	if normalized.Input[0].Role != "user" || normalized.Input[1].Role != "user" {
+		t.Fatalf("input roles = %#v, want only user items", normalized.Input)
+	}
+}
+
+func TestNormalizeChatCompletionsBodyPrefersMessagesShape(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"messages": [{"role": "user", "content": "hello"}],
+		"instructions": "ignored",
+		"input": {"role": "user", "content": [{"type": "text", "text": "ignored"}]}
+	}`)
+
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
+	}
+
+	if len(normalized.Input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(normalized.Input))
+	}
+	if got := normalized.Input[0].Content[0].Text; got != "hello" {
+		t.Fatalf("input text = %q, want hello", got)
+	}
+}
+
 func TestObserveQuotaEventUpdatesCachedQuota(t *testing.T) {
 	t.Parallel()
 

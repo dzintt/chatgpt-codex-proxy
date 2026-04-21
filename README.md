@@ -125,6 +125,8 @@ You can start from the example file:
 cp .env.example .env
 ```
 
+`.env.example` is intentionally minimal. `DATA_DIR` is also supported if you want to override the default local state directory.
+
 `docker compose` will read `.env` automatically for variable substitution.
 
 ### 2. Run the server
@@ -245,7 +247,8 @@ Compatibility notes:
 
 - Legacy requests are normalized onto the modern tool-calling response shape; responses still use `tool_calls` rather than the older assistant `function_call` field.
 - Chat usage is returned in OpenAI Chat Completions shape: `prompt_tokens`, `completion_tokens`, `total_tokens`, plus token-detail objects when known.
-- The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are logged as compatibility warnings when present.
+- The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
+- Chat Completions fields currently ignored by the proxy: `n`, `temperature`, `top_p`, `max_tokens`, `presence_penalty`, `frequency_penalty`, `stop`, `user`, `parallel_tool_calls`, `stream_options`, and `service_tier`.
 
 ### `POST /v1/responses`
 
@@ -265,7 +268,8 @@ Compatibility notes:
 
 - Native Responses reasoning summary events are passed through as-is.
 - Structured-output schemas are normalized before they are sent upstream, including tuple-schema handling and stricter object-shape normalization for Codex compatibility.
-- Known unsupported fields are logged as compatibility warnings when present.
+- Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
+- Responses fields currently ignored by the proxy: `temperature`, `top_p`, `max_output_tokens`, `parallel_tool_calls`, `store`, `background`, `user`, `metadata`, `stream_options`, and `service_tier`.
 
 ### `GET /v1/models`
 
@@ -298,11 +302,13 @@ Authenticated service health endpoint.
 - `DELETE /admin/accounts/:account_id`
   Remove an account from local persistence.
 - `PATCH /admin/accounts/:account_id`
-  Update mutable fields such as `label` or `status`.
+  Update mutable fields such as `label` or `status`. Allowed `status` values are `active` and `disabled`.
 - `POST /admin/accounts/:account_id/refresh`
   Force an OAuth token refresh.
 - `GET /admin/accounts/:account_id/usage`
   Fetch the runtime quota view and cached quota metadata for one account.
+- `GET /admin/accounts/:account_id/usage?cached=true`
+  Return the cached-only quota view without calling the upstream `/codex/usage` endpoint. The response includes `cached_quota`, `quota_runtime`, `quota_source`, and `quota_fetched_at`.
 
 ### Device login
 
@@ -376,7 +382,7 @@ The repository includes:
 - `Dockerfile`
   Multi-stage build that compiles the Go binary and runs it in a small Alpine image as a non-root user.
 - `compose.yaml`
-  Starts the proxy with only the required environment variables, publishes the configured port, forces `DATA_DIR=/app/data`, mounts a persistent Docker volume for `/app/data`, and adds basic runtime hardening.
+  Starts the proxy with `PROXY_API_KEY`, defaulted `PORT` and `DEBUG_LOG_PAYLOADS`, forces `DATA_DIR=/app/data`, publishes the configured port, mounts a persistent Docker volume for `/app/data`, and adds basic runtime hardening.
 - `.dockerignore`
   Keeps build context small and avoids copying local state or secrets into the image build context.
 
