@@ -270,6 +270,56 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsTranslationPreservesCustomToolShape(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []openai.ChatMessage{{
+			Role:    "user",
+			Content: openai.MessageContent{{Type: "text", Text: "Patch the file"}},
+		}},
+		Tools: []openai.ToolDefinition{{
+			Type:        "custom",
+			Name:        "ApplyPatch",
+			Description: "Patch a file",
+			Format: map[string]any{
+				"type":       "grammar",
+				"definition": "start: item+",
+			},
+			ExtraFields: map[string]any{
+				"metadata": map[string]any{"origin": "cursor"},
+			},
+		}},
+		ToolChoice: json.RawMessage(`{"type":"custom","name":"ApplyPatch"}`),
+	}
+
+	normalized, err := ChatCompletions(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("ChatCompletions() error = %v", err)
+	}
+
+	if len(normalized.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(normalized.Tools))
+	}
+	if normalized.Tools[0].Type != "custom" {
+		t.Fatalf("tool type = %q, want custom", normalized.Tools[0].Type)
+	}
+	if normalized.Tools[0].Name != "ApplyPatch" {
+		t.Fatalf("tool name = %q, want ApplyPatch", normalized.Tools[0].Name)
+	}
+	if got := normalized.Tools[0].Format["type"]; got != "grammar" {
+		t.Fatalf("tool format type = %#v, want grammar", got)
+	}
+	metadata, _ := normalized.Tools[0].ExtraFields["metadata"].(map[string]any)
+	if got := metadata["origin"]; got != "cursor" {
+		t.Fatalf("tool metadata origin = %#v, want cursor", got)
+	}
+	if string(normalized.ToolChoice) != `{"type":"custom","name":"ApplyPatch"}` {
+		t.Fatalf("tool choice = %s, want custom tool choice passthrough", string(normalized.ToolChoice))
+	}
+}
+
 func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 	t.Parallel()
 

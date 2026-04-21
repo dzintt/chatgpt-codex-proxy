@@ -298,6 +298,8 @@ func normalizeTools(tools []openai.ToolDefinition) []codex.Tool {
 				SearchContextSize: tool.SearchContextSize,
 				UserLocation:      tool.UserLocation,
 			})
+		default:
+			result = append(result, tool)
 		}
 	}
 	return result
