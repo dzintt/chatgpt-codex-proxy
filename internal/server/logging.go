@@ -107,6 +107,25 @@ func (a *App) logUpstreamPayload(c *gin.Context, endpoint, transport, accountID 
 	a.logger.Info("payload debug", attrs...)
 }
 
+func (a *App) logCustomToolTrace(c *gin.Context, endpoint, phase string, eventType string, state *translate.ToolCallState) {
+	if a == nil || a.logger == nil || !a.cfg.DebugLogPayloads || state == nil {
+		return
+	}
+
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs,
+		"phase", phase,
+		"event_type", eventType,
+		"call_id", state.CallID,
+		"item_id", state.ItemID,
+		"name", state.Name,
+		"status", state.Status,
+		"input_len", len(state.Input),
+		"completed", state.Completed(),
+	)
+	a.logger.Info("custom tool debug", attrs...)
+}
+
 func contextLogAttrs(c *gin.Context, endpoint string) []any {
 	requestID := ""
 	path := ""

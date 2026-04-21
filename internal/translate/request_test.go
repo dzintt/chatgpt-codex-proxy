@@ -87,6 +87,9 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	if len(normalized.Tools) != 1 || normalized.Tools[0].Type != "function" {
 		t.Fatalf("tools = %#v", normalized.Tools)
 	}
+	if normalized.Tools[0].Name != "lookup_weather" {
+		t.Fatalf("tool name = %q, want lookup_weather", normalized.Tools[0].Name)
+	}
 }
 
 func TestResponsesTranslation(t *testing.T) {

@@ -243,7 +243,13 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
+		if state := accumulator.ToolCallStateForEvent(event); state != nil && (state.ToolType == "custom" || strings.HasPrefix(event.Type, "response.custom_tool_call_input.")) {
+			a.logCustomToolTrace(c, "chat_completions", "upstream_event", event.Type, state)
+		}
 		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallInitialized, toolCallArgumentsSent, &nextToolCallIndex); emitted {
+			if state := accumulator.ToolCallStateForEvent(event); state != nil && state.ToolType == "custom" {
+				a.logCustomToolTrace(c, "chat_completions", "chat_chunk_emitted", event.Type, state)
+			}
 			c.Writer.Flush()
 			continue
 		}
