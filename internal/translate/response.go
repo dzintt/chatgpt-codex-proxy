@@ -555,9 +555,17 @@ func (a *Accumulator) ensureToolCallState(itemID, callID string, explicitIndex i
 		if explicitIndex >= 0 {
 			existing.OutputIndex = a.resolveOutputIndex(explicitIndex)
 		}
-		existing.ItemID = jsonutil.FirstNonEmpty(existing.ItemID, itemID)
-		existing.CallID = jsonutil.FirstNonEmpty(existing.CallID, callID)
-		a.registerToolCallAliases(existing, existing.CallID, existing.ItemID)
+		hadPlaceholderItemID := existing.ItemID == "" || existing.ItemID == existing.CallID
+		hadPlaceholderCallID := existing.CallID == "" || existing.CallID == existing.ItemID
+		if hadPlaceholderItemID {
+			existing.ItemID = jsonutil.FirstNonEmpty(itemID, existing.ItemID)
+		}
+		if hadPlaceholderCallID {
+			existing.CallID = jsonutil.FirstNonEmpty(callID, existing.CallID)
+		}
+		existing.ItemID = jsonutil.FirstNonEmpty(existing.ItemID, itemID, existing.CallID)
+		existing.CallID = jsonutil.FirstNonEmpty(existing.CallID, callID, existing.ItemID)
+		a.registerToolCallAliases(existing, existing.CallID, existing.ItemID, callID, itemID)
 		return existing
 	}
 

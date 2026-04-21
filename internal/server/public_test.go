@@ -1133,7 +1133,7 @@ func TestStreamChatCompletionUsesToolNameFromOutputItemWhenArgumentEventsOmitIt(
 					"output_index": 0,
 					"item": map[string]any{
 						"id":        "fc_tool",
-						"call_id":   "fc_tool",
+						"call_id":   "call_glob",
 						"type":      "function_call",
 						"name":      "Glob",
 						"arguments": `{"path":"C:\\`,
@@ -1180,6 +1180,9 @@ func TestStreamChatCompletionUsesToolNameFromOutputItemWhenArgumentEventsOmitIt(
 	toolCalls := sliceOfMapsFromAny(delta["tool_calls"])
 	if len(toolCalls) != 1 {
 		t.Fatalf("tool_calls len = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0]["id"] != "call_glob" {
+		t.Fatalf("tool_calls[0].id = %#v, want call_glob", toolCalls[0]["id"])
 	}
 	function := nestedMapFromAny(toolCalls[0]["function"])
 	if function["name"] != "Glob" {
@@ -1300,6 +1303,9 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 	toolCalls := sliceOfMapsFromAny(delta["tool_calls"])
 	if len(toolCalls) != 1 {
 		t.Fatalf("tool_calls len = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0]["id"] != "call_patch" {
+		t.Fatalf("tool_calls[0].id = %#v, want call_patch", toolCalls[0]["id"])
 	}
 	if toolCalls[0]["type"] != "custom" {
 		t.Fatalf("tool_calls[0].type = %#v, want custom", toolCalls[0]["type"])

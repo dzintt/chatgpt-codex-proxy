@@ -235,6 +235,57 @@ func TestEnsureResponseToolCallCompletedIncludesCallID(t *testing.T) {
 	}
 }
 
+func TestApplyUpgradesPlaceholderToolCallIDWhenOutputItemProvidesCallID(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.custom_tool_call_input.delta",
+		Raw: map[string]any{
+			"response_id":  "resp_custom",
+			"item_id":      "ctc_tool",
+			"output_index": 0,
+			"delta":        "*** Begin Patch\n",
+		},
+	})
+	accumulator.Apply(&codex.StreamEvent{
+		Type: "response.output_item.added",
+		Raw: map[string]any{
+			"response_id":  "resp_custom",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":      "ctc_tool",
+				"call_id": "call_patch",
+				"type":    "custom_tool_call",
+				"name":    "ApplyPatch",
+				"input":   "*** Begin Patch\n",
+				"status":  "in_progress",
+			},
+		},
+	})
+
+	if len(accumulator.ToolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1", len(accumulator.ToolCalls))
+	}
+	if accumulator.ToolCalls[0].CallID != "call_patch" {
+		t.Fatalf("CallID = %q, want call_patch", accumulator.ToolCalls[0].CallID)
+	}
+
+	chatObject := accumulator.ChatCompletionObject()
+	choices := sliceOfMaps(chatObject["choices"])
+	message, _ := choices[0]["message"].(map[string]any)
+	toolCalls := sliceOfMaps(message["tool_calls"])
+	if toolCalls[0]["id"] != "call_patch" {
+		t.Fatalf("tool_calls[0].id = %#v, want call_patch", toolCalls[0]["id"])
+	}
+
+	responsesObject := accumulator.ResponsesObject()
+	output := responsesObject["output"].([]map[string]any)
+	if output[0]["call_id"] != "call_patch" {
+		t.Fatalf("output[0].call_id = %#v, want call_patch", output[0]["call_id"])
+	}
+}
+
 func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.T) {
 	t.Parallel()
 
