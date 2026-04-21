@@ -4,56 +4,80 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"chatgpt-codex-proxy/internal/accounts"
 )
 
-func TestParseQuotaFromHeadersIncludesSecondaryAndCredits(t *testing.T) {
+func TestParseQuotaFromHeaders(t *testing.T) {
 	t.Parallel()
 
-	headers := http.Header{}
-	headers.Set("X-Codex-Primary-Used-Percent", "82.5")
-	headers.Set("X-Codex-Primary-Window-Minutes", "300")
-	headers.Set("X-Codex-Primary-Reset-At", "4102444800")
-	headers.Set("X-Codex-Secondary-Used-Percent", "12")
-	headers.Set("X-Codex-Secondary-Window-Minutes", "10080")
-	headers.Set("X-Codex-Secondary-Reset-At", "4103049600")
-	headers.Set("X-Codex-Credits-Has-Credits", "true")
-	headers.Set("X-Codex-Credits-Unlimited", "false")
-	headers.Set("X-Codex-Credits-Balance", "19.5")
-	headers.Set("X-Codex-Active-Limit", "plus")
+	tests := []struct {
+		name   string
+		header func(http.Header)
+		assert func(*testing.T, *accounts.QuotaSnapshot)
+	}{
+		{
+			name: "includes secondary window and credits",
+			header: func(headers http.Header) {
+				headers.Set("X-Codex-Primary-Used-Percent", "82.5")
+				headers.Set("X-Codex-Primary-Window-Minutes", "300")
+				headers.Set("X-Codex-Primary-Reset-At", "4102444800")
+				headers.Set("X-Codex-Secondary-Used-Percent", "12")
+				headers.Set("X-Codex-Secondary-Window-Minutes", "10080")
+				headers.Set("X-Codex-Secondary-Reset-At", "4103049600")
+				headers.Set("X-Codex-Credits-Has-Credits", "true")
+				headers.Set("X-Codex-Credits-Unlimited", "false")
+				headers.Set("X-Codex-Credits-Balance", "19.5")
+				headers.Set("X-Codex-Active-Limit", "plus")
+			},
+			assert: func(t *testing.T, snapshot *accounts.QuotaSnapshot) {
+				t.Helper()
+				if snapshot == nil {
+					t.Fatal("ParseQuotaFromHeaders() = nil")
+				}
+				if snapshot.SecondaryRateLimit == nil {
+					t.Fatal("expected secondary rate limit")
+				}
+				if snapshot.Credits == nil {
+					t.Fatal("expected credits snapshot")
+				}
+				if !snapshot.Credits.HasCredits || snapshot.Credits.Unlimited {
+					t.Fatalf("credits flags = %#v", snapshot.Credits)
+				}
+				if snapshot.Credits.Balance == nil || *snapshot.Credits.Balance != 19.5 {
+					t.Fatalf("balance = %#v, want 19.5", snapshot.Credits.Balance)
+				}
+				if snapshot.Credits.ActiveLimit != "plus" {
+					t.Fatalf("active_limit = %q, want plus", snapshot.Credits.ActiveLimit)
+				}
+			},
+		},
+		{
+			name: "ignores credits-only headers",
+			header: func(headers http.Header) {
+				headers.Set("X-Codex-Credits-Has-Credits", "true")
+				headers.Set("X-Codex-Credits-Unlimited", "false")
+				headers.Set("X-Codex-Credits-Balance", "19.5")
+				headers.Set("X-Codex-Active-Limit", "plus")
+			},
+			assert: func(t *testing.T, snapshot *accounts.QuotaSnapshot) {
+				t.Helper()
+				if snapshot != nil {
+					t.Fatalf("ParseQuotaFromHeaders() = %#v, want nil for credits-only headers", snapshot)
+				}
+			},
+		},
+	}
 
-	snapshot := ParseQuotaFromHeaders(headers)
-	if snapshot == nil {
-		t.Fatal("ParseQuotaFromHeaders() = nil")
-	}
-	if snapshot.SecondaryRateLimit == nil {
-		t.Fatal("expected secondary rate limit")
-	}
-	if snapshot.Credits == nil {
-		t.Fatal("expected credits snapshot")
-	}
-	if !snapshot.Credits.HasCredits || snapshot.Credits.Unlimited {
-		t.Fatalf("credits flags = %#v", snapshot.Credits)
-	}
-	if snapshot.Credits.Balance == nil || *snapshot.Credits.Balance != 19.5 {
-		t.Fatalf("balance = %#v, want 19.5", snapshot.Credits.Balance)
-	}
-	if snapshot.Credits.ActiveLimit != "plus" {
-		t.Fatalf("active_limit = %q, want plus", snapshot.Credits.ActiveLimit)
-	}
-}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestParseQuotaFromHeadersIgnoresCreditsOnly(t *testing.T) {
-	t.Parallel()
-
-	headers := http.Header{}
-	headers.Set("X-Codex-Credits-Has-Credits", "true")
-	headers.Set("X-Codex-Credits-Unlimited", "false")
-	headers.Set("X-Codex-Credits-Balance", "19.5")
-	headers.Set("X-Codex-Active-Limit", "plus")
-
-	snapshot := ParseQuotaFromHeaders(headers)
-	if snapshot != nil {
-		t.Fatalf("ParseQuotaFromHeaders() = %#v, want nil for credits-only headers", snapshot)
+			headers := http.Header{}
+			tc.header(headers)
+			tc.assert(t, ParseQuotaFromHeaders(headers))
+		})
 	}
 }
 

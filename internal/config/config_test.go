@@ -14,52 +14,59 @@ func TestLoadRequiresProxyAPIKey(t *testing.T) {
 	}
 }
 
-func TestLoadUsesDefaultPortAndDataDir(t *testing.T) {
+func TestLoadBuildsListenAddrAndDataDir(t *testing.T) {
 	t.Setenv("PROXY_API_KEY", "test-key")
-	cwd := t.TempDir()
-	t.Chdir(cwd)
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantListen string
+		wantData   string
+	}{
+		{
+			name:       "defaults",
+			wantListen: ":8080",
+			wantData:   "data",
+		},
+		{
+			name: "data dir override",
+			env: map[string]string{
+				"DATA_DIR": "custom-data",
+			},
+			wantListen: ":8080",
+			wantData:   "custom-data",
+		},
+		{
+			name: "port override",
+			env: map[string]string{
+				"PORT": "9090",
+			},
+			wantListen: ":9090",
+			wantData:   "data",
+		},
 	}
-	if cfg.ListenAddr != ":8080" {
-		t.Fatalf("Load() listen addr = %q, want :8080", cfg.ListenAddr)
-	}
-	if cfg.DataDir == "" {
-		t.Fatal("Load() data dir = empty, want resolved data path")
-	}
-	if cfg.DataDir != filepath.Join(cwd, "data") {
-		t.Fatalf("Load() data dir = %q, want %q", cfg.DataDir, filepath.Join(cwd, "data"))
-	}
-}
 
-func TestLoadHonorsDataDirOverride(t *testing.T) {
-	t.Setenv("PROXY_API_KEY", "test-key")
-	t.Setenv("DATA_DIR", "custom-data")
-	cwd := t.TempDir()
-	t.Chdir(cwd)
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.DataDir != filepath.Join(cwd, "custom-data") {
-		t.Fatalf("Load() data dir = %q, want %q", cfg.DataDir, filepath.Join(cwd, "custom-data"))
-	}
-}
-
-func TestLoadAcceptsPortOverride(t *testing.T) {
-	t.Setenv("PROXY_API_KEY", "test-key")
-	t.Setenv("PORT", "9090")
-	t.Chdir(t.TempDir())
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.ListenAddr != ":9090" {
-		t.Fatalf("Load() listen addr = %q, want :9090", cfg.ListenAddr)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.ListenAddr != tc.wantListen {
+				t.Fatalf("Load() listen addr = %q, want %q", cfg.ListenAddr, tc.wantListen)
+			}
+			wantDataDir := filepath.Join(cwd, tc.wantData)
+			if cfg.DataDir != wantDataDir {
+				t.Fatalf("Load() data dir = %q, want %q", cfg.DataDir, wantDataDir)
+			}
+		})
 	}
 }
 
