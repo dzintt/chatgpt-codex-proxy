@@ -53,10 +53,6 @@ func (a *App) handleAdminDeviceLoginGet(c *gin.Context) {
 }
 
 func (a *App) handleAdminAccountDelete(c *gin.Context) {
-	if _, ok := a.accounts.Get(c.Param("account_id")); !ok {
-		a.writeAdminError(c, http.StatusNotFound, "account_not_found", "account not found")
-		return
-	}
 	if err := a.accounts.Remove(c.Param("account_id")); err != nil {
 		a.writeAdminError(c, http.StatusNotFound, "account_not_found", err.Error())
 		return
@@ -100,6 +96,7 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		a.writeAdminError(c, http.StatusBadGateway, "usage_lookup_failed", err.Error())
 		return
 	}
+	effectiveQuota := firstQuota(quota, record.CachedQuota)
 	c.JSON(http.StatusOK, gin.H{
 		"account_id":          record.ID,
 		"upstream_account_id": record.AccountID,
@@ -110,8 +107,8 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		"last_error":          record.LastError,
 		"cached_quota":        record.CachedQuota,
 		"quota_runtime":       quota,
-		"quota_source":        quotaSource(firstQuota(quota, record.CachedQuota)),
-		"quota_fetched_at":    quotaFetchedAt(firstQuota(quota, record.CachedQuota)),
+		"quota_source":        quotaSource(effectiveQuota),
+		"quota_fetched_at":    quotaFetchedAt(effectiveQuota),
 		"oauth_expires":       record.Token.ExpiresAt,
 	})
 }

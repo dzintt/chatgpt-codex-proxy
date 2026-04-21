@@ -304,21 +304,6 @@ func (s *Service) SetCooldown(id string, until *time.Time, message string) error
 	return s.persistLocked()
 }
 
-func (s *Service) ClearCooldownIfExpired(id string, now time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[id]
-	if !ok {
-		return fmt.Errorf("account not found")
-	}
-	if clearExpiredCooldownLocked(record, now) {
-		record.UpdatedAt = now
-		return s.persistLocked()
-	}
-	return nil
-}
-
 func (s *Service) NoteSuccess(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
