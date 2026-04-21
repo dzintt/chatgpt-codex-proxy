@@ -11,7 +11,7 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ChatCompletionsRequest{
-		Model:           "codex-low",
+		Model:           "gpt-5.4",
 		ReasoningEffort: "high",
 		Messages: []openai.ChatMessage{
 			{
@@ -55,13 +55,13 @@ func TestChatCompletionsTranslation(t *testing.T) {
 		}},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
 
-	if normalized.Model != "gpt-5.3-codex" {
-		t.Fatalf("model = %q, want default alias expansion", normalized.Model)
+	if normalized.Model != "gpt-5.4" {
+		t.Fatalf("model = %q, want explicit model passthrough", normalized.Model)
 	}
 	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning = %#v, want explicit effort override", normalized.Reasoning)
@@ -91,7 +91,7 @@ func TestResponsesTranslation(t *testing.T) {
 
 	toolChoice, _ := json.Marshal(map[string]any{"type": "function", "name": "lookup"})
 	request := openai.ResponsesRequest{
-		Model:              "codex",
+		Model:              "gpt-5.4",
 		PreviousResponseID: "resp_prev",
 		Instructions:       "Be terse",
 		Input: openai.ResponsesInput{
@@ -120,12 +120,12 @@ func TestResponsesTranslation(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.3-codex")
+	normalized, err := Responses(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
 
-	if normalized.Model != "gpt-5.3-codex" {
+	if normalized.Model != "gpt-5.4" {
 		t.Fatalf("model = %q", normalized.Model)
 	}
 	if normalized.PreviousResponseID != "resp_prev" {
@@ -143,7 +143,7 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ResponsesRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Input: openai.ResponsesInput{
 			Items: []openai.ResponsesInputItem{{
 				Role: "user",
@@ -167,7 +167,7 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 		}},
 	}
 
-	normalized, err := Responses(request, "gpt-5.3-codex")
+	normalized, err := Responses(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -239,7 +239,7 @@ func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 			t.Parallel()
 
 			request := openai.ChatCompletionsRequest{
-				Model: "codex",
+				Model: "gpt-5.4",
 				Messages: []openai.ChatMessage{{
 					Role:    "user",
 					Content: openai.MessageContent{{Type: "text", Text: "Search the web"}},
@@ -248,7 +248,7 @@ func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 				ToolChoice: tc.toolChoice,
 			}
 
-			normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+			normalized, err := ChatCompletions(request, "gpt-5.4")
 			if err != nil {
 				t.Fatalf("ChatCompletions() error = %v", err)
 			}
@@ -268,7 +268,7 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ResponsesRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Input: openai.ResponsesInput{
 			Items: []openai.ResponsesInputItem{
 				{
@@ -289,7 +289,7 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.3-codex")
+	normalized, err := Responses(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -310,7 +310,7 @@ func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ResponsesRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Input: openai.ResponsesInput{
 			Items: []openai.ResponsesInputItem{{
 				Role: "user",
@@ -326,7 +326,7 @@ func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.3-codex")
+	normalized, err := Responses(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -350,16 +350,31 @@ func TestUnsupportedContentPartRejected(t *testing.T) {
 	t.Parallel()
 
 	_, err := ChatCompletions(openai.ChatCompletionsRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Messages: []openai.ChatMessage{{
 			Role: "user",
 			Content: openai.MessageContent{{
 				Type: "audio",
 			}},
 		}},
-	}, "gpt-5.3-codex")
+	}, "gpt-5.4")
 	if err == nil {
 		t.Fatal("expected unsupported content part error")
+	}
+}
+
+func TestUnsupportedModelRejected(t *testing.T) {
+	t.Parallel()
+
+	_, err := ChatCompletions(openai.ChatCompletionsRequest{
+		Model: "codex",
+		Messages: []openai.ChatMessage{{
+			Role:    "user",
+			Content: openai.MessageContent{{Type: "text", Text: "hello"}},
+		}},
+	}, "gpt-5.4")
+	if err == nil {
+		t.Fatal("expected unsupported model error")
 	}
 }
 
@@ -367,7 +382,7 @@ func TestChatCompletionsTranslationAcceptsLegacyFunctionsAndChoice(t *testing.T)
 	t.Parallel()
 
 	request := openai.ChatCompletionsRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Messages: []openai.ChatMessage{{
 			Role:    "user",
 			Content: openai.MessageContent{{Type: "text", Text: "Call the function"}},
@@ -379,7 +394,7 @@ func TestChatCompletionsTranslationAcceptsLegacyFunctionsAndChoice(t *testing.T)
 		FunctionCall: &openai.LegacyFunctionCallChoice{Name: "lookup_weather"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -407,7 +422,7 @@ func TestChatCompletionsTranslationPrefersModernToolsAndToolChoice(t *testing.T)
 	}
 
 	request := openai.ChatCompletionsRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Messages: []openai.ChatMessage{{
 			Role:    "user",
 			Content: openai.MessageContent{{Type: "text", Text: "Use the tool"}},
@@ -426,7 +441,7 @@ func TestChatCompletionsTranslationPrefersModernToolsAndToolChoice(t *testing.T)
 		FunctionCall: &openai.LegacyFunctionCallChoice{Name: "legacy_tool"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -446,7 +461,7 @@ func TestChatCompletionsTranslationSupportsJSONObject(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ChatCompletionsRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Messages: []openai.ChatMessage{{
 			Role:    "user",
 			Content: openai.MessageContent{{Type: "text", Text: "Return JSON"}},
@@ -454,7 +469,7 @@ func TestChatCompletionsTranslationSupportsJSONObject(t *testing.T) {
 		ResponseFormat: &openai.ResponseFormat{Type: "json_object"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -468,7 +483,7 @@ func TestChatCompletionsTranslationPreparesSchemaAndWarnings(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ChatCompletionsRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Messages: []openai.ChatMessage{{
 			Role:    "user",
 			Content: openai.MessageContent{{Type: "text", Text: "Return structured data"}},
@@ -499,7 +514,7 @@ func TestChatCompletionsTranslationPreparesSchemaAndWarnings(t *testing.T) {
 		StreamOptions: json.RawMessage(`{"include_usage":true}`),
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.3-codex")
+	normalized, err := ChatCompletions(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -530,7 +545,7 @@ func TestResponsesTranslationPreparesSchemaAndWarnings(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ResponsesRequest{
-		Model: "codex",
+		Model: "gpt-5.4",
 		Input: openai.ResponsesInput{
 			Items: []openai.ResponsesInputItem{{
 				Role: "user",
@@ -563,7 +578,7 @@ func TestResponsesTranslationPreparesSchemaAndWarnings(t *testing.T) {
 		Metadata:          map[string]any{"request_id": "abc"},
 	}
 
-	normalized, err := Responses(request, "gpt-5.3-codex")
+	normalized, err := Responses(request, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}

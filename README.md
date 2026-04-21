@@ -30,6 +30,7 @@ Use it for local or small-scale deployments.
 - Structured outputs
 - Text and image inputs on Chat Completions
 - Text, image, and file inputs on Responses
+- Supported public model IDs: `gpt-5.4`, `gpt-5.2-codex`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
 - Local JSON persistence for accounts and cached quota state
@@ -55,6 +56,9 @@ Use it for local or small-scale deployments.
 The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
+- `GET https://chatgpt.com/backend-api/codex/usage`
+- `WSS https://chatgpt.com/backend-api/codex/responses` for explicit continuation requests
+- `https://auth.openai.com/api/accounts/deviceauth/*` and `https://auth.openai.com/oauth/token` for device login and token refresh
 
 For continuations, the proxy keeps short-lived in-memory state so a `previous_response_id` request stays pinned to the correct account and preserves the prior turn context.
 
@@ -184,7 +188,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "codex",
+    "model": "gpt-5.4",
     "messages": [
       { "role": "system", "content": "Be concise." },
       { "role": "user", "content": "Explain what this repository does." }
@@ -199,7 +203,7 @@ curl http://localhost:8080/v1/responses \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "codex",
+    "model": "gpt-5.4",
     "input": "Summarize this project in three bullet points."
   }'
 ```
@@ -257,11 +261,17 @@ Compatibility notes:
 
 ### `GET /v1/models`
 
-Returns a curated model list for OpenAI-compatible clients. The alias `codex` resolves to the configured default model.
+Returns the curated supported model list:
+
+- `gpt-5.4`
+- `gpt-5.2-codex`
+- `gpt-5.4-mini`
+- `gpt-5.3-codex`
+- `gpt-5.2`
 
 ### `GET /v1/models/<model_id>`
 
-Returns one model object in the OpenAI model shape. The alias `codex` resolves to the configured default model and unknown IDs return an OpenAI-style `model_not_found` error.
+Returns one model object in the OpenAI model shape for one of the supported model IDs. Unknown IDs return an OpenAI-style `model_not_found` error.
 
 ### `GET /health/live`
 
@@ -317,13 +327,13 @@ Valid strategies:
 
 Account state is stored locally in:
 
-- `data/accounts.json`
+- `${DATA_DIR}/accounts.json`
 
 That file includes:
 
 - Account metadata
 - OAuth tokens
-- Session cookies
+- A reserved `cookies` field in the persisted schema
 - Cached quota snapshots
 - Transient cooldown state
 - Admin labels and status flags
@@ -345,8 +355,8 @@ Supported environment variables:
 
 Everything else is fixed in code on purpose:
 
-- The default `codex` alias resolves to `gpt-5.3-codex`.
-- The initial rotation strategy is `least_used`, and can be changed at runtime through `PUT /admin/rotation`.
+- The default model is `gpt-5.4`.
+- A fresh data store starts with the `least_used` rotation strategy. Changes made through `PUT /admin/rotation` are persisted and restored on restart.
 - Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
 
 ## Docker Deployment

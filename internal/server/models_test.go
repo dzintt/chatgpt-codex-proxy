@@ -51,8 +51,8 @@ func TestHandleModelByID(t *testing.T) {
 		assertBody func(*testing.T, []byte)
 	}{
 		{
-			name:       "resolves alias",
-			modelID:    "codex",
+			name:       "returns supported model",
+			modelID:    "gpt-5.4",
 			wantStatus: http.StatusOK,
 			assertBody: func(t *testing.T, bodyBytes []byte) {
 				t.Helper()
@@ -61,8 +61,8 @@ func TestHandleModelByID(t *testing.T) {
 				if err := json.Unmarshal(bodyBytes, &body); err != nil {
 					t.Fatalf("json.Unmarshal() error = %v", err)
 				}
-				if body["id"] != "codex" {
-					t.Fatalf("id = %#v, want codex", body["id"])
+				if body["id"] != "gpt-5.4" {
+					t.Fatalf("id = %#v, want gpt-5.4", body["id"])
 				}
 				if body["created"] != float64(openai.ModelCreatedTimestamp) {
 					t.Fatalf("created = %#v, want %d", body["created"], openai.ModelCreatedTimestamp)

@@ -2,18 +2,15 @@ package openai
 
 import "strings"
 
-const CanonicalDefaultModel = "gpt-5.3-codex"
+const CanonicalDefaultModel = "gpt-5.4"
 const ModelCreatedTimestamp int64 = 1700000000
 
 var supportedModelSet = map[string]struct{}{
-	"gpt-5.4":          {},
-	"gpt-5.4-mini":     {},
-	"gpt-5.3-codex":    {},
-	"gpt-5.2":          {},
-	"gpt-5-codex":      {},
-	"gpt-5-codex-mini": {},
-	"gpt-oss-120b":     {},
-	"gpt-oss-20b":      {},
+	"gpt-5.4":       {},
+	"gpt-5.4-mini":  {},
+	"gpt-5.3-codex": {},
+	"gpt-5.2-codex": {},
+	"gpt-5.2":       {},
 }
 
 func ResolveDefaultModel(configured string) string {
@@ -30,16 +27,11 @@ func ResolveDefaultModel(configured string) string {
 func PublicModelList(configuredDefault string) []string {
 	defaultModel := ResolveDefaultModel(configuredDefault)
 	ordered := []string{
-		"codex",
 		defaultModel,
-		"gpt-5.4",
+		"gpt-5.2-codex",
 		"gpt-5.4-mini",
 		"gpt-5.3-codex",
 		"gpt-5.2",
-		"gpt-5-codex",
-		"gpt-5-codex-mini",
-		"gpt-oss-120b",
-		"gpt-oss-20b",
 	}
 	seen := make(map[string]struct{}, len(ordered))
 	result := make([]string, 0, len(ordered))
@@ -68,4 +60,9 @@ func ResolvePublicModel(model string, configuredDefault string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func IsSupportedModel(model string) bool {
+	_, ok := supportedModelSet[strings.TrimSpace(model)]
+	return ok
 }

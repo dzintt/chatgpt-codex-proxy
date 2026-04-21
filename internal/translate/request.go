@@ -14,7 +14,10 @@ import (
 const defaultInstructions = "You are a helpful assistant."
 
 func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (NormalizedRequest, error) {
-	model, reasoning, serviceTier := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier)
+	model, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier)
+	if err != nil {
+		return NormalizedRequest{}, err
+	}
 	tools := req.Tools
 	if len(tools) == 0 && len(req.Functions) > 0 {
 		tools = legacyFunctionsAsTools(req.Functions)
@@ -108,7 +111,10 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 }
 
 func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequest, error) {
-	model, reasoning, serviceTier := normalizeModel(req.Model, defaultModel, "", req.ServiceTier)
+	model, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, "", req.ServiceTier)
+	if err != nil {
+		return NormalizedRequest{}, err
+	}
 	if req.Reasoning != nil && reasoning == nil {
 		reasoning = &codex.Reasoning{
 			Effort:  req.Reasoning.Effort,
@@ -423,44 +429,21 @@ func flattenContent(content openai.MessageContent) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
-func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string) (string, *codex.Reasoning, string) {
+func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string) (string, *codex.Reasoning, string, error) {
 	model := strings.TrimSpace(rawModel)
-	if model == "" || model == "codex" {
+	if model == "" {
 		model = openai.ResolveDefaultModel(defaultModel)
+	}
+	if !openai.IsSupportedModel(model) {
+		return "", nil, "", fmt.Errorf("unsupported model %q", model)
 	}
 
 	effort := strings.TrimSpace(reasoningEffort)
-	switch {
-	case strings.HasSuffix(model, "-xhigh"):
-		model = strings.TrimSuffix(model, "-xhigh")
-		if effort == "" {
-			effort = "high"
-		}
-	case strings.HasSuffix(model, "-high"):
-		model = strings.TrimSuffix(model, "-high")
-		if effort == "" {
-			effort = "high"
-		}
-	case strings.HasSuffix(model, "-medium"):
-		model = strings.TrimSuffix(model, "-medium")
-		if effort == "" {
-			effort = "medium"
-		}
-	case strings.HasSuffix(model, "-low"):
-		model = strings.TrimSuffix(model, "-low")
-		if effort == "" {
-			effort = "low"
-		}
-	}
-
 	var reasoning *codex.Reasoning
 	if effort != "" {
 		reasoning = &codex.Reasoning{Effort: effort, Summary: "auto"}
 	}
-	if model == "" || model == "codex" {
-		model = openai.ResolveDefaultModel(defaultModel)
-	}
-	return model, reasoning, strings.TrimSpace(serviceTier)
+	return model, reasoning, strings.TrimSpace(serviceTier), nil
 }
 
 func collectChatCompatibilityWarnings(req openai.ChatCompletionsRequest) []CompatibilityWarning {
