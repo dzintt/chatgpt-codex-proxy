@@ -50,7 +50,7 @@ Use it for local or small-scale deployments.
 3. That normalized request is translated into the upstream Codex backend shape.
 4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
 
-<img width="1533" height="691" alt="image" src="https://github.com/user-attachments/assets/74a9f7d6-5cd1-4d1b-af8b-7edbca3d7b93" />
+<img width="1533" height="691" alt="image" src="https://github.com/user-attachments/assets/61af6057-4fce-4767-92a5-18653f938a45" />
 
 The proxy talks to:
 
