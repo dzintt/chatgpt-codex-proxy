@@ -116,6 +116,8 @@ Optional:
   Overrides the default listen port `8080`.
 - `DATA_DIR`
   Overrides the default local state directory. Defaults to `data` for local runs. The Docker setup forces this to `/app/data`.
+- `DEBUG_LOG_PAYLOADS`
+  When set to `true`, logs the raw incoming JSON body sent to the proxy and the translated upstream Codex payload that gets sent out. Leave it off outside local debugging because it logs full request contents.
 
 You can start from the example file:
 
@@ -358,6 +360,8 @@ Supported environment variables:
   Optional. Defaults to `8080`.
 - `DATA_DIR`
   Optional. Defaults to `data` for local runs.
+- `DEBUG_LOG_PAYLOADS`
+  Optional. Defaults to `false`. When enabled, emits structured logs for incoming public API JSON bodies and translated upstream Codex request payloads.
 
 Everything else is fixed in code on purpose:
 

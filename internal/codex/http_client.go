@@ -89,11 +89,7 @@ func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record,
 		Accept:      "text/event-stream",
 	}), c.cfg.HeaderOrder)
 
-	bodyReq := req
-	bodyReq.Stream = true
-	bodyReq.Store = false
-	bodyReq.PreviousResponseID = ""
-	bodyReq.ServiceTier = ""
+	bodyReq := StreamRequestPayload(req)
 	payload, err := json.Marshal(bodyReq)
 	if err != nil {
 		return nil, err
@@ -214,4 +210,13 @@ func JoinURL(base, path string) string {
 
 func NewRequestID() string {
 	return fmt.Sprintf("req_%d_%08x", time.Now().UTC().UnixNano(), atomic.AddUint64(&requestSequence, 1))
+}
+
+func StreamRequestPayload(req Request) Request {
+	bodyReq := req
+	bodyReq.Stream = true
+	bodyReq.Store = false
+	bodyReq.PreviousResponseID = ""
+	bodyReq.ServiceTier = ""
+	return bodyReq
 }

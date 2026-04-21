@@ -31,6 +31,7 @@ type Config struct {
 	ListenAddr            string
 	DataDir               string
 	ProxyAPIKey           string
+	DebugLogPayloads      bool
 	DefaultModel          string
 	Originator            string
 	OpenAIBeta            string
@@ -74,11 +75,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	debugLogPayloads, err := loadBoolEnv("DEBUG_LOG_PAYLOADS", false)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		ListenAddr:            listenAddr,
 		DataDir:               dataDir,
 		ProxyAPIKey:           strings.TrimSpace(os.Getenv("PROXY_API_KEY")),
+		DebugLogPayloads:      debugLogPayloads,
 		DefaultModel:          defaultDefaultModel,
 		Originator:            defaultOriginator,
 		OpenAIBeta:            defaultOpenAIBeta,
@@ -142,4 +148,16 @@ func loadListenAddr() (string, error) {
 		return "", fmt.Errorf("PORT must be a valid TCP port")
 	}
 	return ":" + strconv.Itoa(port), nil
+}
+
+func loadBoolEnv(key string, defaultValue bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return value, nil
 }

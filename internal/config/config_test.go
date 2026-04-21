@@ -80,3 +80,28 @@ func TestLoadRejectsInvalidPort(t *testing.T) {
 		t.Fatal("Load() error = nil, want invalid PORT error")
 	}
 }
+
+func TestLoadParsesDebugLogPayloads(t *testing.T) {
+	t.Setenv("PROXY_API_KEY", "test-key")
+	t.Setenv("DEBUG_LOG_PAYLOADS", "true")
+	t.Chdir(t.TempDir())
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.DebugLogPayloads {
+		t.Fatal("Load() debug log payloads = false, want true")
+	}
+}
+
+func TestLoadRejectsInvalidDebugLogPayloads(t *testing.T) {
+	t.Setenv("PROXY_API_KEY", "test-key")
+	t.Setenv("DEBUG_LOG_PAYLOADS", "definitely-not-bool")
+	t.Chdir(t.TempDir())
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid DEBUG_LOG_PAYLOADS error")
+	}
+}

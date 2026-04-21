@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,13 @@ type eventStream interface {
 var errIncompleteResponse = errors.New("upstream stream ended before response.completed")
 
 func (a *App) handleChatCompletions(c *gin.Context) {
+	body, err := captureRequestBody(c)
+	if err != nil {
+		a.respondOpenAIInvalidRequest(c, err)
+		return
+	}
+	a.logIncomingPayload(c, "chat_completions", body)
+
 	var req openai.ChatCompletionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		a.respondOpenAIInvalidRequest(c, err)
@@ -42,7 +50,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 	}
 	a.logCompatibilityWarnings(c, "chat_completions", normalized.CompatibilityWarnings)
 
-	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
+	account, stream, quota, err := a.openHTTPStream(c, c.Request.Context(), "chat_completions", normalized, "", "")
 	if err != nil {
 		a.setRequestAccount(c, account)
 		a.handleOpenStreamError(c, "chat_completions", account.ID, account.ID, err)
@@ -70,6 +78,13 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 }
 
 func (a *App) handleResponses(c *gin.Context) {
+	body, err := captureRequestBody(c)
+	if err != nil {
+		a.respondOpenAIInvalidRequest(c, err)
+		return
+	}
+	a.logIncomingPayload(c, "responses", body)
+
 	var req openai.ResponsesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		a.respondOpenAIInvalidRequest(c, err)
@@ -98,7 +113,7 @@ func (a *App) handleResponses(c *gin.Context) {
 			normalized.PreviousResponseID = ""
 		}
 	}
-	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
+	account, stream, quota, err := a.openStream(c, c.Request.Context(), "responses", normalized, preferredID, turnState)
 	if err != nil {
 		a.setRequestAccount(c, account)
 		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, preferredID)
@@ -126,19 +141,20 @@ func (a *App) handleResponses(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-func (a *App) openStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	if normalized.Endpoint == translate.EndpointResponses && normalized.PreviousResponseID != "" {
-		return a.openWSStream(ctx, normalized, preferredID, turnState)
+		return a.openWSStream(c, ctx, endpoint, normalized, preferredID, turnState)
 	}
-	return a.openHTTPStream(ctx, normalized, preferredID, turnState)
+	return a.openHTTPStream(c, ctx, endpoint, normalized, preferredID, turnState)
 }
 
-func (a *App) openHTTPStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openHTTPStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	account, err := a.acquireReadyAccount(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
 	request := normalized.ToCodexRequest()
+	a.logUpstreamPayload(c, endpoint, "http", account.ID, codex.StreamRequestPayload(request))
 	stream, err := a.httpClient.StreamResponse(ctx, account, request, turnState)
 	if err != nil {
 		return account, nil, nil, err
@@ -146,7 +162,7 @@ func (a *App) openHTTPStream(ctx context.Context, normalized translate.Normalize
 	return account, stream, codex.ParseQuotaFromHeaders(stream.Headers()), nil
 }
 
-func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+func (a *App) openWSStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
 	account, err := a.acquireReadyAccount(ctx, preferredID)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
@@ -159,8 +175,9 @@ func (a *App) openWSStream(ctx context.Context, normalized translate.NormalizedR
 		IncludeBeta: true,
 	})
 	body := normalized.ToCodexWSCreatePayload()
-	endpoint := websocketEndpoint(a.cfg.CodexBaseURL)
-	stream, err := a.wsClient.Connect(ctx, endpoint, headers, body)
+	a.logUpstreamPayload(c, endpoint, "websocket", account.ID, body)
+	wsEndpoint := websocketEndpoint(a.cfg.CodexBaseURL)
+	stream, err := a.wsClient.Connect(ctx, wsEndpoint, headers, body)
 	if err != nil {
 		return account, nil, nil, err
 	}
@@ -861,6 +878,18 @@ func codexContentPartsFromContinuation(parts []accounts.ContinuationContentPart)
 		})
 	}
 	return out
+}
+
+func captureRequestBody(c *gin.Context) ([]byte, error) {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 func prepareStreamResponse(c *gin.Context) {

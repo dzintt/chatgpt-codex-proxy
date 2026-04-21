@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -68,10 +71,54 @@ func (a *App) logTupleReconversionWarning(c *gin.Context, endpoint, responseID s
 	a.logger.Warn("tuple reconversion failed", attrs...)
 }
 
+func (a *App) logIncomingPayload(c *gin.Context, endpoint string, payload []byte) {
+	if a == nil || a.logger == nil || !a.cfg.DebugLogPayloads {
+		return
+	}
+	formatted := formatPayloadForLog(payload)
+	if formatted == "" {
+		return
+	}
+
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs,
+		"direction", "incoming",
+		"payload", formatted,
+	)
+	a.logger.Info("payload debug", attrs...)
+}
+
+func (a *App) logUpstreamPayload(c *gin.Context, endpoint, transport, accountID string, payload any) {
+	if a == nil || a.logger == nil || !a.cfg.DebugLogPayloads {
+		return
+	}
+	formatted := formatPayloadForLog(payload)
+	if formatted == "" {
+		return
+	}
+
+	attrs := contextLogAttrs(c, endpoint)
+	attrs = append(attrs,
+		"direction", "upstream",
+		"transport", transport,
+		"payload", formatted,
+	)
+	attrs = appendStringAttr(attrs, "account_id", accountID)
+	a.logger.Info("payload debug", attrs...)
+}
+
 func contextLogAttrs(c *gin.Context, endpoint string) []any {
+	requestID := ""
+	path := ""
+	if c != nil {
+		requestID = middleware.GetRequestID(c)
+		if c.Request != nil && c.Request.URL != nil {
+			path = c.Request.URL.Path
+		}
+	}
 	return []any{
-		"request_id", middleware.GetRequestID(c),
-		"path", c.Request.URL.Path,
+		"request_id", requestID,
+		"path", path,
 		"endpoint", endpoint,
 	}
 }
@@ -81,4 +128,33 @@ func appendStringAttr(attrs []any, key, value string) []any {
 		return attrs
 	}
 	return append(attrs, key, value)
+}
+
+func formatPayloadForLog(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case []byte:
+		return normalizePayloadString(typed)
+	case string:
+		return normalizePayloadString([]byte(typed))
+	default:
+		payload, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprintf("<payload marshal error: %v>", err)
+		}
+		return normalizePayloadString(payload)
+	}
+}
+
+func normalizePayloadString(payload []byte) string {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	var compact bytes.Buffer
+	if json.Valid(trimmed) && json.Compact(&compact, trimmed) == nil {
+		return compact.String()
+	}
+	return string(trimmed)
 }

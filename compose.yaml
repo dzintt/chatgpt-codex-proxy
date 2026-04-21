@@ -8,6 +8,7 @@ services:
     environment:
       PORT: "${PORT:-8080}"
       PROXY_API_KEY: "${PROXY_API_KEY:?set PROXY_API_KEY in .env or the shell environment}"
+      DEBUG_LOG_PAYLOADS: "${DEBUG_LOG_PAYLOADS:-false}"
       DATA_DIR: /app/data
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
