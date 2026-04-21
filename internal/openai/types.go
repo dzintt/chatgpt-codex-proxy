@@ -1,6 +1,10 @@
 package openai
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
 
 type ChatCompletionsRequest struct {
 	Model             string                     `json:"model"`
@@ -243,6 +247,89 @@ type ResponsesInputItem struct {
 	Status           string          `json:"status,omitempty"`
 	Summary          []ReasoningPart `json:"summary,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
+}
+
+func (r *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var raw struct {
+		alias
+		Output json.RawMessage `json:"output,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ResponsesInputItem(raw.alias)
+
+	output, err := decodeResponsesOutput(raw.Output)
+	if err != nil {
+		return err
+	}
+	r.Output = output
+	return nil
+}
+
+func decodeResponsesOutput(raw json.RawMessage) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", nil
+	}
+
+	if trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return "", err
+		}
+		return text, nil
+	}
+
+	if text, ok := flattenResponsesOutputText(trimmed); ok {
+		return text, nil
+	}
+
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return "", err
+	}
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return "", err
+	}
+	return string(normalized), nil
+}
+
+func flattenResponsesOutputText(raw json.RawMessage) (string, bool) {
+	var content MessageContent
+	if err := json.Unmarshal(raw, &content); err == nil && len(content) > 0 {
+		return joinTextParts(content), true
+	}
+
+	var wrapped struct {
+		Text    string         `json:"text"`
+		Content MessageContent `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil {
+		if strings.TrimSpace(wrapped.Text) != "" {
+			return wrapped.Text, true
+		}
+		if len(wrapped.Content) > 0 {
+			return joinTextParts(wrapped.Content), true
+		}
+	}
+
+	return "", false
+}
+
+func joinTextParts(parts MessageContent) string {
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "", "text", "input_text", "output_text", "reasoning_text":
+			if strings.TrimSpace(part.Text) != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 type ReasoningPart struct {

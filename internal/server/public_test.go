@@ -196,6 +196,37 @@ func TestNormalizeChatCompletionsBodyLiftsInstructionRolesFromResponsesShape(t *
 	}
 }
 
+func TestNormalizeChatCompletionsBodyAcceptsArrayToolOutputInResponsesShape(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{"role": "assistant", "type": "function_call", "call_id": "call_1", "name": "Glob", "arguments": "{\"glob_pattern\":\"README*\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": [
+				{"type": "output_text", "text": "Result of search"},
+				{"type": "output_text", "text": "README.md"}
+			]},
+			{"role": "user", "content": "explain this project"}
+		]
+	}`)
+
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
+	}
+
+	if len(normalized.Input) != 3 {
+		t.Fatalf("len(input) = %d, want 3", len(normalized.Input))
+	}
+	if normalized.Input[1].Type != "function_call_output" {
+		t.Fatalf("input[1].Type = %q, want function_call_output", normalized.Input[1].Type)
+	}
+	if normalized.Input[1].Output != "Result of search\nREADME.md" {
+		t.Fatalf("input[1].Output = %q, want flattened tool output", normalized.Input[1].Output)
+	}
+}
+
 func TestNormalizeChatCompletionsBodyPrefersMessagesShape(t *testing.T) {
 	t.Parallel()
 
