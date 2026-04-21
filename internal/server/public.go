@@ -330,6 +330,15 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 				}
 			}
 		}
+		if toolEvents, handled := accumulator.ResponsesStreamEventsForEvent(event); handled {
+			writeResponseStreamEvents(c.Writer, accumulator.ResponseID, toolEvents)
+			c.Writer.Flush()
+			continue
+		}
+		if event.Type == "response.completed" {
+			writeResponseStreamEvents(c.Writer, accumulator.ResponseID, accumulator.PendingResponseToolCallCompletionEvents())
+			c.Writer.Flush()
+		}
 		payload := responseStreamPayload(event, accumulator)
 		if normalized.TupleSchema != nil && event.Type == "response.completed" {
 			if err := translate.PatchResponseCompletedPayloadForTuple(payload, normalized.TupleSchema); err != nil {
@@ -347,6 +356,12 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
+}
+
+func writeResponseStreamEvents(w io.Writer, responseID string, events []translate.ResponseStreamEvent) {
+	for _, event := range events {
+		writeSSE(w, event.Type, translate.ResponseEventJSON(event.Type, responseID, event.Payload))
+	}
 }
 
 func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, normalized translate.NormalizedRequest, event *codex.StreamEvent, toolCallIndex map[string]int, toolCallSawDelta map[string]bool, nextToolCallIndex *int) bool {
@@ -430,26 +445,22 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 	payload := cloneAnyMap(event.Raw)
 	response, _ := payload["response"].(map[string]any)
 	if response == nil {
-		return payload
+		response = map[string]any{}
 	}
 
 	text := accumulator.Text()
-	if output, ok := response["output"].([]any); !ok || len(output) == 0 {
-		response["output"] = []map[string]any{{
-			"type":   "message",
-			"role":   "assistant",
-			"status": "completed",
-			"content": []map[string]any{{
-				"type": "output_text",
-				"text": text,
-			}},
-		}}
-	}
+	response["output"] = accumulator.ResponsesObject()["output"]
 	if strings.TrimSpace(serverStringValue(response["output_text"])) == "" && strings.TrimSpace(text) != "" {
 		response["output_text"] = text
 	}
 	if strings.TrimSpace(serverStringValue(response["status"])) == "" {
 		response["status"] = "completed"
+	}
+	if accumulator.ResponseID != "" && strings.TrimSpace(serverStringValue(response["id"])) == "" {
+		response["id"] = accumulator.ResponseID
+	}
+	if accumulator.Model != "" && strings.TrimSpace(serverStringValue(response["model"])) == "" {
+		response["model"] = accumulator.Model
 	}
 	if accumulator.Usage != nil {
 		response["usage"] = translate.UsageSummary{

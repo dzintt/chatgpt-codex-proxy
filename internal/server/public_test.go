@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -367,6 +368,349 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	}
 }
 
+func TestStreamResponsesSynthesizesFunctionCallLifecycle(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_stream_tools",
+		AccountID: "upstream_stream_tools",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_stream_tools")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.function_call_arguments.delta",
+				Raw: map[string]any{
+					"response_id":  "resp_tool",
+					"item_id":      "fc_1",
+					"output_index": 0,
+					"name":         "demo__echo",
+					"delta":        `{"message":"hel`,
+				},
+			},
+			{
+				Type: "response.function_call_arguments.done",
+				Raw: map[string]any{
+					"response_id":  "resp_tool",
+					"item_id":      "fc_1",
+					"output_index": 0,
+					"name":         "demo__echo",
+					"arguments":    `{"message":"hello"}`,
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_tool",
+						"model":  "gpt-5.4",
+						"status": "completed",
+						"output": []any{
+							map[string]any{
+								"id":     "msg_1",
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": "tool ready",
+									},
+								},
+							},
+						},
+						"output_text": "tool ready",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+		"done",
+	)
+
+	added := events[0].Data
+	if added["response_id"] != "resp_tool" {
+		t.Fatalf("added response_id = %#v, want resp_tool", added["response_id"])
+	}
+	if added["output_index"] != float64(0) {
+		t.Fatalf("added output_index = %#v, want 0", added["output_index"])
+	}
+	item := nestedMapFromAny(added["item"])
+	if item["type"] != "function_call" {
+		t.Fatalf("added item.type = %#v, want function_call", item["type"])
+	}
+	if item["status"] != "in_progress" {
+		t.Fatalf("added item.status = %#v, want in_progress", item["status"])
+	}
+
+	completed := events[4].Data
+	response := nestedMapFromAny(completed["response"])
+	output := sliceOfMapsFromAny(response["output"])
+	if len(output) != 2 {
+		t.Fatalf("completed response.output len = %d, want 2", len(output))
+	}
+	if output[0]["type"] != "function_call" {
+		t.Fatalf("completed output[0].type = %#v, want function_call", output[0]["type"])
+	}
+	if output[0]["call_id"] != "fc_1" {
+		t.Fatalf("completed output[0].call_id = %#v, want fc_1", output[0]["call_id"])
+	}
+	if output[1]["type"] != "message" {
+		t.Fatalf("completed output[1].type = %#v, want message", output[1]["type"])
+	}
+}
+
+func TestStreamResponsesSynthesizesFunctionCallLifecycleWithoutDeltas(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_stream_done_only",
+		AccountID: "upstream_stream_done_only",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_stream_done_only")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.function_call_arguments.done",
+				Raw: map[string]any{
+					"response_id":  "resp_done_only",
+					"item_id":      "fc_done",
+					"output_index": 0,
+					"name":         "demo__echo",
+					"arguments":    `{"message":"hello"}`,
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_done_only",
+						"model":  "gpt-5.4",
+						"status": "completed",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.output_item.added",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+		"done",
+	)
+}
+
+func TestStreamResponsesTextOnlyPassthroughRemainsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_stream_text",
+		AccountID: "upstream_stream_text",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_stream_text")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.output_text.delta",
+				Raw: map[string]any{
+					"response_id": "resp_text",
+					"delta":       "hello",
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":          "resp_text",
+						"model":       "gpt-5.4",
+						"status":      "completed",
+						"output_text": "hello",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.output_text.delta",
+		"response.completed",
+		"done",
+	)
+	for _, event := range events {
+		if strings.HasPrefix(event.Event, "response.output_item.") {
+			t.Fatalf("unexpected tool lifecycle event in text-only stream: %s", event.Event)
+		}
+	}
+}
+
+func TestStreamResponsesWithContinuationUsesSameFunctionCallLifecycle(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_stream_continuation",
+		AccountID: "upstream_stream_continuation",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_stream_continuation")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.function_call_arguments.done",
+				Raw: map[string]any{
+					"response_id":  "resp_continuation",
+					"item_id":      "fc_continue",
+					"output_index": 0,
+					"name":         "demo__echo",
+					"arguments":    `{"message":"continued"}`,
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_continuation",
+						"model":  "gpt-5.4",
+						"status": "completed",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint:           translate.EndpointResponses,
+		Model:              "gpt-5.4",
+		Stream:             true,
+		PreviousResponseID: "resp_previous",
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.output_item.added",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+		"done",
+	)
+}
+
 func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 	t.Parallel()
 
@@ -443,4 +787,77 @@ func newServerAccounts(t *testing.T, records ...*accounts.Record) *accounts.Serv
 		t.Fatalf("NewService() error = %v", err)
 	}
 	return svc
+}
+
+type sseEvent struct {
+	Event string
+	Data  map[string]any
+	Raw   string
+}
+
+func parseSSEEvents(t *testing.T, body string) []sseEvent {
+	t.Helper()
+
+	chunks := strings.Split(strings.TrimSpace(body), "\n\n")
+	events := make([]sseEvent, 0, len(chunks))
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+
+		var eventName string
+		var rawData string
+		for _, line := range strings.Split(chunk, "\n") {
+			if strings.HasPrefix(line, "event: ") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+				continue
+			}
+			if strings.HasPrefix(line, "data: ") {
+				rawData = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+			}
+		}
+
+		entry := sseEvent{Event: eventName, Raw: rawData}
+		if rawData != "[DONE]" {
+			if err := json.Unmarshal([]byte(rawData), &entry.Data); err != nil {
+				t.Fatalf("json.Unmarshal(%q) error = %v", rawData, err)
+			}
+		}
+		events = append(events, entry)
+	}
+	return events
+}
+
+func assertEventTypes(t *testing.T, events []sseEvent, want ...string) {
+	t.Helper()
+
+	got := make([]string, 0, len(events))
+	for _, event := range events {
+		got = append(got, event.Event)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event count = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for idx := range want {
+		if got[idx] != want[idx] {
+			t.Fatalf("event[%d] = %q, want %q (all=%v)", idx, got[idx], want[idx], got)
+		}
+	}
+}
+
+func nestedMapFromAny(value any) map[string]any {
+	mapped, _ := value.(map[string]any)
+	return mapped
+}
+
+func sliceOfMapsFromAny(value any) []map[string]any {
+	items, _ := value.([]any)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		mapped, _ := item.(map[string]any)
+		if mapped != nil {
+			out = append(out, mapped)
+		}
+	}
+	return out
 }

@@ -7,12 +7,13 @@ func TestResponsesObjectIncludesFunctionCalls(t *testing.T) {
 
 	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
 	accumulator.ResponseID = "resp_test"
-	accumulator.ToolCalls = []map[string]any{{
-		"id": "call_123",
-		"function": map[string]any{
-			"name":      "ping_tool",
-			"arguments": `{"message":"hello"}`,
-		},
+	accumulator.ToolCalls = []*ToolCallState{{
+		ItemID:      "fc_123",
+		CallID:      "call_123",
+		Name:        "ping_tool",
+		Arguments:   `{"message":"hello"}`,
+		OutputIndex: 0,
+		Status:      "completed",
 	}}
 
 	response := accumulator.ResponsesObject()
@@ -28,6 +29,9 @@ func TestResponsesObjectIncludesFunctionCalls(t *testing.T) {
 	}
 	if output[0]["status"] != "completed" {
 		t.Fatalf("output[0].status = %#v, want completed", output[0]["status"])
+	}
+	if output[0]["id"] != "fc_123" {
+		t.Fatalf("output[0].id = %#v, want fc_123", output[0]["id"])
 	}
 	if output[0]["call_id"] != "call_123" {
 		t.Fatalf("output[0].call_id = %#v, want call_123", output[0]["call_id"])
@@ -117,5 +121,79 @@ func TestPatchResponsesObjectForTuple(t *testing.T) {
 	content := sliceOfMaps(sliceOfMaps(object["output"])[0]["content"])
 	if content[0]["text"] != `{"pair":["left",2]}` {
 		t.Fatalf("content[0].text = %#v, want reconverted tuple JSON", content[0]["text"])
+	}
+}
+
+func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator.ResponseID = "resp_merge"
+	accumulator.ToolCalls = []*ToolCallState{{
+		ItemID:      "fc_123",
+		CallID:      "call_123",
+		Name:        "ping_tool",
+		Arguments:   `{"message":"hello"}`,
+		OutputIndex: 0,
+		Status:      "completed",
+	}}
+	accumulator.OutputItems = []*outputItemState{{
+		Key:         "id:msg_123",
+		OutputIndex: 1,
+		Item: map[string]any{
+			"id":     "msg_123",
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": "done",
+			}},
+		},
+	}}
+
+	response := accumulator.ResponsesObject()
+	output := response["output"].([]map[string]any)
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want 2", len(output))
+	}
+	if output[0]["type"] != "function_call" {
+		t.Fatalf("output[0].type = %#v, want function_call", output[0]["type"])
+	}
+	if output[1]["type"] != "message" {
+		t.Fatalf("output[1].type = %#v, want message", output[1]["type"])
+	}
+}
+
+func TestResponsesObjectPreservesToolCallOrderByOutputIndex(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator.ToolCalls = []*ToolCallState{
+		{
+			ItemID:      "fc_late",
+			CallID:      "call_late",
+			Name:        "late_tool",
+			Arguments:   `{"value":2}`,
+			OutputIndex: 1,
+			Status:      "completed",
+		},
+		{
+			ItemID:      "fc_early",
+			CallID:      "call_early",
+			Name:        "early_tool",
+			Arguments:   `{"value":1}`,
+			OutputIndex: 0,
+			Status:      "completed",
+		},
+	}
+
+	response := accumulator.ResponsesObject()
+	output := response["output"].([]map[string]any)
+	if output[0]["call_id"] != "call_early" {
+		t.Fatalf("output[0].call_id = %#v, want call_early", output[0]["call_id"])
+	}
+	if output[1]["call_id"] != "call_late" {
+		t.Fatalf("output[1].call_id = %#v, want call_late", output[1]["call_id"])
 	}
 }

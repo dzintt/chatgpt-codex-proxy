@@ -3,29 +3,56 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"chatgpt-codex-proxy/internal/codex"
 	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
+type ToolCallState struct {
+	ItemID           string
+	CallID           string
+	Name             string
+	Arguments        string
+	OutputIndex      int
+	Status           string
+	AddedEmitted     bool
+	DoneEmitted      bool
+	SawArgumentDelta bool
+}
+
+type ResponseStreamEvent struct {
+	Type    string
+	Payload map[string]any
+}
+
+type outputItemState struct {
+	Key         string
+	OutputIndex int
+	Item        map[string]any
+}
+
 type Accumulator struct {
-	Normalized   NormalizedRequest
-	ResponseID   string
-	Model        string
-	TextBuilder  strings.Builder
-	Usage        *codex.Usage
-	ToolCalls    []map[string]any
-	toolCallByID map[string]map[string]any
-	Output       []map[string]any
-	Status       string
-	RawFinal     map[string]any
+	Normalized      NormalizedRequest
+	ResponseID      string
+	Model           string
+	TextBuilder     strings.Builder
+	Usage           *codex.Usage
+	ToolCalls       []*ToolCallState
+	toolCallByID    map[string]*ToolCallState
+	OutputItems     []*outputItemState
+	outputItemByKey map[string]*outputItemState
+	Status          string
+	RawFinal        map[string]any
+	nextOutputIndex int
 }
 
 func NewAccumulator(normalized NormalizedRequest) *Accumulator {
 	return &Accumulator{
-		Normalized:   normalized,
-		toolCallByID: make(map[string]map[string]any),
+		Normalized:      normalized,
+		toolCallByID:    make(map[string]*ToolCallState),
+		outputItemByKey: make(map[string]*outputItemState),
 	}
 }
 
@@ -47,7 +74,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 			a.Usage = usage
 		}
 		if output := sliceOfMaps(response["output"]); len(output) > 0 {
-			a.Output = output
+			a.replaceOutputItems(output)
 		}
 	}
 	if id := stringValue(event.Raw["response_id"]); id != "" && a.ResponseID == "" {
@@ -91,12 +118,10 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 		a.applyToolArgumentEvent(event)
 	}
 	if item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item")); item != nil {
-		a.captureOutputItem(item)
+		a.captureOutputItem(item, outputIndexFromMap(event.Raw))
 	}
 	if output := sliceOfMaps(event.Raw["output"]); len(output) > 0 {
-		for _, item := range output {
-			a.captureOutputItem(item)
-		}
+		a.replaceOutputItems(output)
 	}
 	if usage := usageFromRaw(event.Raw["usage"]); usage != nil {
 		a.Usage = usage
@@ -108,7 +133,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 				a.Usage = usage
 			}
 			if output := sliceOfMaps(response["output"]); len(output) > 0 {
-				a.Output = output
+				a.replaceOutputItems(output)
 			}
 		}
 	}
@@ -118,7 +143,7 @@ func (a *Accumulator) Text() string {
 	if text := strings.TrimSpace(a.TextBuilder.String()); text != "" {
 		return text
 	}
-	for _, item := range a.Output {
+	for _, item := range a.sortedOutputItems() {
 		if itemType := stringValue(item["type"]); itemType == "message" {
 			for _, content := range sliceOfMaps(item["content"]) {
 				if text := stringValue(content["text"]); text != "" {
@@ -134,38 +159,113 @@ func (a *Accumulator) IsCompleted() bool {
 	return a != nil && a.RawFinal != nil
 }
 
-func (a *Accumulator) captureOutputItem(item map[string]any) {
+func (a *Accumulator) ResponsesStreamEventsForEvent(event *codex.StreamEvent) ([]ResponseStreamEvent, bool) {
+	if event == nil {
+		return nil, false
+	}
+
+	switch event.Type {
+	case "response.function_call_arguments.delta":
+		state := a.toolCallStateForEvent(event)
+		if state == nil {
+			return nil, false
+		}
+		events := a.ensureResponseOutputItemAdded(state)
+		if delta := stringValue(event.Raw["delta"]); delta != "" {
+			events = append(events, ResponseStreamEvent{
+				Type: "response.function_call_arguments.delta",
+				Payload: map[string]any{
+					"item_id":      state.ItemID,
+					"output_index": state.OutputIndex,
+					"delta":        delta,
+				},
+			})
+		}
+		return events, true
+	case "response.function_call_arguments.done":
+		state := a.toolCallStateForEvent(event)
+		if state == nil {
+			return nil, false
+		}
+		return a.ensureResponseToolCallCompleted(state), true
+	case "response.output_item.added":
+		state := a.toolCallStateForEvent(event)
+		if state == nil {
+			return nil, false
+		}
+		return a.ensureResponseOutputItemAdded(state), true
+	case "response.output_item.done":
+		state := a.toolCallStateForEvent(event)
+		if state == nil {
+			return nil, false
+		}
+		return a.ensureResponseToolCallCompleted(state), true
+	default:
+		return nil, false
+	}
+}
+
+func (a *Accumulator) PendingResponseToolCallCompletionEvents() []ResponseStreamEvent {
+	events := make([]ResponseStreamEvent, 0)
+	for _, state := range a.ToolCalls {
+		if state.DoneEmitted {
+			continue
+		}
+		events = append(events, a.ensureResponseToolCallCompleted(state)...)
+	}
+	return events
+}
+
+func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) {
 	if len(item) == 0 {
 		return
 	}
+
 	itemType := stringValue(item["type"])
-	switch itemType {
-	case "function_call":
+	if itemType == "function_call" {
 		callID := firstString(stringValue(item["call_id"]), stringValue(item["id"]))
-		responseItemID := stringValue(item["id"])
-		call := map[string]any{
-			"id":   callID,
-			"type": "function",
-			"function": map[string]any{
-				"name":      stringValue(item["name"]),
-				"arguments": stringValue(item["arguments"]),
-			},
-		}
-		if existing := firstMap(a.toolCallByID[callID], a.toolCallByID[responseItemID]); existing != nil {
-			mergeToolCall(existing, call)
-			a.registerToolCallAliases(existing, callID, responseItemID)
+		itemID := firstString(stringValue(item["id"]), callID)
+		if callID == "" && itemID == "" {
 			return
 		}
-		a.ToolCalls = append(a.ToolCalls, call)
-		a.registerToolCallAliases(call, callID, responseItemID)
-	case "message":
-		if len(a.Output) == 0 {
-			a.Output = append(a.Output, item)
+		state := a.ensureToolCallState(itemID, callID, explicitIndex)
+		if state == nil {
+			return
 		}
-	default:
-		if len(a.Output) == 0 {
-			a.Output = append(a.Output, item)
+		if name := stringValue(item["name"]); name != "" {
+			state.Name = name
 		}
+		if arguments := stringValue(item["arguments"]); arguments != "" {
+			state.Arguments = arguments
+		}
+		if status := stringValue(item["status"]); status != "" {
+			state.Status = status
+		}
+		return
+	}
+
+	index := a.resolveOutputIndex(explicitIndex)
+	key := outputItemKey(item, index)
+	cloned := cloneMap(item)
+	if existing, ok := a.outputItemByKey[key]; ok {
+		existing.Item = cloned
+		existing.OutputIndex = index
+		return
+	}
+	state := &outputItemState{
+		Key:         key,
+		OutputIndex: index,
+		Item:        cloned,
+	}
+	a.OutputItems = append(a.OutputItems, state)
+	a.outputItemByKey[key] = state
+}
+
+func (a *Accumulator) replaceOutputItems(items []map[string]any) {
+	a.OutputItems = nil
+	a.outputItemByKey = make(map[string]*outputItemState)
+	for idx, item := range items {
+		a.captureOutputItem(item, idx)
 	}
 }
 
@@ -174,8 +274,8 @@ func (a *Accumulator) ChatCompletionObject() map[string]any {
 		"role":    "assistant",
 		"content": a.Text(),
 	}
-	if len(a.ToolCalls) > 0 {
-		message["tool_calls"] = a.ToolCalls
+	if toolCalls := a.chatCompletionToolCalls(); len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
 	}
 	return map[string]any{
 		"id":      firstString(a.ResponseID, "chatcmpl_proxy"),
@@ -201,13 +301,24 @@ func (a *Accumulator) ResponsesObject() map[string]any {
 }
 
 func (a *Accumulator) responsesOutput(text string) []map[string]any {
-	output := make([]map[string]any, 0, len(a.Output)+len(a.ToolCalls)+1)
-	for _, call := range a.ToolCalls {
-		output = append(output, responseFunctionCallItem(call))
+	type outputEntry struct {
+		OutputIndex int
+		Order       int
+		Item        map[string]any
 	}
 
-	for _, item := range a.Output {
-		cloned := cloneMap(item)
+	entries := make([]outputEntry, 0, len(a.ToolCalls)+len(a.OutputItems))
+	for order, state := range a.ToolCalls {
+		entries = append(entries, outputEntry{
+			OutputIndex: state.OutputIndex,
+			Order:       order,
+			Item:        state.responseOutputItem("completed"),
+		})
+	}
+
+	baseOrder := len(entries)
+	for order, state := range a.OutputItems {
+		cloned := cloneMap(state.Item)
 		if stringValue(cloned["type"]) == "message" {
 			content := sliceOfMaps(cloned["content"])
 			if len(content) == 0 && strings.TrimSpace(text) != "" {
@@ -217,7 +328,23 @@ func (a *Accumulator) responsesOutput(text string) []map[string]any {
 				cloned["status"] = "completed"
 			}
 		}
-		output = append(output, cloned)
+		entries = append(entries, outputEntry{
+			OutputIndex: state.OutputIndex,
+			Order:       baseOrder + order,
+			Item:        cloned,
+		})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].OutputIndex == entries[j].OutputIndex {
+			return entries[i].Order < entries[j].Order
+		}
+		return entries[i].OutputIndex < entries[j].OutputIndex
+	})
+
+	output := make([]map[string]any, 0, len(entries)+1)
+	for _, entry := range entries {
+		output = append(output, entry.Item)
 	}
 
 	if len(output) == 0 {
@@ -229,6 +356,18 @@ func (a *Accumulator) responsesOutput(text string) []map[string]any {
 		})
 	}
 	return output
+}
+
+func (a *Accumulator) chatCompletionToolCalls() []map[string]any {
+	if len(a.ToolCalls) == 0 {
+		return nil
+	}
+
+	out := make([]map[string]any, 0, len(a.ToolCalls))
+	for _, state := range a.ToolCalls {
+		out = append(out, state.chatCompletionToolCall())
+	}
+	return out
 }
 
 func responseTextContent(text string) []map[string]any {
@@ -291,41 +430,65 @@ func finishReason(a *Accumulator) string {
 func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
 	responseItemID := stringValue(event.Raw["item_id"])
 	callID := firstString(stringValue(event.Raw["call_id"]), responseItemID)
-	if callID == "" {
+	if callID == "" && responseItemID == "" {
 		return
 	}
-	call := firstMap(a.toolCallByID[callID], a.toolCallByID[responseItemID])
-	if call == nil {
-		call = map[string]any{
-			"id":   callID,
-			"type": "function",
-			"function": map[string]any{
-				"name":      stringValue(event.Raw["name"]),
-				"arguments": "",
-			},
-		}
-		a.ToolCalls = append(a.ToolCalls, call)
-	}
-	a.registerToolCallAliases(call, callID, responseItemID)
-	function, _ := call["function"].(map[string]any)
-	if function == nil {
-		function = map[string]any{}
-		call["function"] = function
+
+	state := a.ensureToolCallState(responseItemID, callID, outputIndexFromMap(event.Raw))
+	if state == nil {
+		return
 	}
 	if name := stringValue(event.Raw["name"]); name != "" {
-		function["name"] = name
+		state.Name = name
 	}
+
 	switch event.Type {
 	case "response.function_call_arguments.delta":
-		function["arguments"] = stringValue(function["arguments"]) + stringValue(event.Raw["delta"])
+		state.Arguments += stringValue(event.Raw["delta"])
+		state.SawArgumentDelta = true
 	case "response.function_call_arguments.done":
 		if args := stringValue(event.Raw["arguments"]); args != "" {
-			function["arguments"] = args
+			state.Arguments = args
 		}
+		state.Status = "completed"
 	}
 }
 
-func (a *Accumulator) registerToolCallAliases(call map[string]any, ids ...string) {
+func (a *Accumulator) ensureToolCallState(itemID, callID string, explicitIndex int) *ToolCallState {
+	itemID = strings.TrimSpace(itemID)
+	callID = strings.TrimSpace(callID)
+	if itemID == "" {
+		itemID = callID
+	}
+	if callID == "" {
+		callID = itemID
+	}
+	if itemID == "" || callID == "" {
+		return nil
+	}
+
+	if existing := firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID]); existing != nil {
+		if explicitIndex >= 0 {
+			existing.OutputIndex = a.resolveOutputIndex(explicitIndex)
+		}
+		existing.ItemID = firstString(existing.ItemID, itemID)
+		existing.CallID = firstString(existing.CallID, callID)
+		a.registerToolCallAliases(existing, existing.CallID, existing.ItemID)
+		return existing
+	}
+
+	state := &ToolCallState{
+		ItemID:      itemID,
+		CallID:      callID,
+		OutputIndex: a.resolveOutputIndex(explicitIndex),
+		Status:      "in_progress",
+	}
+	a.ToolCalls = append(a.ToolCalls, state)
+	a.registerToolCallAliases(state, callID, itemID)
+	return state
+}
+
+func (a *Accumulator) registerToolCallAliases(call *ToolCallState, ids ...string) {
 	for _, id := range ids {
 		if strings.TrimSpace(id) == "" {
 			continue
@@ -334,42 +497,147 @@ func (a *Accumulator) registerToolCallAliases(call map[string]any, ids ...string
 	}
 }
 
-func responseFunctionCallItem(call map[string]any) map[string]any {
-	function, _ := call["function"].(map[string]any)
-	item := map[string]any{
-		"type":      "function_call",
-		"call_id":   stringValue(call["id"]),
-		"name":      stringValue(function["name"]),
-		"arguments": stringValue(function["arguments"]),
-		"status":    "completed",
+func (a *Accumulator) toolCallStateForEvent(event *codex.StreamEvent) *ToolCallState {
+	if event == nil {
+		return nil
 	}
-	if id := stringValue(call["id"]); id != "" {
-		item["id"] = id
+
+	switch event.Type {
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		itemID := stringValue(event.Raw["item_id"])
+		callID := firstString(stringValue(event.Raw["call_id"]), itemID)
+		return firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID])
+	case "response.output_item.added", "response.output_item.done":
+		item := firstMap(nestedMap(event.Raw, "item"), nestedMap(event.Raw, "output_item"))
+		if stringValue(item["type"]) != "function_call" {
+			return nil
+		}
+		itemID := firstString(stringValue(item["id"]), stringValue(event.Raw["item_id"]))
+		callID := firstString(stringValue(item["call_id"]), itemID)
+		return firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID])
+	default:
+		return nil
 	}
-	return item
 }
 
-func mergeToolCall(dst, src map[string]any) {
-	for key, value := range src {
-		if key == "function" {
-			dstFn, _ := dst["function"].(map[string]any)
-			srcFn, _ := value.(map[string]any)
-			if dstFn == nil {
-				dstFn = map[string]any{}
-			}
-			for fnKey, fnValue := range srcFn {
-				if fnValue == "" {
-					continue
-				}
-				dstFn[fnKey] = fnValue
-			}
-			dst["function"] = dstFn
-			continue
-		}
-		if value != "" {
-			dst[key] = value
-		}
+func (a *Accumulator) ensureResponseOutputItemAdded(state *ToolCallState) []ResponseStreamEvent {
+	if state == nil || state.AddedEmitted {
+		return nil
 	}
+	state.AddedEmitted = true
+	state.Status = firstString(state.Status, "in_progress")
+	return []ResponseStreamEvent{{
+		Type: "response.output_item.added",
+		Payload: map[string]any{
+			"output_index": state.OutputIndex,
+			"item":         state.responseOutputItem("in_progress"),
+		},
+	}}
+}
+
+func (a *Accumulator) ensureResponseToolCallCompleted(state *ToolCallState) []ResponseStreamEvent {
+	if state == nil || state.DoneEmitted {
+		return nil
+	}
+
+	events := a.ensureResponseOutputItemAdded(state)
+	events = append(events, ResponseStreamEvent{
+		Type: "response.function_call_arguments.done",
+		Payload: map[string]any{
+			"item_id":      state.ItemID,
+			"output_index": state.OutputIndex,
+			"name":         state.Name,
+			"arguments":    state.Arguments,
+		},
+	})
+	state.Status = "completed"
+	state.DoneEmitted = true
+	events = append(events, ResponseStreamEvent{
+		Type: "response.output_item.done",
+		Payload: map[string]any{
+			"output_index": state.OutputIndex,
+			"item":         state.responseOutputItem("completed"),
+		},
+	})
+	return events
+}
+
+func (a *Accumulator) resolveOutputIndex(preferred int) int {
+	if preferred >= 0 {
+		if preferred >= a.nextOutputIndex {
+			a.nextOutputIndex = preferred + 1
+		}
+		return preferred
+	}
+	index := a.nextOutputIndex
+	a.nextOutputIndex++
+	return index
+}
+
+func (a *Accumulator) sortedOutputItems() []map[string]any {
+	if len(a.OutputItems) == 0 {
+		return nil
+	}
+
+	states := append([]*outputItemState(nil), a.OutputItems...)
+	sort.SliceStable(states, func(i, j int) bool {
+		return states[i].OutputIndex < states[j].OutputIndex
+	})
+
+	items := make([]map[string]any, 0, len(states))
+	for _, state := range states {
+		items = append(items, state.Item)
+	}
+	return items
+}
+
+func (t *ToolCallState) chatCompletionToolCall() map[string]any {
+	if t == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":   t.CallID,
+		"type": "function",
+		"function": map[string]any{
+			"name":      t.Name,
+			"arguments": t.Arguments,
+		},
+	}
+}
+
+func (t *ToolCallState) responseOutputItem(status string) map[string]any {
+	if t == nil {
+		return nil
+	}
+	itemStatus := firstString(status, t.Status, "completed")
+	return map[string]any{
+		"type":      "function_call",
+		"id":        t.ItemID,
+		"call_id":   t.CallID,
+		"name":      t.Name,
+		"arguments": t.Arguments,
+		"status":    itemStatus,
+	}
+}
+
+func outputIndexFromMap(raw map[string]any) int {
+	if raw == nil {
+		return -1
+	}
+	if value, ok := intValue(raw["output_index"]); ok {
+		return value
+	}
+	return -1
+}
+
+func outputItemKey(item map[string]any, outputIndex int) string {
+	if id := stringValue(item["id"]); id != "" {
+		return "id:" + id
+	}
+	if outputIndex >= 0 {
+		return fmt.Sprintf("index:%d", outputIndex)
+	}
+	return fmt.Sprintf("anon:%p", item)
 }
 
 func nestedMap(raw map[string]any, key string) map[string]any {
@@ -442,6 +710,24 @@ func numberValue(value any) float64 {
 	}
 }
 
+func intValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case json.Number:
+		number, err := typed.Int64()
+		return int(number), err == nil
+	default:
+		return 0, false
+	}
+}
+
 func firstString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -454,6 +740,15 @@ func firstString(values ...string) string {
 func firstMap(values ...map[string]any) map[string]any {
 	for _, value := range values {
 		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstToolCallState(values ...*ToolCallState) *ToolCallState {
+	for _, value := range values {
+		if value != nil {
 			return value
 		}
 	}
