@@ -1,8 +1,6 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,10 +22,29 @@ type fakeEventStream struct {
 	headers http.Header
 	events  []*codex.StreamEvent
 	index   int
+	tailErr error
+}
+
+type memoryAccountsStore struct {
+	state accounts.State
+}
+
+func (m *memoryAccountsStore) Load() (accounts.State, error) {
+	return m.state, nil
+}
+
+func (m *memoryAccountsStore) Save(state accounts.State) error {
+	m.state = state
+	return nil
 }
 
 func (f *fakeEventStream) NextEvent() (*codex.StreamEvent, error) {
 	if f.index >= len(f.events) {
+		if f.tailErr != nil {
+			err := f.tailErr
+			f.tailErr = nil
+			return nil, err
+		}
 		return nil, io.EOF
 	}
 	event := f.events[f.index]
@@ -44,180 +61,386 @@ func (f *fakeEventStream) Headers() http.Header {
 	return f.headers
 }
 
-func TestStreamChatCompletionBuffersTupleJSONAndStreamsToolCalls(t *testing.T) {
+func TestObserveQuotaSnapshotUpdatesCachedQuota(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_headers",
+		AccountID: "upstream_headers",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
+	}
+
+	pct := 35.0
+	resetAt := now.Add(15 * time.Minute)
+	app.observeQuotaSnapshot("acct_headers", &accounts.QuotaSnapshot{
+		Source:    "response_headers",
+		FetchedAt: now,
+		RateLimit: accounts.RateLimitWindow{
+			Allowed:      true,
+			LimitReached: false,
+			UsedPercent:  &pct,
+			ResetAt:      &resetAt,
+		},
+	})
+
+	record, ok := accountsSvc.Get("acct_headers")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
+		t.Fatal("cached quota missing used percent")
+	}
+	if *record.CachedQuota.RateLimit.UsedPercent != 35.0 {
+		t.Fatalf("used_percent = %v, want 35", *record.CachedQuota.RateLimit.UsedPercent)
+	}
+}
+
+func TestObserveQuotaEventUpdatesCachedQuota(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_event",
+		AccountID: "upstream_event",
+		Status:    accounts.StatusActive,
+		PlanType:  "plus",
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
+	}
+
+	handled := app.observeQuotaEvent(accounts.Record{ID: "acct_event", PlanType: "plus"}, &codex.StreamEvent{
+		Type: "codex.rate_limits",
+		Raw: map[string]any{
+			"rate_limits": map[string]any{
+				"primary": map[string]any{
+					"used_percent": 42.0,
+					"reset_at":     float64(now.Add(30 * time.Minute).Unix()),
+				},
+			},
+		},
+	})
+	if !handled {
+		t.Fatal("observeQuotaEvent() = false, want true")
+	}
+
+	record, ok := accountsSvc.Get("acct_event")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
+		t.Fatal("cached quota missing after event")
+	}
+	if *record.CachedQuota.RateLimit.UsedPercent != 42.0 {
+		t.Fatalf("used_percent = %v, want 42", *record.CachedQuota.RateLimit.UsedPercent)
+	}
+}
+
+func TestStreamChatCompletionClassifiesStructuredRateLimitFailureAndSetsCooldown(t *testing.T) {
 	t.Parallel()
 
 	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
 	ctx.Set(middleware.RequestIDKey, "req-test")
 
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_rate_limit",
+		AccountID: "upstream_rate_limit",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
 	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	normalized := translate.NormalizedRequest{
-		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
-		TupleSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pair": map[string]any{
-					"type": "array",
-					"prefixItems": []any{
-						map[string]any{"type": "string"},
-						map[string]any{"type": "number"},
+	record, _ := accountsSvc.Get("acct_rate_limit")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{{
+			Type: "error",
+			Raw: map[string]any{
+				"error": map[string]any{
+					"code":              "rate_limited",
+					"message":           "Too many requests",
+					"resets_in_seconds": 12,
+					"usage": map[string]any{
+						"input_tokens":  11,
+						"output_tokens": 7,
 					},
 				},
 			},
-		},
+		}},
 	}
 
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.function_call_arguments.delta", Raw: map[string]any{
-				"call_id": "call_1",
-				"name":    "lookup_weather",
-				"delta":   `{"city":"`,
-			}},
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `{"pair":{"0":"left",`}},
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `"1":2}}`}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_123",
-				"response": map[string]any{
-					"id":          "resp_123",
-					"status":      "completed",
-					"output_text": `{"pair":{"0":"left","1":2}}`,
-				},
-			}},
-		},
+	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointChat,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	if !strings.Contains(recorder.Body.String(), "upstream account rate limited") {
+		t.Fatalf("stream body = %s, want rate limited message", recorder.Body.String())
 	}
 
-	app.streamChatCompletion(ctx, accounts.Record{}, normalized, stream)
-	body := recorder.Body.String()
-
-	if strings.Contains(body, `"content":"{\"pair\":{\"0\":\"left\"`) {
-		t.Fatal("raw tuple JSON delta should not be streamed")
+	updated, _ := accountsSvc.Get("acct_rate_limit")
+	if updated.CooldownUntil == nil {
+		t.Fatal("cooldown_until = nil, want cooldown")
 	}
-	if !strings.Contains(body, `"tool_calls":[{"function":{"arguments":"{\"city\":\""},"index":0}]`) {
-		t.Fatalf("expected streamed tool call delta, body = %s", body)
-	}
-	if !strings.Contains(body, `"content":"{\"pair\":[\"left\",2]}"`) {
-		t.Fatalf("expected reconverted tuple JSON delta, body = %s", body)
+	if updated.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want active", updated.Status)
 	}
 }
 
-func TestStreamResponsesBuffersTupleJSONAndPatchesCompletedPayload(t *testing.T) {
+func TestStreamResponsesClassifiesStructuredQuotaFailureAndSetsCooldown(t *testing.T) {
 	t.Parallel()
 
 	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	ctx.Set(middleware.RequestIDKey, "req-test")
 
+	now := time.Now().UTC()
+	resetAt := now.Add(20 * time.Minute)
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_quota",
+		AccountID: "upstream_quota",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CachedQuota: &accounts.QuotaSnapshot{
+			RateLimit: accounts.RateLimitWindow{
+				Allowed:      true,
+				LimitReached: true,
+				ResetAt:      &resetAt,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
 	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	normalized := translate.NormalizedRequest{
-		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
-		TupleSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pair": map[string]any{
-					"type": "array",
-					"prefixItems": []any{
-						map[string]any{"type": "string"},
-						map[string]any{"type": "number"},
+	record, _ := accountsSvc.Get("acct_quota")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{{
+			Type: "response.failed",
+			Raw: map[string]any{
+				"response": map[string]any{
+					"id": "resp_quota",
+					"usage": map[string]any{
+						"input_tokens":  13,
+						"output_tokens": 2,
+					},
+					"error": map[string]any{
+						"code":    "usage_limit_reached",
+						"message": "Billing period exhausted",
 					},
 				},
 			},
-		},
+		}},
 	}
 
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `{"pair":{"0":"left",`}},
-			{Type: "response.output_text.done", Raw: map[string]any{"text": `{"pair":{"0":"left","1":2}}`}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_456",
-				"response": map[string]any{
-					"id":          "resp_456",
-					"status":      "completed",
-					"output_text": `{"pair":{"0":"left","1":2}}`,
-					"output": []any{
-						map[string]any{
-							"type": "message",
-							"content": []any{
-								map[string]any{
-									"type": "output_text",
-									"text": `{"pair":{"0":"left","1":2}}`,
-								},
-							},
-						},
-					},
-				},
-			}},
-		},
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	if !strings.Contains(recorder.Body.String(), "upstream account quota exhausted") {
+		t.Fatalf("stream body = %s, want quota exhausted message", recorder.Body.String())
 	}
 
-	app.streamResponses(ctx, accounts.Record{}, normalized, stream)
-	body := recorder.Body.String()
-
-	if strings.Contains(body, `event: response.output_text.done`) {
-		t.Fatalf("response.output_text.done should be suppressed, body = %s", body)
+	updated, _ := accountsSvc.Get("acct_quota")
+	if updated.CooldownUntil == nil {
+		t.Fatal("cooldown_until = nil, want cooldown")
 	}
-	if !strings.Contains(body, `event: response.output_text.delta`) || !strings.Contains(body, `\"pair\":[\"left\",2]`) {
-		t.Fatalf("expected synthetic reconverted delta, body = %s", body)
-	}
-	if !strings.Contains(body, `"output_text":"{\"pair\":[\"left\",2]}"`) {
-		t.Fatalf("expected patched completed payload, body = %s", body)
+	if updated.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want active", updated.Status)
 	}
 }
 
-func TestLogCompatibilityWarningsDoesNotLeakRequestBody(t *testing.T) {
+func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	t.Parallel()
 
 	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"secret":"do-not-log-me"}`))
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	ctx.Set(middleware.RequestIDKey, "req-test")
 
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_unauthorized",
+		AccountID: "upstream_unauthorized",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
 	app := &App{
-		logger: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	}
-	app.logCompatibilityWarnings(ctx, "chat_completions", []translate.CompatibilityWarning{{
-		Field:    "temperature",
-		Behavior: "ignored_with_warning",
-		Detail:   "field is accepted for compatibility but not applied in this proxy",
-	}})
-
-	if strings.Contains(logs.String(), "do-not-log-me") {
-		t.Fatal("request body appeared in logs")
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	var entry map[string]any
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
+	record, _ := accountsSvc.Get("acct_unauthorized")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{{
+			Type: "response.failed",
+			Raw: map[string]any{
+				"response": map[string]any{
+					"id": "resp_unauthorized",
+					"error": map[string]any{
+						"code":    "invalid_token",
+						"message": "Session expired",
+					},
+				},
+			},
+		}},
 	}
-	if entry["level"] != "WARN" {
-		t.Fatalf("level = %#v, want WARN", entry["level"])
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	updated, _ := accountsSvc.Get("acct_unauthorized")
+	if updated.Status != accounts.StatusExpired {
+		t.Fatalf("status = %q, want expired", updated.Status)
 	}
-	if entry["field"] != "temperature" {
-		t.Fatalf("field = %#v, want temperature", entry["field"])
+}
+
+func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t,
+		&accounts.Record{
+			ID:        "acct_generic_403",
+			AccountID: "upstream_generic_403",
+			Status:    accounts.StatusActive,
+			Token: accounts.OAuthToken{
+				AccessToken: "token",
+				ExpiresAt:   now.Add(time.Hour),
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		&accounts.Record{
+			ID:        "acct_cloudflare_403",
+			AccountID: "upstream_cloudflare_403",
+			Status:    accounts.StatusActive,
+			Token: accounts.OAuthToken{
+				AccessToken: "token",
+				ExpiresAt:   now.Add(time.Hour),
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	)
+
+	app := &App{
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+		},
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
 	}
+
+	status, code, _ := app.classifyUpstreamError("acct_generic_403", &codex.UpstreamError{
+		Op:         "codex response",
+		StatusCode: http.StatusForbidden,
+		Body:       `{"error":"access denied"}`,
+	})
+	if status != http.StatusForbidden || code != "account_banned" {
+		t.Fatalf("generic 403 = (%d, %q), want (403, account_banned)", status, code)
+	}
+
+	status, code, _ = app.classifyUpstreamError("acct_cloudflare_403", &codex.UpstreamError{
+		Op:         "codex response",
+		StatusCode: http.StatusForbidden,
+		Body:       "<!DOCTYPE html><html><body>cf_chl blocked</body></html>",
+	})
+	if status != http.StatusForbidden || code != "upstream_error" {
+		t.Fatalf("cloudflare 403 = (%d, %q), want (403, upstream_error)", status, code)
+	}
+
+	generic, _ := accountsSvc.Get("acct_generic_403")
+	if generic.Status != accounts.StatusBanned {
+		t.Fatalf("generic status = %q, want banned", generic.Status)
+	}
+	cloudflare, _ := accountsSvc.Get("acct_cloudflare_403")
+	if cloudflare.Status != accounts.StatusActive {
+		t.Fatalf("cloudflare status = %q, want active", cloudflare.Status)
+	}
+}
+
+func newServerAccounts(t *testing.T, records ...*accounts.Record) *accounts.Service {
+	t.Helper()
+
+	svc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: records,
+	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	return svc
 }

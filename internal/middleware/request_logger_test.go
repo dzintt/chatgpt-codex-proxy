@@ -100,6 +100,31 @@ func TestRequestLoggerPreservesRequestID(t *testing.T) {
 	}
 }
 
+func TestRequestLoggerIncludesSelectedAccount(t *testing.T) {
+	t.Parallel()
+
+	engine, logs := newLoggedEngine(t)
+	engine.GET("/v1/responses", func(c *gin.Context) {
+		SetRequestAccount(c, "acct_123", "upstream_456")
+		c.Status(http.StatusOK)
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	engine.ServeHTTP(recorder, request)
+
+	entries := decodeLogEntries(t, logs)
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(entries))
+	}
+	if entries[0]["account_id"] != "acct_123" {
+		t.Fatalf("account_id = %v, want acct_123", entries[0]["account_id"])
+	}
+	if entries[0]["upstream_account_id"] != "upstream_456" {
+		t.Fatalf("upstream_account_id = %v, want upstream_456", entries[0]["upstream_account_id"])
+	}
+}
+
 func TestRequestLoggerWarnsOnUnauthorized(t *testing.T) {
 	t.Parallel()
 

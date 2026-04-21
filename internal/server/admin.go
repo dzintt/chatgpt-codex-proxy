@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -10,7 +11,27 @@ import (
 )
 
 func (a *App) handleAdminAccounts(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"accounts": a.accounts.List()})
+	records := a.accounts.List()
+	items := make([]gin.H, 0, len(records))
+	for _, record := range records {
+		items = append(items, gin.H{
+			"id":                  record.ID,
+			"upstream_account_id": record.AccountID,
+			"user_id":             record.UserID,
+			"email":               record.Email,
+			"plan_type":           record.PlanType,
+			"label":               record.Label,
+			"status":              record.Status,
+			"eligible_now":        a.accounts.EligibleNow(record.ID),
+			"cooldown_until":      record.CooldownUntil,
+			"last_error":          record.LastError,
+			"cached_quota":        record.CachedQuota,
+			"oauth_expires":       record.Token.ExpiresAt,
+			"created_at":          record.CreatedAt,
+			"updated_at":          record.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": items})
 }
 
 func (a *App) handleAdminDeviceLoginStart(c *gin.Context) {
@@ -75,12 +96,20 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		a.writeAdminError(c, http.StatusBadGateway, "usage_lookup_failed", err.Error())
 		return
 	}
+	effectiveQuota := firstQuota(quota, record.CachedQuota)
 	c.JSON(http.StatusOK, gin.H{
-		"account_id":    record.ID,
-		"status":        record.Status,
-		"cached_quota":  quota,
-		"local_usage":   record.LocalUsage,
-		"oauth_expires": record.Token.ExpiresAt,
+		"account_id":          record.ID,
+		"upstream_account_id": record.AccountID,
+		"user_id":             record.UserID,
+		"status":              record.Status,
+		"eligible_now":        a.accounts.EligibleNow(record.ID),
+		"cooldown_until":      record.CooldownUntil,
+		"last_error":          record.LastError,
+		"cached_quota":        record.CachedQuota,
+		"quota_runtime":       quota,
+		"quota_source":        quotaSource(effectiveQuota),
+		"quota_fetched_at":    quotaFetchedAt(effectiveQuota),
+		"oauth_expires":       record.Token.ExpiresAt,
 	})
 }
 
@@ -119,6 +148,24 @@ func (a *App) handleAdminRotationPut(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"strategy": strategy})
 }
 
-func (a *App) handleAdminUsageSummary(c *gin.Context) {
-	c.JSON(http.StatusOK, a.accounts.Summary())
+func quotaSource(snapshot *accounts.QuotaSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.Source
+}
+
+func quotaFetchedAt(snapshot *accounts.QuotaSnapshot) *time.Time {
+	if snapshot == nil || snapshot.FetchedAt.IsZero() {
+		return nil
+	}
+	ts := snapshot.FetchedAt.UTC()
+	return &ts
+}
+
+func firstQuota(runtime, cached *accounts.QuotaSnapshot) *accounts.QuotaSnapshot {
+	if runtime != nil {
+		return runtime
+	}
+	return cached
 }

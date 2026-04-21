@@ -4,77 +4,123 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
+type ServiceOptions struct {
+	RateLimitFallback time.Duration
+	QuotaFallback     time.Duration
+}
+
 type Service struct {
-	mu               sync.RWMutex
-	store            Store
-	records          map[string]*Record
-	rotationStrategy RotationStrategy
-	roundRobinIndex  int
+	mu                sync.RWMutex
+	store             Store
+	records           map[string]*Record
+	rotationStrategy  RotationStrategy
+	roundRobinIndex   int
+	stickyAccountID   string
+	rateLimitFallback time.Duration
+	quotaFallback     time.Duration
 }
 
-type Summary struct {
-	Total             int   `json:"total"`
-	Active            int   `json:"active"`
-	Disabled          int   `json:"disabled"`
-	Expired           int   `json:"expired"`
-	RateLimited       int   `json:"rate_limited"`
-	QuotaExhausted    int   `json:"quota_exhausted"`
-	TotalInputTokens  int64 `json:"total_input_tokens"`
-	TotalOutputTokens int64 `json:"total_output_tokens"`
-	TotalRequests     int64 `json:"total_requests"`
-}
-
-func NewService(accountsStore Store, defaultStrategy RotationStrategy) (*Service, error) {
+func NewService(accountsStore Store, defaultStrategy RotationStrategy, opts ServiceOptions) (*Service, error) {
 	state, err := accountsStore.Load()
 	if err != nil {
 		return nil, err
 	}
 
+	rateLimitFallback := opts.RateLimitFallback
+	if rateLimitFallback <= 0 {
+		rateLimitFallback = 60 * time.Second
+	}
+	quotaFallback := opts.QuotaFallback
+	if quotaFallback <= 0 {
+		quotaFallback = 5 * time.Minute
+	}
+
 	svc := &Service{
-		store:   accountsStore,
-		records: make(map[string]*Record),
+		store:             accountsStore,
+		records:           make(map[string]*Record),
+		rateLimitFallback: rateLimitFallback,
+		quotaFallback:     quotaFallback,
 	}
 	if state.RotationStrategy != "" {
 		svc.rotationStrategy = state.RotationStrategy
 	} else {
 		svc.rotationStrategy = defaultStrategy
 	}
-	for _, record := range state.Records {
-		cloned := cloneRecord(record)
-		svc.records[cloned.ID] = &cloned
+
+	now := time.Now().UTC()
+	needsPersist := false
+	for _, stored := range state.Records {
+		record := cloneRecord(stored)
+		original := cloneRecord(&record)
+		svc.normalizeLoadedRecord(&record, now)
+		if !reflect.DeepEqual(original, record) {
+			needsPersist = true
+		}
+		svc.records[record.ID] = &record
 	}
+	if needsPersist {
+		if err := svc.persistLocked(); err != nil {
+			return nil, err
+		}
+	}
+
 	return svc, nil
 }
 
 func (s *Service) List() []Record {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.refreshAllLocked(time.Now().UTC()) {
+		_ = s.persistLocked()
+	}
 
 	items := make([]Record, 0, len(s.records))
 	for _, record := range s.records {
 		items = append(items, cloneRecord(record))
 	}
 	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID < items[j].ID
+		}
 		return items[i].CreatedAt.Before(items[j].CreatedAt)
 	})
 	return items
 }
 
 func (s *Service) Get(id string) (Record, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.refreshAllLocked(time.Now().UTC()) {
+		_ = s.persistLocked()
+	}
+
 	record, ok := s.records[id]
 	if !ok {
 		return Record{}, false
 	}
-	cloned := cloneRecord(record)
-	return cloned, true
+	return cloneRecord(record), true
+}
+
+func (s *Service) EligibleNow(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	if s.refreshAllLocked(now) {
+		_ = s.persistLocked()
+	}
+
+	record, ok := s.records[id]
+	return ok && isEligible(record, now)
 }
 
 func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, error) {
@@ -82,14 +128,15 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 	defer s.mu.Unlock()
 
 	metadata := metadataFromToken(token)
-
 	for _, existing := range s.records {
-		if existing.AccountID == accountID {
+		if sameAccount(existing, accountID, metadata.UserID) {
 			existing.Token = token
 			existing.Email = metadata.Email
 			existing.PlanType = metadata.PlanType
+			existing.UserID = metadata.UserID
 			existing.Status = StatusActive
 			existing.LastError = ""
+			existing.CooldownUntil = nil
 			existing.UpdatedAt = time.Now().UTC()
 			if err := s.persistLocked(); err != nil {
 				return Record{}, err
@@ -102,6 +149,7 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 	record := &Record{
 		ID:        "acct_" + randomHex(8),
 		AccountID: accountID,
+		UserID:    metadata.UserID,
 		Email:     metadata.Email,
 		PlanType:  metadata.PlanType,
 		Status:    StatusActive,
@@ -117,13 +165,29 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 	return cloneRecord(record), nil
 }
 
+func sameAccount(existing *Record, accountID, userID string) bool {
+	if existing == nil || existing.AccountID != accountID {
+		return false
+	}
+	existingUserID := strings.TrimSpace(existing.UserID)
+	newUserID := strings.TrimSpace(userID)
+	if existingUserID == "" || newUserID == "" {
+		return true
+	}
+	return existingUserID == newUserID
+}
+
 func (s *Service) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if _, ok := s.records[id]; !ok {
 		return fmt.Errorf("account not found")
 	}
 	delete(s.records, id)
+	if s.stickyAccountID == id {
+		s.stickyAccountID = ""
+	}
 	return s.persistLocked()
 }
 
@@ -140,6 +204,15 @@ func (s *Service) Patch(id string, label *string, status *Status) (Record, error
 	}
 	if status != nil {
 		record.Status = *status
+		switch *status {
+		case StatusActive:
+			record.CooldownUntil = nil
+			record.LastError = ""
+			record.CachedQuota = nil
+		case StatusDisabled:
+			record.CooldownUntil = nil
+			record.LastError = ""
+		}
 	}
 	record.UpdatedAt = time.Now().UTC()
 	if err := s.persistLocked(); err != nil {
@@ -148,33 +221,47 @@ func (s *Service) Patch(id string, label *string, status *Status) (Record, error
 	return cloneRecord(record), nil
 }
 
-func (s *Service) UpdateQuota(id string, quota *QuotaSnapshot) error {
+func (s *Service) ObserveQuota(id string, quota *QuotaSnapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	record, ok := s.records[id]
 	if !ok {
 		return fmt.Errorf("account not found")
 	}
+
+	now := time.Now().UTC()
 	if quota == nil {
 		record.CachedQuota = nil
-	} else {
-		cloned := *quota
-		record.CachedQuota = &cloned
+		record.UpdatedAt = now
+		return s.persistLocked()
 	}
-	record.UpdatedAt = time.Now().UTC()
+
+	cloned := cloneQuotaSnapshot(quota)
+	normalizeQuotaSnapshot(&cloned, now)
+	record.CachedQuota = &cloned
+	if plan := strings.TrimSpace(cloned.PlanType); plan != "" && plan != "unknown" {
+		record.PlanType = plan
+	}
+	if !quotaBlocksGeneralRouting(record.CachedQuota, now) {
+		record.CooldownUntil = nil
+	}
+	record.UpdatedAt = now
 	return s.persistLocked()
 }
 
 func (s *Service) UpdateAuth(id, accountID string, token OAuthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	record, ok := s.records[id]
 	if !ok {
 		return fmt.Errorf("account not found")
 	}
+
 	metadata := metadataFromToken(token)
-	if strings.TrimSpace(accountID) != "" {
-		record.AccountID = strings.TrimSpace(accountID)
+	if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+		record.AccountID = trimmed
 	}
 	record.Token = token
 	if metadata.Email != "" {
@@ -183,56 +270,80 @@ func (s *Service) UpdateAuth(id, accountID string, token OAuthToken) error {
 	if metadata.PlanType != "" {
 		record.PlanType = metadata.PlanType
 	}
-	record.UpdatedAt = time.Now().UTC()
-	record.Status = StatusActive
-	record.LastError = ""
-	return s.persistLocked()
-}
-
-func (s *Service) RecordUsage(id string, inputTokens, outputTokens int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[id]
-	if !ok {
-		return fmt.Errorf("account not found")
+	if metadata.UserID != "" {
+		record.UserID = metadata.UserID
 	}
-	now := time.Now().UTC()
-	record.LocalUsage.InputTokens += inputTokens
-	record.LocalUsage.OutputTokens += outputTokens
-	record.LocalUsage.RequestCount++
-	record.LocalUsage.LastUsedAt = &now
-	record.UpdatedAt = now
-	record.Status = StatusActive
+	if record.Status != StatusDisabled && record.Status != StatusBanned {
+		record.Status = StatusActive
+	}
 	record.LastError = ""
+	record.UpdatedAt = time.Now().UTC()
 	return s.persistLocked()
 }
 
 func (s *Service) MarkError(id string, status Status, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	record, ok := s.records[id]
 	if !ok {
 		return fmt.Errorf("account not found")
 	}
 	record.Status = status
-	record.LastError = message
+	record.LastError = strings.TrimSpace(message)
+	if status != StatusActive {
+		record.CooldownUntil = nil
+	}
 	record.UpdatedAt = time.Now().UTC()
 	return s.persistLocked()
+}
+
+func (s *Service) SetCooldown(id string, until *time.Time, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.records[id]
+	if !ok {
+		return fmt.Errorf("account not found")
+	}
+	if until != nil {
+		value := until.UTC()
+		until = &value
+	}
+	record.CooldownUntil = until
+	record.LastError = strings.TrimSpace(message)
+	record.UpdatedAt = time.Now().UTC()
+	return s.persistLocked()
+}
+
+func (s *Service) NoteSuccess(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.records[id]; !ok {
+		return
+	}
+	s.stickyAccountID = id
 }
 
 func (s *Service) Acquire(preferredID string) (Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
+	if s.refreshAllLocked(now) {
+		_ = s.persistLocked()
+	}
+
 	if preferredID != "" {
-		if record, ok := s.records[preferredID]; ok && record.Status == StatusActive {
+		if record, ok := s.records[preferredID]; ok && isEligible(record, now) {
 			return cloneRecord(record), nil
 		}
 	}
 
 	candidates := make([]*Record, 0, len(s.records))
 	for _, record := range s.records {
-		if record.Status == StatusActive {
+		if isEligible(record, now) {
 			candidates = append(candidates, record)
 		}
 	}
@@ -242,20 +353,17 @@ func (s *Service) Acquire(preferredID string) (Record, error) {
 
 	switch s.rotationStrategy {
 	case RotationRoundRobin:
-		sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
-		record := candidates[s.roundRobinIndex%len(candidates)]
-		s.roundRobinIndex++
+		record := selectRoundRobin(candidates, &s.roundRobinIndex)
 		return cloneRecord(record), nil
 	case RotationSticky:
-		sort.Slice(candidates, func(i, j int) bool {
-			return usageTime(candidates[i]).After(usageTime(candidates[j]))
-		})
-		return cloneRecord(candidates[0]), nil
+		if sticky := s.selectStickyLocked(candidates, now); sticky != nil {
+			return cloneRecord(sticky), nil
+		}
+		record := selectLeastUsed(candidates, &s.roundRobinIndex)
+		return cloneRecord(record), nil
 	default:
-		sort.Slice(candidates, func(i, j int) bool {
-			return compareLeastUsed(candidates[i], candidates[j]) < 0
-		})
-		return cloneRecord(candidates[0]), nil
+		record := selectLeastUsed(candidates, &s.roundRobinIndex)
+		return cloneRecord(record), nil
 	}
 }
 
@@ -272,30 +380,28 @@ func (s *Service) SetRotationStrategy(strategy RotationStrategy) error {
 	return s.persistLocked()
 }
 
-func (s *Service) Summary() Summary {
+func (s *Service) RateLimitFallback() time.Duration {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.rateLimitFallback
+}
 
-	var summary Summary
-	for _, record := range s.records {
-		summary.Total++
-		summary.TotalInputTokens += record.LocalUsage.InputTokens
-		summary.TotalOutputTokens += record.LocalUsage.OutputTokens
-		summary.TotalRequests += record.LocalUsage.RequestCount
-		switch record.Status {
-		case StatusActive:
-			summary.Active++
-		case StatusDisabled:
-			summary.Disabled++
-		case StatusExpired:
-			summary.Expired++
-		case StatusRateLimited:
-			summary.RateLimited++
-		case StatusQuotaExhausted:
-			summary.QuotaExhausted++
+func (s *Service) QuotaFallback() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.quotaFallback
+}
+
+func (s *Service) selectStickyLocked(candidates []*Record, now time.Time) *Record {
+	if s.stickyAccountID == "" {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if candidate.ID == s.stickyAccountID && isEligible(candidate, now) {
+			return candidate
 		}
 	}
-	return summary
+	return nil
 }
 
 func (s *Service) persistLocked() error {
@@ -310,57 +416,310 @@ func (s *Service) persistLocked() error {
 	})
 }
 
-func compareLeastUsed(a, b *Record) int {
-	aUsed := quotaPressure(a)
-	bUsed := quotaPressure(b)
-	switch {
-	case aUsed < bUsed:
-		return -1
-	case aUsed > bUsed:
-		return 1
+func (s *Service) normalizeLoadedRecord(record *Record, now time.Time) {
+	if record == nil {
+		return
 	}
 
-	switch {
-	case a.LocalUsage.RequestCount < b.LocalUsage.RequestCount:
-		return -1
-	case a.LocalUsage.RequestCount > b.LocalUsage.RequestCount:
-		return 1
+	metadata := metadataFromToken(record.Token)
+	if record.Status == "" {
+		record.Status = StatusActive
 	}
-
-	aTime := usageTime(a)
-	bTime := usageTime(b)
-	switch {
-	case aTime.Before(bTime):
-		return -1
-	case aTime.After(bTime):
-		return 1
+	switch record.Status {
+	case StatusActive, StatusDisabled, StatusExpired, StatusBanned:
 	default:
-		return strings.Compare(a.ID, b.ID)
+		record.Status = StatusActive
 	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	if record.Cookies == nil {
+		record.Cookies = map[string]string{}
+	}
+	if record.UserID == "" && strings.TrimSpace(metadata.UserID) != "" {
+		record.UserID = strings.TrimSpace(metadata.UserID)
+	}
+	if record.Email == "" && strings.TrimSpace(metadata.Email) != "" {
+		record.Email = strings.TrimSpace(metadata.Email)
+	}
+	if record.PlanType == "" && strings.TrimSpace(metadata.PlanType) != "" {
+		record.PlanType = strings.TrimSpace(metadata.PlanType)
+	}
+	if record.CachedQuota != nil {
+		normalizeQuotaSnapshot(record.CachedQuota, now)
+	}
+	clearExpiredCooldownLocked(record, now)
 }
 
-func quotaPressure(record *Record) float64 {
-	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
+func (s *Service) refreshAllLocked(now time.Time) bool {
+	changed := false
+	for _, record := range s.records {
+		recordChanged := false
+		if record.CachedQuota != nil && normalizeQuotaSnapshot(record.CachedQuota, now) {
+			recordChanged = true
+		}
+		if clearExpiredCooldownLocked(record, now) {
+			recordChanged = true
+		}
+		if recordChanged {
+			record.UpdatedAt = now
+			changed = true
+		}
+	}
+	return changed
+}
+
+func clearExpiredCooldownLocked(record *Record, now time.Time) bool {
+	if record == nil || record.CooldownUntil == nil {
+		return false
+	}
+	if record.CooldownUntil.After(now) {
+		return false
+	}
+	record.CooldownUntil = nil
+	return true
+}
+
+func selectRoundRobin(candidates []*Record, index *int) *Record {
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+	selected := candidates[*index%len(candidates)]
+	*index = *index + 1
+	return selected
+}
+
+func selectLeastUsed(candidates []*Record, index *int) *Record {
+	withQuota := make([]*Record, 0, len(candidates))
+	for _, candidate := range candidates {
+		if hasUsableQuota(candidate) {
+			withQuota = append(withQuota, candidate)
+			continue
+		}
+	}
+
+	if len(withQuota) == 0 {
+		return selectRoundRobin(candidates, index)
+	}
+
+	sort.Slice(withQuota, func(i, j int) bool {
+		if cmp := compareLeastUsedQuota(withQuota[i], withQuota[j]); cmp != 0 {
+			return cmp < 0
+		}
+		return withQuota[i].ID < withQuota[j].ID
+	})
+
+	tiedCount := 1
+	for tiedCount < len(withQuota) && compareLeastUsedQuota(withQuota[0], withQuota[tiedCount]) == 0 {
+		tiedCount++
+	}
+	selected := withQuota[*index%tiedCount]
+	*index = *index + 1
+	return selected
+}
+
+func compareLeastUsedQuota(a, b *Record) int {
+	aQuota := a.CachedQuota
+	bQuota := b.CachedQuota
+
+	aPrimary := quotaPercent(aQuota, primaryWindow)
+	bPrimary := quotaPercent(bQuota, primaryWindow)
+	switch {
+	case aPrimary < bPrimary:
+		return -1
+	case aPrimary > bPrimary:
+		return 1
+	}
+
+	aSecondary, aHasSecondary := secondaryPercent(aQuota)
+	bSecondary, bHasSecondary := secondaryPercent(bQuota)
+	if aHasSecondary && bHasSecondary {
+		switch {
+		case aSecondary < bSecondary:
+			return -1
+		case aSecondary > bSecondary:
+			return 1
+		}
+	}
+
+	aReset, aHasReset := primaryReset(aQuota)
+	bReset, bHasReset := primaryReset(bQuota)
+	if aHasReset && bHasReset && !aReset.Equal(bReset) {
+		if aReset.Before(bReset) {
+			return -1
+		}
+		return 1
+	}
+
+	return 0
+}
+
+func primaryWindow(snapshot *QuotaSnapshot) *RateLimitWindow {
+	if snapshot == nil {
+		return nil
+	}
+	return &snapshot.RateLimit
+}
+
+func quotaPercent(snapshot *QuotaSnapshot, getter func(*QuotaSnapshot) *RateLimitWindow) float64 {
+	window := getter(snapshot)
+	if window == nil || window.UsedPercent == nil {
 		return 0
 	}
-	return *record.CachedQuota.RateLimit.UsedPercent
+	return *window.UsedPercent
 }
 
-func usageTime(record *Record) time.Time {
-	if record.LocalUsage.LastUsedAt != nil {
-		return *record.LocalUsage.LastUsedAt
+func secondaryPercent(snapshot *QuotaSnapshot) (float64, bool) {
+	if snapshot == nil || snapshot.SecondaryRateLimit == nil || snapshot.SecondaryRateLimit.UsedPercent == nil {
+		return 0, false
 	}
-	return time.Time{}
+	return *snapshot.SecondaryRateLimit.UsedPercent, true
+}
+
+func primaryReset(snapshot *QuotaSnapshot) (time.Time, bool) {
+	if snapshot == nil || snapshot.RateLimit.ResetAt == nil {
+		return time.Time{}, false
+	}
+	return snapshot.RateLimit.ResetAt.UTC(), true
+}
+
+func hasUsableQuota(record *Record) bool {
+	return record != nil && record.CachedQuota != nil && record.CachedQuota.RateLimit.UsedPercent != nil
+}
+
+func normalizeQuotaSnapshot(snapshot *QuotaSnapshot, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	changed := false
+	if normalizeRateLimitWindow(&snapshot.RateLimit, now) {
+		changed = true
+	}
+	if normalizeRateLimitWindow(snapshot.SecondaryRateLimit, now) {
+		changed = true
+	}
+	if normalizeRateLimitWindow(snapshot.CodeReviewRateLimit, now) {
+		changed = true
+	}
+	return changed
+}
+
+func normalizeRateLimitWindow(window *RateLimitWindow, now time.Time) bool {
+	if window == nil || window.ResetAt == nil || window.ResetAt.After(now) {
+		return false
+	}
+	window.Allowed = true
+	window.LimitReached = false
+	window.UsedPercent = nil
+	window.ResetAt = nil
+	return true
+}
+
+func quotaBlocksGeneralRouting(snapshot *QuotaSnapshot, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	if windowAvailabilityBlocked(&snapshot.RateLimit, now) {
+		return true
+	}
+	if windowLimitActive(&snapshot.RateLimit, now) {
+		return true
+	}
+	return windowLimitActive(snapshot.SecondaryRateLimit, now)
+}
+
+func windowAvailabilityBlocked(window *RateLimitWindow, now time.Time) bool {
+	if window == nil || window.Allowed {
+		return false
+	}
+	if window.ResetAt == nil {
+		return true
+	}
+	return window.ResetAt.After(now)
+}
+
+func windowLimitActive(window *RateLimitWindow, now time.Time) bool {
+	if window == nil || !window.LimitReached {
+		return false
+	}
+	if window.ResetAt == nil {
+		return true
+	}
+	return window.ResetAt.After(now)
+}
+
+func isEligible(record *Record, now time.Time) bool {
+	if record == nil || record.Status != StatusActive {
+		return false
+	}
+	if strings.TrimSpace(record.Token.AccessToken) == "" {
+		return false
+	}
+	if record.CooldownUntil != nil && record.CooldownUntil.After(now) {
+		return false
+	}
+	return !quotaBlocksGeneralRouting(record.CachedQuota, now)
 }
 
 func cloneRecord(record *Record) Record {
 	cloned := *record
 	cloned.Cookies = cloneCookies(record.Cookies)
+	cloned.CooldownUntil = cloneTime(record.CooldownUntil)
 	if record.CachedQuota != nil {
-		quota := *record.CachedQuota
+		quota := cloneQuotaSnapshot(record.CachedQuota)
 		cloned.CachedQuota = &quota
 	}
 	return cloned
+}
+
+func cloneQuotaSnapshot(snapshot *QuotaSnapshot) QuotaSnapshot {
+	cloned := *snapshot
+	cloned.RateLimit = cloneRateLimitWindow(&snapshot.RateLimit)
+	cloned.SecondaryRateLimit = cloneRateLimitWindowPtr(snapshot.SecondaryRateLimit)
+	cloned.CodeReviewRateLimit = cloneRateLimitWindowPtr(snapshot.CodeReviewRateLimit)
+	if snapshot.Credits != nil {
+		credits := *snapshot.Credits
+		if credits.Balance != nil {
+			value := *credits.Balance
+			credits.Balance = &value
+		}
+		cloned.Credits = &credits
+	}
+	return cloned
+}
+
+func cloneRateLimitWindowPtr(window *RateLimitWindow) *RateLimitWindow {
+	if window == nil {
+		return nil
+	}
+	cloned := cloneRateLimitWindow(window)
+	return &cloned
+}
+
+func cloneRateLimitWindow(window *RateLimitWindow) RateLimitWindow {
+	cloned := *window
+	if window.UsedPercent != nil {
+		value := *window.UsedPercent
+		cloned.UsedPercent = &value
+	}
+	if window.ResetAt != nil {
+		ts := window.ResetAt.UTC()
+		cloned.ResetAt = &ts
+	}
+	if window.LimitWindowSeconds != nil {
+		value := *window.LimitWindowSeconds
+		cloned.LimitWindowSeconds = &value
+	}
+	return cloned
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	ts := value.UTC()
+	return &ts
 }
 
 func cloneCookies(cookies map[string]string) map[string]string {

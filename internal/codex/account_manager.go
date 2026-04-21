@@ -100,19 +100,24 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 }
 
 func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (accounts.Record, *accounts.QuotaSnapshot, error) {
+	if cached {
+		record, ok := m.accounts.Get(id)
+		if !ok {
+			return accounts.Record{}, nil, fmt.Errorf("account not found")
+		}
+		return record, record.CachedQuota, nil
+	}
+
 	record, err := m.EnsureReady(ctx, id)
 	if err != nil {
 		return accounts.Record{}, nil, err
-	}
-	if cached && record.CachedQuota != nil {
-		return record, record.CachedQuota, nil
 	}
 
 	_, quota, err := m.http.GetUsage(ctx, record)
 	if err != nil {
 		return record, nil, err
 	}
-	if err := m.accounts.UpdateQuota(record.ID, quota); err != nil {
+	if err := m.accounts.ObserveQuota(record.ID, quota); err != nil {
 		return record, nil, err
 	}
 	updated, _ := m.accounts.Get(record.ID)

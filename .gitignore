@@ -23,6 +23,10 @@ go.work.sum
 
 # env file
 .env
+
+# others
 data/
 tmp*
-.gocache
+.gocache*
+.codex*
+.claude*

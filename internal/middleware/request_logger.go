@@ -41,6 +41,12 @@ func RequestLogger(logger *slog.Logger, opts RequestLoggerOptions) gin.HandlerFu
 		if query := c.Request.URL.RawQuery; query != "" {
 			attrs = append(attrs, "query", query)
 		}
+		if accountID := GetRequestAccountID(c); accountID != "" {
+			attrs = append(attrs, "account_id", accountID)
+		}
+		if upstreamAccountID := GetRequestUpstreamAccountID(c); upstreamAccountID != "" {
+			attrs = append(attrs, "upstream_account_id", upstreamAccountID)
+		}
 
 		logger.Log(c.Request.Context(), requestLogLevel(c.Writer.Status()), "http request completed", attrs...)
 	}

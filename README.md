@@ -15,7 +15,7 @@ Use it for local or small-scale deployments.
 - Streams upstream events back as OpenAI-style JSON or SSE
 - Manages one or more Codex accounts authenticated through ChatGPT device login
 - Rotates requests across healthy accounts
-- Provides a small admin API for onboarding, quota checks, and rotation control
+- Provides a small admin API for onboarding, quota checks, and routing visibility
 
 ## What It Supports
 
@@ -32,7 +32,8 @@ Use it for local or small-scale deployments.
 - Text, image, and file inputs on Responses
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
-- Local JSON persistence for accounts and usage state
+- Local JSON persistence for accounts and cached quota state
+- Automatic recovery when cached quota or transient cooldown windows expire
 
 ## What It Does Not Try To Be
 
@@ -60,7 +61,7 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - `cmd/api`
   Server entry point.
 - `internal/config`
-  Environment-driven configuration.
+  Small runtime configuration.
 - `internal/server`
   HTTP routes and handlers.
 - `internal/middleware`
@@ -74,7 +75,7 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - `internal/codex/wsclient`
   WebSocket client kept for upstream continuation support.
 - `internal/accounts`
-  Account records, local usage tracking, continuation affinity, and rotation logic.
+  Account records, cached quota state, continuation affinity, and rotation logic.
 - `internal/admin`
   Device login flow orchestration.
 - `internal/store`
@@ -100,16 +101,10 @@ Required:
 PROXY_API_KEY=change-me
 ```
 
-Common optional settings:
+Optional:
 
-```env
-LISTEN_ADDR=:8080
-DATA_DIR=data
-DEFAULT_MODEL=gpt-5.3-codex
-ROTATION_STRATEGY=least_used
-LOG_LEVEL=info
-REQUEST_TIMEOUT_SECONDS=120
-```
+- `PORT`
+  Overrides the default listen port `8080`.
 
 ### 2. Run the server
 
@@ -117,7 +112,7 @@ REQUEST_TIMEOUT_SECONDS=120
 go run ./cmd/api
 ```
 
-By default the server listens on `:8080`.
+By default the server listens on `:8080` and stores local state in `./data`.
 
 ### 3. Add a Codex account
 
@@ -246,7 +241,7 @@ Authenticated service health endpoint.
 ### Accounts
 
 - `GET /admin/accounts`
-  List locally known accounts and cached state.
+  List locally known accounts, permanent status, derived eligibility, cooldown state, and cached quota.
 - `DELETE /admin/accounts/:account_id`
   Remove an account from local persistence.
 - `PATCH /admin/accounts/:account_id`
@@ -254,7 +249,7 @@ Authenticated service health endpoint.
 - `POST /admin/accounts/:account_id/refresh`
   Force an OAuth token refresh.
 - `GET /admin/accounts/:account_id/usage`
-  Fetch upstream quota and local usage counters.
+  Fetch the runtime quota view and cached quota metadata for one account.
 
 ### Device login
 
@@ -276,10 +271,12 @@ Valid strategies:
 - `round_robin`
 - `sticky`
 
-### Usage summary
+### Status model
 
-- `GET /admin/usage/summary`
-  Return aggregate local usage counters across all accounts.
+- Permanent account status is one of `active`, `disabled`, `expired`, or `banned`.
+- Transient routing availability is tracked with `cooldown_until` plus the latest cached quota snapshot.
+- General account routing is blocked only by primary or secondary quota exhaustion. `code_review_rate_limit` is retained for observability and does not affect normal routing.
+- Exhausted quota windows are treated as temporary routing blocks. Accounts automatically become eligible again after the cached reset time passes.
 
 ## Persistence
 
@@ -293,7 +290,7 @@ That file includes:
 - OAuth tokens
 - Session cookies
 - Cached quota snapshots
-- Local token and request counters
+- Transient cooldown state
 - Admin labels and status flags
 
 Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
@@ -302,45 +299,17 @@ Continuation mappings and in-flight device-login coordination are kept in memory
 
 Supported environment variables:
 
-### Required
-
 - `PROXY_API_KEY`
+  Required. Protects both public and admin routes.
+- `PORT`
+  Optional. Defaults to `8080`.
 
-### Server
+Everything else is fixed in code on purpose:
 
-- `LISTEN_ADDR`
-- `DATA_DIR`
-- `LOG_LEVEL`
-
-### Proxy behavior
-
-- `DEFAULT_MODEL`
-- `ROTATION_STRATEGY`
-- `REQUEST_TIMEOUT_SECONDS`
-- `LOGIN_TIMEOUT_SECONDS`
-- `USAGE_CACHE_TTL_SECONDS`
-- `CONTINUATION_TTL_MINUTES`
-
-### Upstream Codex
-
-- `CODEX_BASE_URL`
-- `CODEX_ORIGINATOR`
-- `CODEX_OPENAI_BETA`
-- `CODEX_RESIDENCY`
-
-### OAuth
-
-- `OPENAI_AUTH_ISSUER`
-- `OPENAI_OAUTH_CLIENT_ID`
-
-### Desktop-like client identity
-
-- `USER_AGENT_TEMPLATE`
-- `CHROMIUM_VERSION`
-- `CLIENT_PLATFORM`
-- `CLIENT_HINT_PLATFORM`
-- `CLIENT_ARCH`
-- `DEFAULT_ACCEPT_LANGUAGE`
+- Local state is stored in `./data`.
+- The default `codex` alias resolves to `gpt-5.3-codex`.
+- The initial rotation strategy is `least_used`, and can be changed at runtime through `PUT /admin/rotation`.
+- Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
 
 ## Translation Notes
 
@@ -360,13 +329,15 @@ Key translation rules:
 ## Account Rotation
 
 - `least_used`
-  Prefer accounts with lower cached quota pressure, then lower request count, then older last-used time.
+  Prefer healthy accounts with lower cached primary quota usage, then lower secondary usage, then earlier primary reset windows. Accounts without usable cached quota are fallback candidates behind accounts with real quota data.
 - `round_robin`
   Cycle healthy accounts in order.
 - `sticky`
-  Reuse the most recently used healthy account.
+  Reuse the last successfully used healthy account in memory.
 
 Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
+
+Quota observations are updated from upstream response headers, explicit `/codex/usage` fetches, and `codex.rate_limits` stream events. Internal `codex.rate_limits` events are consumed by the proxy and are not forwarded to downstream OpenAI clients.
 
 ## Observability
 
