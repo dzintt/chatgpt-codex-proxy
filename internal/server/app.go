@@ -31,7 +31,6 @@ type App struct {
 	httpClient    *codex.HTTPClient
 	wsClient      *wsclient.Client
 	continuations *accounts.ContinuationManager
-	usageHistory  *accounts.UsageHistoryStore
 	cancel        context.CancelFunc
 }
 
@@ -43,13 +42,6 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	})
 	if err != nil {
 		return nil, err
-	}
-	usageHistory, err := accounts.NewUsageHistoryStore(cfg.DataDir, cfg.UsageHistoryRetention)
-	if err != nil {
-		return nil, err
-	}
-	if err := usageHistory.RecoverBaseline(accountsSvc.Summary()); err != nil {
-		logger.Warn("recover usage history baseline failed", "error", err.Error())
 	}
 
 	httpClient := codex.NewHTTPClient(cfg)
@@ -77,10 +69,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		httpClient:    httpClient,
 		wsClient:      wsclient.New(),
 		continuations: accounts.NewContinuationManager(cfg.ContinuationTTL),
-		usageHistory:  usageHistory,
 	}
 	app.routes()
-	app.recordUsageSnapshot(time.Now().UTC())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app.cancel = cancel
@@ -104,14 +94,6 @@ func (a *App) housekeeping(ctx context.Context) {
 	sweepTicker := time.NewTicker(30 * time.Second)
 	defer sweepTicker.Stop()
 
-	var snapshotTicker *time.Ticker
-	var snapshotC <-chan time.Time
-	if a.cfg.UsageSnapshotInterval > 0 {
-		snapshotTicker = time.NewTicker(a.cfg.UsageSnapshotInterval)
-		snapshotC = snapshotTicker.C
-		defer snapshotTicker.Stop()
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -119,18 +101,7 @@ func (a *App) housekeeping(ctx context.Context) {
 		case <-sweepTicker.C:
 			a.continuations.Sweep()
 			a.deviceLogins.DeleteExpired(time.Now().UTC())
-		case <-snapshotC:
-			a.recordUsageSnapshot(time.Now().UTC())
 		}
-	}
-}
-
-func (a *App) recordUsageSnapshot(now time.Time) {
-	if a.usageHistory == nil {
-		return
-	}
-	if err := a.usageHistory.RecordSummary(a.accounts.Summary(), now); err != nil {
-		a.logger.Error("record usage history failed", "error", err.Error())
 	}
 }
 
@@ -155,8 +126,6 @@ func (a *App) routes() {
 	adminGroup.POST("/accounts/:account_id/refresh", a.handleAdminAccountRefresh)
 	adminGroup.GET("/rotation", a.handleAdminRotationGet)
 	adminGroup.PUT("/rotation", a.handleAdminRotationPut)
-	adminGroup.GET("/usage/summary", a.handleAdminUsageSummary)
-	adminGroup.GET("/usage/history", a.handleAdminUsageHistory)
 }
 
 func (a *App) writeOpenAIError(c *gin.Context, status int, code, message, errType string) {
@@ -181,12 +150,10 @@ func (a *App) classifyUpstreamError(accountID string, err error) (int, string, s
 				return http.StatusForbidden, "account_banned", "upstream account banned or deactivated"
 			}
 		case http.StatusPaymentRequired:
-			reason := a.quotaBlockReason(accountID)
-			a.markAccountBlocked(accountID, reason, a.blockUntil(accountID, reason, err), err)
+			a.setAccountCooldown(accountID, a.quotaCooldownUntil(accountID, time.Now().UTC()), err)
 			return http.StatusPaymentRequired, "quota_exhausted", "upstream account quota exhausted"
 		case http.StatusTooManyRequests:
-			a.recordRateLimitedAttempt(accountID)
-			a.markAccountBlocked(accountID, accounts.BlockRateLimit, a.blockUntil(accountID, accounts.BlockRateLimit, err), err)
+			a.setAccountCooldown(accountID, a.rateLimitCooldownUntil(accountID, err, time.Now().UTC()), err)
 			return http.StatusTooManyRequests, "rate_limited", "upstream account rate limited"
 		}
 		return clampUpstreamStatus(upstreamErr.StatusCode), "upstream_error", upstreamErr.Message()
@@ -204,74 +171,37 @@ func (a *App) markAccountError(accountID string, status accounts.Status, cause e
 	}
 }
 
-func (a *App) markAccountBlocked(accountID string, reason accounts.BlockReason, until *time.Time, cause error) {
+func (a *App) setAccountCooldown(accountID string, until *time.Time, cause error) {
 	if strings.TrimSpace(accountID) == "" {
 		return
 	}
-	if err := a.accounts.MarkBlocked(accountID, reason, until, cause.Error()); err != nil {
-		a.logger.Error("persist account block failed",
+	if err := a.accounts.SetCooldown(accountID, until, cause.Error()); err != nil {
+		a.logger.Error("persist account cooldown failed",
 			"account_id", accountID,
-			"reason", string(reason),
 			"error", err.Error(),
 		)
 	}
 }
 
-func (a *App) quotaBlockReason(accountID string) accounts.BlockReason {
-	record, ok := a.accounts.Get(accountID)
-	if !ok || record.CachedQuota == nil {
-		return accounts.BlockQuotaPrimary
+func (a *App) rateLimitCooldownUntil(accountID string, cause error, now time.Time) *time.Time {
+	if retryAfter := retryAfterFromError(cause); retryAfter > 0 {
+		return fallbackUntil(now, retryAfter)
 	}
-	now := time.Now().UTC()
-	if exhaustedQuotaWindow(record.CachedQuota.SecondaryRateLimit, now) {
-		return accounts.BlockQuotaSecondary
+	if record, ok := a.accounts.Get(accountID); ok {
+		if reset := primaryQuotaReset(record.CachedQuota, now); reset != nil {
+			return reset
+		}
 	}
-	if exhaustedQuotaWindow(record.CachedQuota.CodeReviewRateLimit, now) {
-		return accounts.BlockCodeReview
-	}
-	return accounts.BlockQuotaPrimary
+	return fallbackUntil(now, a.accounts.RateLimitFallback())
 }
 
-func (a *App) blockUntil(accountID string, reason accounts.BlockReason, cause error) *time.Time {
-	now := time.Now().UTC()
-	fallback := fallbackUntil(now, a.fallbackDuration(reason))
-
-	if strings.TrimSpace(accountID) == "" {
-		return fallback
-	}
-
-	var cached *time.Time
-	record, ok := a.accounts.Get(accountID)
-	if ok && record.CachedQuota != nil {
-		if reason == accounts.BlockRateLimit {
-			cached = quotaResetForReason(record.CachedQuota, accounts.BlockQuotaPrimary, now)
-		} else {
-			cached = quotaResetForReason(record.CachedQuota, reason, now)
+func (a *App) quotaCooldownUntil(accountID string, now time.Time) *time.Time {
+	if record, ok := a.accounts.Get(accountID); ok {
+		if reset := quotaResetForCooldown(record.CachedQuota, now); reset != nil {
+			return reset
 		}
 	}
-
-	if reason == accounts.BlockRateLimit {
-		retry := (*time.Time)(nil)
-		if retryAfter := retryAfterFromError(cause); retryAfter > 0 {
-			retry = fallbackUntil(now, retryAfter)
-		}
-		if retry != nil || cached != nil {
-			return laterTime(retry, cached)
-		}
-		return fallback
-	}
-
-	if cached != nil {
-		return cached
-	}
-	return fallback
-}
-
-func (a *App) fallbackDuration(reason accounts.BlockReason) time.Duration {
-	if reason == accounts.BlockRateLimit {
-		return a.cfg.RateLimitFallback
-	}
-	return a.cfg.QuotaFallback
+	return fallbackUntil(now, a.accounts.QuotaFallback())
 }
 
 func retryAfterFromError(err error) time.Duration {
@@ -327,37 +257,41 @@ func looksLikeCloudflareBlock(text string) bool {
 		strings.Contains(normalized, "<html")
 }
 
-func quotaResetForReason(snapshot *accounts.QuotaSnapshot, reason accounts.BlockReason, now time.Time) *time.Time {
+func primaryQuotaReset(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Time {
 	if snapshot == nil {
 		return nil
 	}
-	switch reason {
-	case accounts.BlockQuotaSecondary:
-		return activeWindowReset(snapshot.SecondaryRateLimit, now)
-	case accounts.BlockCodeReview:
-		return activeWindowReset(snapshot.CodeReviewRateLimit, now)
-	case accounts.BlockRateLimit, accounts.BlockQuotaPrimary:
-		return activeWindowReset(&snapshot.RateLimit, now)
-	default:
-		return nil
-	}
+	return activeWindowReset(&snapshot.RateLimit, now)
 }
 
-func exhaustedQuotaWindow(window *accounts.RateLimitWindow, now time.Time) bool {
-	if window == nil || !window.LimitReached {
-		return false
+func quotaResetForCooldown(snapshot *accounts.QuotaSnapshot, now time.Time) *time.Time {
+	if snapshot == nil {
+		return nil
 	}
-	if window.ResetAt == nil {
-		return true
+	if reset := activeWindowReset(&snapshot.RateLimit, now); reset != nil {
+		return reset
 	}
-	return window.ResetAt.After(now)
+	if reset := activeWindowReset(snapshot.SecondaryRateLimit, now); reset != nil {
+		return reset
+	}
+	return nil
 }
 
 func activeWindowReset(window *accounts.RateLimitWindow, now time.Time) *time.Time {
-	if window == nil || !window.LimitReached {
+	if window == nil {
 		return nil
 	}
-	if window.ResetAt == nil {
+	if !window.Allowed {
+		if window.ResetAt == nil {
+			return nil
+		}
+		if window.ResetAt.After(now) {
+			ts := window.ResetAt.UTC()
+			return &ts
+		}
+		return nil
+	}
+	if !window.LimitReached || window.ResetAt == nil {
 		return nil
 	}
 	if !window.ResetAt.After(now) {

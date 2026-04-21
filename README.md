@@ -15,7 +15,7 @@ Use it for local or small-scale deployments.
 - Streams upstream events back as OpenAI-style JSON or SSE
 - Manages one or more Codex accounts authenticated through ChatGPT device login
 - Rotates requests across healthy accounts
-- Provides a small admin API for onboarding, quota checks, routing visibility, and usage history
+- Provides a small admin API for onboarding, quota checks, and routing visibility
 
 ## What It Supports
 
@@ -32,8 +32,8 @@ Use it for local or small-scale deployments.
 - Text, image, and file inputs on Responses
 - `previous_response_id` continuations
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
-- Local JSON persistence for accounts and usage state
-- Automatic recovery when upstream rate-limit or quota reset windows expire
+- Local JSON persistence for accounts and cached quota state
+- Automatic recovery when cached quota or transient cooldown windows expire
 
 ## What It Does Not Try To Be
 
@@ -75,7 +75,7 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - `internal/codex/wsclient`
   WebSocket client kept for upstream continuation support.
 - `internal/accounts`
-  Account records, local usage tracking, continuation affinity, and rotation logic.
+  Account records, cached quota state, continuation affinity, and rotation logic.
 - `internal/admin`
   Device login flow orchestration.
 - `internal/store`
@@ -241,7 +241,7 @@ Authenticated service health endpoint.
 ### Accounts
 
 - `GET /admin/accounts`
-  List locally known accounts, permanent status, transient availability block state, cached quota, and expanded local usage counters.
+  List locally known accounts, permanent status, derived eligibility, cooldown state, and cached quota.
 - `DELETE /admin/accounts/:account_id`
   Remove an account from local persistence.
 - `PATCH /admin/accounts/:account_id`
@@ -249,7 +249,7 @@ Authenticated service health endpoint.
 - `POST /admin/accounts/:account_id/refresh`
   Force an OAuth token refresh.
 - `GET /admin/accounts/:account_id/usage`
-  Fetch the runtime quota view, raw cached quota metadata, and local usage counters for one account.
+  Fetch the runtime quota view and cached quota metadata for one account.
 
 ### Device login
 
@@ -271,18 +271,11 @@ Valid strategies:
 - `round_robin`
 - `sticky`
 
-### Usage summary
-
-- `GET /admin/usage/summary`
-  Return aggregate local usage counters plus account counts by permanent status and transient availability.
-- `GET /admin/usage/history?granularity=raw|hourly|daily&hours=24`
-  Return snapshot-based usage history from `usage-history.json`.
-
 ### Status model
 
 - Permanent account status is one of `active`, `disabled`, `expired`, or `banned`.
-- Transient routing availability is tracked separately in `block_state.reason`.
-- Active block reasons are `rate_limit`, `quota_primary`, `quota_secondary`, and `code_review`.
+- Transient routing availability is tracked with `cooldown_until` plus the latest cached quota snapshot.
+- General account routing is blocked only by primary or secondary quota exhaustion. `code_review_rate_limit` is retained for observability and does not affect normal routing.
 - Exhausted quota windows are treated as temporary routing blocks. Accounts automatically become eligible again after the cached reset time passes.
 
 ## Persistence
@@ -290,7 +283,6 @@ Valid strategies:
 Account state is stored locally in:
 
 - `data/accounts.json`
-- `data/usage-history.json`
 
 That file includes:
 
@@ -298,10 +290,8 @@ That file includes:
 - OAuth tokens
 - Session cookies
 - Cached quota snapshots
-- Local token and request counters
+- Transient cooldown state
 - Admin labels and status flags
-
-`usage-history.json` stores periodic cumulative usage snapshots plus a baseline accumulator so removing or resetting local account entries does not erase aggregate history.
 
 Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
 
@@ -319,7 +309,7 @@ Everything else is fixed in code on purpose:
 - Local state is stored in `./data`.
 - The default `codex` alias resolves to `gpt-5.3-codex`.
 - The initial rotation strategy is `least_used`, and can be changed at runtime through `PUT /admin/rotation`.
-- Upstream base URLs, OAuth client details, request timeouts, usage snapshot cadence, fallback windows, and desktop-like headers are implementation constants rather than deployment knobs.
+- Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
 
 ## Translation Notes
 
@@ -339,11 +329,11 @@ Key translation rules:
 ## Account Rotation
 
 - `least_used`
-  Prefer healthy accounts with lower effective exhaustion rank, earlier known reset windows, lower quota pressure, then lower request count and older last-used time.
+  Prefer healthy accounts with lower cached primary quota usage, then lower secondary usage, then earlier primary reset windows. Accounts without usable cached quota are fallback candidates behind accounts with real quota data.
 - `round_robin`
   Cycle healthy accounts in order.
 - `sticky`
-  Reuse the most recently used healthy account.
+  Reuse the last successfully used healthy account in memory.
 
 Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
 

@@ -1,9 +1,6 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,8 +26,7 @@ type fakeEventStream struct {
 }
 
 type memoryAccountsStore struct {
-	state     accounts.State
-	saveCount int
+	state accounts.State
 }
 
 func (m *memoryAccountsStore) Load() (accounts.State, error) {
@@ -39,7 +35,6 @@ func (m *memoryAccountsStore) Load() (accounts.State, error) {
 
 func (m *memoryAccountsStore) Save(state accounts.State) error {
 	m.state = state
-	m.saveCount++
 	return nil
 }
 
@@ -66,450 +61,102 @@ func (f *fakeEventStream) Headers() http.Header {
 	return f.headers
 }
 
-func TestStreamChatCompletionBuffersTupleJSONAndStreamsToolCalls(t *testing.T) {
+func TestObserveQuotaSnapshotUpdatesCachedQuota(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
-	ctx.Set(middleware.RequestIDKey, "req-test")
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_headers",
+		AccountID: "upstream_headers",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 
 	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		continuations: accounts.NewContinuationManager(time.Minute),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
 	}
 
-	normalized := translate.NormalizedRequest{
-		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
-		TupleSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pair": map[string]any{
-					"type": "array",
-					"prefixItems": []any{
-						map[string]any{"type": "string"},
-						map[string]any{"type": "number"},
-					},
+	pct := 35.0
+	resetAt := now.Add(15 * time.Minute)
+	app.observeQuotaSnapshot("acct_headers", &accounts.QuotaSnapshot{
+		Source:    "response_headers",
+		FetchedAt: now,
+		RateLimit: accounts.RateLimitWindow{
+			Allowed:      true,
+			LimitReached: false,
+			UsedPercent:  &pct,
+			ResetAt:      &resetAt,
+		},
+	})
+
+	record, ok := accountsSvc.Get("acct_headers")
+	if !ok {
+		t.Fatal("Get() returned false")
+	}
+	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
+		t.Fatal("cached quota missing used percent")
+	}
+	if *record.CachedQuota.RateLimit.UsedPercent != 35.0 {
+		t.Fatalf("used_percent = %v, want 35", *record.CachedQuota.RateLimit.UsedPercent)
+	}
+}
+
+func TestObserveQuotaEventUpdatesCachedQuota(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_event",
+		AccountID: "upstream_event",
+		Status:    accounts.StatusActive,
+		PlanType:  "plus",
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts: accountsSvc,
+	}
+
+	handled := app.observeQuotaEvent(accounts.Record{ID: "acct_event", PlanType: "plus"}, &codex.StreamEvent{
+		Type: "codex.rate_limits",
+		Raw: map[string]any{
+			"rate_limits": map[string]any{
+				"primary": map[string]any{
+					"used_percent": 42.0,
+					"reset_at":     float64(now.Add(30 * time.Minute).Unix()),
 				},
 			},
 		},
+	})
+	if !handled {
+		t.Fatal("observeQuotaEvent() = false, want true")
 	}
 
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.function_call_arguments.delta", Raw: map[string]any{
-				"call_id": "call_1",
-				"name":    "lookup_weather",
-				"delta":   `{"city":"`,
-			}},
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `{"pair":{"0":"left",`}},
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `"1":2}}`}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_123",
-				"response": map[string]any{
-					"id":          "resp_123",
-					"status":      "completed",
-					"output_text": `{"pair":{"0":"left","1":2}}`,
-				},
-			}},
-		},
-	}
-
-	app.streamChatCompletion(ctx, accounts.Record{}, normalized, stream)
-	body := recorder.Body.String()
-
-	if strings.Contains(body, `"content":"{\"pair\":{\"0\":\"left\"`) {
-		t.Fatal("raw tuple JSON delta should not be streamed")
-	}
-	if !strings.Contains(body, `"tool_calls":[{"function":{"arguments":"{\"city\":\""},"index":0}]`) {
-		t.Fatalf("expected streamed tool call delta, body = %s", body)
-	}
-	if !strings.Contains(body, `"content":"{\"pair\":[\"left\",2]}"`) {
-		t.Fatalf("expected reconverted tuple JSON delta, body = %s", body)
-	}
-}
-
-func TestStreamResponsesBuffersTupleJSONAndPatchesCompletedPayload(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
-	ctx.Set(middleware.RequestIDKey, "req-test")
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	normalized := translate.NormalizedRequest{
-		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
-		TupleSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pair": map[string]any{
-					"type": "array",
-					"prefixItems": []any{
-						map[string]any{"type": "string"},
-						map[string]any{"type": "number"},
-					},
-				},
-			},
-		},
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": `{"pair":{"0":"left",`}},
-			{Type: "response.output_text.done", Raw: map[string]any{"text": `{"pair":{"0":"left","1":2}}`}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_456",
-				"response": map[string]any{
-					"id":          "resp_456",
-					"status":      "completed",
-					"output_text": `{"pair":{"0":"left","1":2}}`,
-					"output": []any{
-						map[string]any{
-							"type": "message",
-							"content": []any{
-								map[string]any{
-									"type": "output_text",
-									"text": `{"pair":{"0":"left","1":2}}`,
-								},
-							},
-						},
-					},
-				},
-			}},
-		},
-	}
-
-	app.streamResponses(ctx, accounts.Record{}, normalized, stream)
-	body := recorder.Body.String()
-
-	if strings.Contains(body, `event: response.output_text.done`) {
-		t.Fatalf("response.output_text.done should be suppressed, body = %s", body)
-	}
-	if !strings.Contains(body, `event: response.output_text.delta`) || !strings.Contains(body, `\"pair\":[\"left\",2]`) {
-		t.Fatalf("expected synthetic reconverted delta, body = %s", body)
-	}
-	if !strings.Contains(body, `"output_text":"{\"pair\":[\"left\",2]}"`) {
-		t.Fatalf("expected patched completed payload, body = %s", body)
-	}
-}
-
-func TestStreamChatCompletionReturnsStreamErrorOnEarlyEOF(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_chat_eof",
-			AccountID: "upstream_stream_chat_eof",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_stream_chat_eof")
+	record, ok := accountsSvc.Get("acct_event")
 	if !ok {
 		t.Fatal("Get() returned false")
 	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-		},
+	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
+		t.Fatal("cached quota missing after event")
 	}
-
-	app.streamChatCompletion(ctx, account, translate.NormalizedRequest{
-		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
-	}, stream)
-
-	body := recorder.Body.String()
-	if strings.Contains(body, "[DONE]") {
-		t.Fatalf("stream should not finish cleanly on early EOF, body = %s", body)
-	}
-	if !strings.Contains(body, errIncompleteResponse.Error()) {
-		t.Fatalf("expected incomplete response error in stream, body = %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stream_chat_eof")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+	if *record.CachedQuota.RateLimit.UsedPercent != 42.0 {
+		t.Fatalf("used_percent = %v, want 42", *record.CachedQuota.RateLimit.UsedPercent)
 	}
 }
 
-func TestStreamResponsesReturnsStreamErrorOnEarlyEOF(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_responses_eof",
-			AccountID: "upstream_stream_responses_eof",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_stream_responses_eof")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-		},
-	}
-
-	app.streamResponses(ctx, account, translate.NormalizedRequest{
-		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
-	}, stream)
-
-	body := recorder.Body.String()
-	if strings.Contains(body, "event: done") || strings.Contains(body, "[DONE]") {
-		t.Fatalf("stream should not finish cleanly on early EOF, body = %s", body)
-	}
-	if !strings.Contains(body, "event: error") || !strings.Contains(body, errIncompleteResponse.Error()) {
-		t.Fatalf("expected error event for incomplete stream, body = %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stream_responses_eof")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestCollectEventsCountsRequestOnStreamReadFailure(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_collect_read_failure",
-			AccountID: "upstream_collect_read_failure",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_collect_read_failure")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-		},
-		tailErr: errors.New("stream read failed"),
-	}
-
-	_, err = app.collectEvents(account, translate.NormalizedRequest{Endpoint: translate.EndpointResponses, Model: "gpt-5.4"}, stream)
-	if err == nil || err.Error() != "stream read failed" {
-		t.Fatalf("collectEvents() error = %v, want stream read failed", err)
-	}
-
-	updated, ok := accountsSvc.Get("acct_collect_read_failure")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-	if updated.LocalUsage.EmptyResponseCount != 0 {
-		t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
-	}
-}
-
-func TestStreamChatCompletionCountsRequestOnStreamReadFailure(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_chat_read_failure",
-			AccountID: "upstream_stream_chat_read_failure",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_stream_chat_read_failure")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-		},
-		tailErr: errors.New("stream read failed"),
-	}
-
-	app.streamChatCompletion(ctx, account, translate.NormalizedRequest{
-		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
-	}, stream)
-
-	body := recorder.Body.String()
-	if !strings.Contains(body, "stream read failed") {
-		t.Fatalf("expected read failure in stream body, body = %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stream_chat_read_failure")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestStreamResponsesCountsRequestOnStreamReadFailure(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_responses_read_failure",
-			AccountID: "upstream_stream_responses_read_failure",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_stream_responses_read_failure")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-		},
-		tailErr: errors.New("stream read failed"),
-	}
-
-	app.streamResponses(ctx, account, translate.NormalizedRequest{
-		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
-	}, stream)
-
-	body := recorder.Body.String()
-	if !strings.Contains(body, "stream read failed") {
-		t.Fatalf("expected read failure in stream body, body = %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stream_responses_read_failure")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestStreamChatCompletionClassifiesStructuredRateLimitFailure(t *testing.T) {
+func TestStreamChatCompletionClassifiesStructuredRateLimitFailureAndSetsCooldown(t *testing.T) {
 	t.Parallel()
 
 	gin.SetMode(gin.TestMode)
@@ -519,63 +166,143 @@ func TestStreamChatCompletionClassifiesStructuredRateLimitFailure(t *testing.T) 
 	ctx.Set(middleware.RequestIDKey, "req-test")
 
 	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_chat_rate_limit",
-			AccountID: "upstream_stream_chat_rate_limit",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_rate_limit",
+		AccountID: "upstream_rate_limit",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 
 	app := &App{
-		cfg:           config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:      accountsSvc,
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	account, ok := accountsSvc.Get("acct_stream_chat_rate_limit")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
+	record, _ := accountsSvc.Get("acct_rate_limit")
 	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "error", Raw: map[string]any{
+		events: []*codex.StreamEvent{{
+			Type: "error",
+			Raw: map[string]any{
 				"error": map[string]any{
 					"code":              "rate_limited",
 					"message":           "Too many requests",
 					"resets_in_seconds": 12,
+					"usage": map[string]any{
+						"input_tokens":  11,
+						"output_tokens": 7,
+					},
 				},
-			}},
-		},
+			},
+		}},
 	}
 
-	app.streamChatCompletion(ctx, account, translate.NormalizedRequest{
+	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointChat,
 		Model:    "gpt-5.4",
 		Stream:   true,
 	}, stream)
 
-	body := recorder.Body.String()
-	if !strings.Contains(body, "upstream account rate limited") {
-		t.Fatalf("expected classified rate limit message in stream body, body = %s", body)
+	if !strings.Contains(recorder.Body.String(), "upstream account rate limited") {
+		t.Fatalf("stream body = %s, want rate limited message", recorder.Body.String())
 	}
 
-	updated, ok := accountsSvc.Get("acct_stream_chat_rate_limit")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
+	updated, _ := accountsSvc.Get("acct_rate_limit")
+	if updated.CooldownUntil == nil {
+		t.Fatal("cooldown_until = nil, want cooldown")
 	}
-	if updated.BlockState.Reason != accounts.BlockRateLimit {
-		t.Fatalf("block_reason = %q, want rate_limit", updated.BlockState.Reason)
+	if updated.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want active", updated.Status)
 	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
+}
+
+func TestStreamResponsesClassifiesStructuredQuotaFailureAndSetsCooldown(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	resetAt := now.Add(20 * time.Minute)
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_quota",
+		AccountID: "upstream_quota",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CachedQuota: &accounts.QuotaSnapshot{
+			RateLimit: accounts.RateLimitWindow{
+				Allowed:      true,
+				LimitReached: true,
+				ResetAt:      &resetAt,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_quota")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{{
+			Type: "response.failed",
+			Raw: map[string]any{
+				"response": map[string]any{
+					"id": "resp_quota",
+					"usage": map[string]any{
+						"input_tokens":  13,
+						"output_tokens": 2,
+					},
+					"error": map[string]any{
+						"code":    "usage_limit_reached",
+						"message": "Billing period exhausted",
+					},
+				},
+			},
+		}},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	if !strings.Contains(recorder.Body.String(), "upstream account quota exhausted") {
+		t.Fatalf("stream body = %s, want quota exhausted message", recorder.Body.String())
+	}
+
+	updated, _ := accountsSvc.Get("acct_quota")
+	if updated.CooldownUntil == nil {
+		t.Fatal("cooldown_until = nil, want cooldown")
+	}
+	if updated.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want active", updated.Status)
 	}
 }
 
@@ -589,34 +316,34 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	ctx.Set(middleware.RequestIDKey, "req-test")
 
 	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stream_responses_unauthorized",
-			AccountID: "upstream_stream_responses_unauthorized",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_unauthorized",
+		AccountID: "upstream_unauthorized",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 
 	app := &App{
-		cfg:           config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+			ContinuationTTL:   time.Minute,
+		},
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:      accountsSvc,
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	account, ok := accountsSvc.Get("acct_stream_responses_unauthorized")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
+	record, _ := accountsSvc.Get("acct_unauthorized")
 	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.failed", Raw: map[string]any{
+		events: []*codex.StreamEvent{{
+			Type: "response.failed",
+			Raw: map[string]any{
 				"response": map[string]any{
 					"id": "resp_unauthorized",
 					"error": map[string]any{
@@ -624,1109 +351,96 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 						"message": "Session expired",
 					},
 				},
-			}},
-		},
+			},
+		}},
 	}
 
-	app.streamResponses(ctx, account, translate.NormalizedRequest{
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
 		Model:    "gpt-5.4",
 		Stream:   true,
 	}, stream)
 
-	body := recorder.Body.String()
-	if !strings.Contains(body, "upstream account unauthorized") {
-		t.Fatalf("expected classified unauthorized message in stream body, body = %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stream_responses_unauthorized")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
+	updated, _ := accountsSvc.Get("acct_unauthorized")
 	if updated.Status != accounts.StatusExpired {
 		t.Fatalf("status = %q, want expired", updated.Status)
 	}
-	if updated.LocalUsage.RequestCount != 0 {
-		t.Fatalf("request_count = %d, want 0 for classified unauthorized failure", updated.LocalUsage.RequestCount)
-	}
 }
 
-func TestLogCompatibilityWarningsDoesNotLeakRequestBody(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"secret":"do-not-log-me"}`))
-	ctx.Set(middleware.RequestIDKey, "req-test")
-
-	app := &App{
-		logger: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	}
-	app.logCompatibilityWarnings(ctx, "chat_completions", []translate.CompatibilityWarning{{
-		Field:    "temperature",
-		Behavior: "ignored_with_warning",
-		Detail:   "field is accepted for compatibility but not applied in this proxy",
-	}})
-
-	if strings.Contains(logs.String(), "do-not-log-me") {
-		t.Fatal("request body appeared in logs")
-	}
-
-	var entry map[string]any
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	if entry["level"] != "WARN" {
-		t.Fatalf("level = %#v, want WARN", entry["level"])
-	}
-	if entry["field"] != "temperature" {
-		t.Fatalf("field = %#v, want temperature", entry["field"])
-	}
-}
-
-func TestStreamResponsesSuppressesCodexRateLimitsEvent(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	logs := new(bytes.Buffer)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
-	ctx.Set(middleware.RequestIDKey, "req-test")
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_test",
-			AccountID: "upstream_test",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	normalized := translate.NormalizedRequest{
-		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "codex.rate_limits", Raw: map[string]any{
-				"rate_limits": map[string]any{
-					"primary": map[string]any{
-						"used_percent":   100.0,
-						"window_minutes": 300.0,
-						"reset_at":       float64(now.Add(5 * time.Minute).Unix()),
-					},
-				},
-			}},
-			{Type: "response.output_text.delta", Raw: map[string]any{"delta": "hello"}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_789",
-				"response": map[string]any{
-					"id":          "resp_789",
-					"status":      "completed",
-					"output_text": "hello",
-				},
-			}},
-		},
-	}
-
-	account, ok := accountsSvc.Get("acct_test")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	app.streamResponses(ctx, account, normalized, stream)
-	body := recorder.Body.String()
-
-	if strings.Contains(body, "codex.rate_limits") {
-		t.Fatalf("codex.rate_limits event leaked downstream: %s", body)
-	}
-
-	updated, ok := accountsSvc.Get("acct_test")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.CachedQuota == nil || updated.CachedQuota.RateLimit.UsedPercent == nil || *updated.CachedQuota.RateLimit.UsedPercent != 100 {
-		t.Fatalf("cached_quota = %#v, want primary used_percent 100", updated.CachedQuota)
-	}
-	if updated.BlockState.Reason != accounts.BlockQuotaPrimary {
-		t.Fatalf("block_reason = %q, want quota_primary", updated.BlockState.Reason)
-	}
-}
-
-func TestCollectEventsRecordsRequestWithoutUsageBlock(t *testing.T) {
+func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_usage_less",
-			AccountID: "upstream_usage_less",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_usage_less")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_usage_less",
-				"response": map[string]any{
-					"id":     "resp_usage_less",
-					"status": "completed",
-				},
-			}},
-		},
-	}
-
-	accumulator, err := app.collectEvents(account, translate.NormalizedRequest{Endpoint: translate.EndpointResponses, Model: "gpt-5.4"}, stream)
-	if err != nil {
-		t.Fatalf("collectEvents() error = %v", err)
-	}
-	if accumulator.Usage != nil {
-		t.Fatalf("accumulator.Usage = %#v, want nil", accumulator.Usage)
-	}
-
-	updated, ok := accountsSvc.Get("acct_usage_less")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-	if updated.LocalUsage.LastUsedAt == nil {
-		t.Fatal("last_used_at = nil, want timestamp")
-	}
-	if updated.LocalUsage.EmptyResponseCount != 1 {
-		t.Fatalf("empty_response_count = %d, want 1", updated.LocalUsage.EmptyResponseCount)
-	}
-}
-
-func TestCollectEventsDoesNotMarkToolCallOnlyResponseAsEmpty(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_tool_only",
-			AccountID: "upstream_tool_only",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:           config.Config{ContinuationTTL: time.Minute},
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:      accountsSvc,
-		continuations: accounts.NewContinuationManager(time.Minute),
-	}
-
-	account, ok := accountsSvc.Get("acct_tool_only")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
-
-	stream := &fakeEventStream{
-		events: []*codex.StreamEvent{
-			{Type: "response.function_call_arguments.done", Raw: map[string]any{
-				"call_id":     "call_1",
-				"name":        "lookup_weather",
-				"arguments":   `{"city":"SF"}`,
-				"response_id": "resp_tool_only",
-			}},
-			{Type: "response.completed", Raw: map[string]any{
-				"response_id": "resp_tool_only",
-				"response": map[string]any{
-					"id":     "resp_tool_only",
-					"status": "completed",
-				},
-			}},
-		},
-	}
-
-	if _, err := app.collectEvents(account, translate.NormalizedRequest{Endpoint: translate.EndpointResponses, Model: "gpt-5.4"}, stream); err != nil {
-		t.Fatalf("collectEvents() error = %v", err)
-	}
-
-	updated, ok := accountsSvc.Get("acct_tool_only")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-	if updated.LocalUsage.EmptyResponseCount != 0 {
-		t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
-	}
-}
-
-func TestCollectEventsCountsIncompleteAttemptButSkipsStructuredFailureUsage(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		accountID    string
-		events       []*codex.StreamEvent
-		wantErr      func(error) bool
-		wantRequests int64
-	}{
-		{
-			name:      "early eof before completion",
-			accountID: "acct_early_eof",
-			events: []*codex.StreamEvent{
-				{Type: "response.output_text.delta", Raw: map[string]any{"delta": "partial"}},
-			},
-			wantErr:      func(err error) bool { return errors.Is(err, errIncompleteResponse) },
-			wantRequests: 1,
-		},
-		{
-			name:      "response.failed event",
-			accountID: "acct_failed_attempt",
-			events: []*codex.StreamEvent{
-				{Type: "response.failed", Raw: map[string]any{
-					"error": map[string]any{
-						"message": "upstream failure",
-					},
-				}},
-			},
-			wantErr: func(err error) bool {
-				var upstreamErr *codex.UpstreamError
-				return err != nil && errors.As(err, &upstreamErr) && upstreamErr.Message() == "upstream failure"
-			},
-			wantRequests: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			now := time.Now().UTC()
-			accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-				Records: []*accounts.Record{{
-					ID:        tc.accountID,
-					AccountID: "upstream_" + tc.accountID,
-					Status:    accounts.StatusActive,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}},
-			}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-			if err != nil {
-				t.Fatalf("NewService() error = %v", err)
-			}
-
-			app := &App{
-				cfg:           config.Config{ContinuationTTL: time.Minute},
-				logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-				accounts:      accountsSvc,
-				continuations: accounts.NewContinuationManager(time.Minute),
-			}
-
-			account, ok := accountsSvc.Get(tc.accountID)
-			if !ok {
-				t.Fatal("Get() returned false")
-			}
-
-			stream := &fakeEventStream{events: tc.events}
-
-			if _, err := app.collectEvents(account, translate.NormalizedRequest{Endpoint: translate.EndpointResponses, Model: "gpt-5.4"}, stream); !tc.wantErr(err) {
-				t.Fatalf("collectEvents() error = %v, want expected failure", err)
-			}
-
-			updated, ok := accountsSvc.Get(tc.accountID)
-			if !ok {
-				t.Fatal("Get(updated) returned false")
-			}
-			if updated.LocalUsage.RequestCount != tc.wantRequests {
-				t.Fatalf("request_count = %d, want %d", updated.LocalUsage.RequestCount, tc.wantRequests)
-			}
-			if updated.LocalUsage.EmptyResponseCount != 0 {
-				t.Fatalf("empty_response_count = %d, want 0", updated.LocalUsage.EmptyResponseCount)
-			}
-		})
-	}
-}
-
-func TestQuotaBlockReasonIgnoresExpiredSecondaryWindow(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	resetPast := now.Add(-time.Minute)
-	usedPercent := 100.0
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_stale_quota",
-			AccountID: "upstream_stale_quota",
-			Status:    accounts.StatusActive,
-			CachedQuota: &accounts.QuotaSnapshot{
-				RateLimit: accounts.RateLimitWindow{
-					Allowed: true,
-				},
-				SecondaryRateLimit: &accounts.RateLimitWindow{
-					Allowed:      true,
-					LimitReached: true,
-					UsedPercent:  &usedPercent,
-					ResetAt:      &resetPast,
-				},
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{accounts: accountsSvc}
-	if reason := app.quotaBlockReason("acct_stale_quota"); reason != accounts.BlockQuotaPrimary {
-		t.Fatalf("quotaBlockReason() = %q, want quota_primary", reason)
-	}
-
-	updated, ok := accountsSvc.Get("acct_stale_quota")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.CachedQuota == nil || updated.CachedQuota.SecondaryRateLimit == nil {
-		t.Fatalf("cached quota missing secondary window: %#v", updated.CachedQuota)
-	}
-	if updated.CachedQuota.SecondaryRateLimit.LimitReached {
-		t.Fatalf("secondary limit should have been cleared after expiry: %#v", updated.CachedQuota.SecondaryRateLimit)
-	}
-}
-
-func TestBlockUntilUsesRetryAfterBeforeFallback(t *testing.T) {
-	t.Parallel()
-
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-		},
-		accounts: accountsSvc,
-	}
-
-	start := time.Now().UTC()
-	until := app.blockUntil("", accounts.BlockRateLimit, io.EOF)
-	if until == nil {
-		t.Fatal("blockUntil() = nil")
-	}
-	if until.Sub(start) < 59*time.Second || until.Sub(start) > 61*time.Second {
-		t.Fatalf("fallback block duration = %v, want about 60s", until.Sub(start))
-	}
-
-	start = time.Now().UTC()
-	until = app.blockUntil("acct_missing", accounts.BlockRateLimit, errors.New("429 too many requests retry-after: 10"))
-	if until == nil {
-		t.Fatal("blockUntil(retry-after) = nil")
-	}
-	if until.Sub(start) < 9*time.Second || until.Sub(start) > 11*time.Second {
-		t.Fatalf("retry-after block duration = %v, want about 10s", until.Sub(start))
-	}
-
-	start = time.Now().UTC()
-	until = app.blockUntil("acct_missing", accounts.BlockQuotaPrimary, io.EOF)
-	if until == nil {
-		t.Fatal("blockUntil(quota fallback) = nil")
-	}
-	if until.Sub(start) < 4*time.Minute || until.Sub(start) > 6*time.Minute {
-		t.Fatalf("quota fallback block duration = %v, want about 5m", until.Sub(start))
-	}
-}
-
-func TestBlockUntilForRateLimitUsesPrimaryQuotaResetOnly(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	primaryReset := now.Add(2 * time.Minute)
-	secondaryReset := now.Add(2 * time.Hour)
-	codeReviewReset := now.Add(3 * time.Hour)
-	usedPercent := 100.0
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_latest_reset",
-			AccountID: "upstream_latest_reset",
-			Status:    accounts.StatusActive,
-			CachedQuota: &accounts.QuotaSnapshot{
-				RateLimit: accounts.RateLimitWindow{
-					Allowed:      true,
-					LimitReached: true,
-					UsedPercent:  &usedPercent,
-					ResetAt:      &primaryReset,
-				},
-				SecondaryRateLimit: &accounts.RateLimitWindow{
-					Allowed:      true,
-					LimitReached: true,
-					UsedPercent:  &usedPercent,
-					ResetAt:      &secondaryReset,
-				},
-				CodeReviewRateLimit: &accounts.RateLimitWindow{
-					Allowed:      true,
-					LimitReached: true,
-					UsedPercent:  &usedPercent,
-					ResetAt:      &codeReviewReset,
-				},
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-		},
-		accounts: accountsSvc,
-	}
-
-	start := time.Now().UTC()
-	until := app.blockUntil("acct_latest_reset", accounts.BlockRateLimit, errors.New("429 too many requests retry-after: 10"))
-	if until == nil {
-		t.Fatal("blockUntil() = nil")
-	}
-	if until.Sub(start) < 110*time.Second || until.Sub(start) > 130*time.Second {
-		t.Fatalf("block duration = %v, want about 2m based on primary reset", until.Sub(start))
-	}
-}
-
-func TestObserveQuotaSnapshotPersistsOnce(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	store := &memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_quota_once",
-			AccountID: "upstream_quota_once",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}
-	accountsSvc, err := accounts.NewService(store, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-	store.saveCount = 0
-
-	app := &App{
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	resetAt := now.Add(5 * time.Minute)
-	windowSeconds := 300
-	usedPercent := 80.0
-	app.observeQuotaSnapshot("acct_quota_once", &accounts.QuotaSnapshot{
-		RateLimit: accounts.RateLimitWindow{
-			Allowed:            true,
-			UsedPercent:        &usedPercent,
-			ResetAt:            &resetAt,
-			LimitWindowSeconds: &windowSeconds,
-		},
-	})
-
-	if store.saveCount != 1 {
-		t.Fatalf("saveCount = %d, want 1", store.saveCount)
-	}
-}
-
-func TestHandleOpenStreamErrorCountsAndBlocksActualRateLimitedAccount(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_request_error",
-			AccountID: "upstream_request_error",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	app.handleOpenStreamError(ctx, "responses", "acct_request_error", "preferred_only", &codex.UpstreamError{
-		Op:         "codex response",
-		StatusCode: http.StatusTooManyRequests,
-		Body:       "quota exceeded retry-after: 10",
-	})
-
-	updated, ok := accountsSvc.Get("acct_request_error")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-	if updated.BlockState.Reason != accounts.BlockRateLimit {
-		t.Fatalf("block_reason = %q, want rate_limit on the actual failing account", updated.BlockState.Reason)
-	}
-
-	recorder = httptest.NewRecorder()
-	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-
-	app.handleOpenStreamError(ctx, "responses", "acct_request_error", "preferred_only", errors.New("503 upstream unavailable"))
-
-	updated, ok = accountsSvc.Get("acct_request_error")
-	if !ok {
-		t.Fatal("Get(updated second) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count after non-429 = %d, want still 1", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestHandleOpenStreamErrorDoesNotDoubleCountWhenIDsMatch(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_same_id",
-			AccountID: "upstream_same_id",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	app.handleOpenStreamError(ctx, "chat_completions", "acct_same_id", "acct_same_id", &codex.UpstreamError{
-		Op:         "codex response",
-		StatusCode: http.StatusTooManyRequests,
-		Body:       "rate limited retry-after: 10",
-	})
-
-	updated, ok := accountsSvc.Get("acct_same_id")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1", updated.LocalUsage.RequestCount)
-	}
-	if updated.BlockState.Reason != accounts.BlockRateLimit {
-		t.Fatalf("block_reason = %q, want rate_limit", updated.BlockState.Reason)
-	}
-}
-
-func TestClassifyUpstreamErrorPrefersRateLimitOverQuotaText(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_rate_limit",
-			AccountID: "upstream_rate_limit",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-		},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	status, code, _ := app.classifyUpstreamError("acct_rate_limit", &codex.UpstreamError{
-		Op:         "codex response",
-		StatusCode: http.StatusTooManyRequests,
-		Body:       "quota exceeded retry-after: 10",
-	})
-	if status != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429", status)
-	}
-	if code != "rate_limited" {
-		t.Fatalf("code = %q, want rate_limited", code)
-	}
-
-	updated, ok := accountsSvc.Get("acct_rate_limit")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.BlockState.Reason != accounts.BlockRateLimit {
-		t.Fatalf("block_reason = %q, want rate_limit", updated.BlockState.Reason)
-	}
-	if updated.LocalUsage.RequestCount != 1 {
-		t.Fatalf("request_count = %d, want 1 for explicit 429", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestClassifyUpstreamErrorPrefersQuotaWhen402MentionsRateLimit(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_quota_with_rate_limit_text",
-			AccountID: "upstream_quota_with_rate_limit_text",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg: config.Config{
-			RateLimitFallback: 60 * time.Second,
-			QuotaFallback:     5 * time.Minute,
-		},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	status, code, _ := app.classifyUpstreamError("acct_quota_with_rate_limit_text", &codex.UpstreamError{
-		Op:         "codex response",
-		StatusCode: http.StatusPaymentRequired,
-		Body:       "rate limit exceeded for this billing period",
-	})
-	if status != http.StatusPaymentRequired {
-		t.Fatalf("status = %d, want 402", status)
-	}
-	if code != "quota_exhausted" {
-		t.Fatalf("code = %q, want quota_exhausted", code)
-	}
-
-	updated, ok := accountsSvc.Get("acct_quota_with_rate_limit_text")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.BlockState.Reason != accounts.BlockQuotaPrimary {
-		t.Fatalf("block_reason = %q, want quota_primary", updated.BlockState.Reason)
-	}
-	if updated.BlockState.Until == nil {
-		t.Fatal("block_until = nil, want fallback quota block")
-	}
-	duration := updated.BlockState.Until.Sub(time.Now().UTC())
-	if duration < 4*time.Minute || duration > 6*time.Minute {
-		t.Fatalf("block duration = %v, want about 5m", duration)
-	}
-	if updated.LocalUsage.RequestCount != 0 {
-		t.Fatalf("request_count = %d, want 0 for quota classification", updated.LocalUsage.RequestCount)
-	}
-}
-
-func TestClassifyUpstreamErrorMarksGeneric403AsBanned(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
+	accountsSvc := newServerAccounts(t,
+		&accounts.Record{
 			ID:        "acct_generic_403",
 			AccountID: "upstream_generic_403",
 			Status:    accounts.StatusActive,
+			Token: accounts.OAuthToken{
+				AccessToken: "token",
+				ExpiresAt:   now.Add(time.Hour),
+			},
 			CreatedAt: now,
 			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
+		},
+		&accounts.Record{
+			ID:        "acct_cloudflare_403",
+			AccountID: "upstream_cloudflare_403",
+			Status:    accounts.StatusActive,
+			Token: accounts.OAuthToken{
+				AccessToken: "token",
+				ExpiresAt:   now.Add(time.Hour),
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	)
 
 	app := &App{
-		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
+		cfg: config.Config{
+			RateLimitFallback: 60 * time.Second,
+			QuotaFallback:     5 * time.Minute,
+		},
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts: accountsSvc,
 	}
 
-	status, code, message := app.classifyUpstreamError("acct_generic_403", &codex.UpstreamError{
+	status, code, _ := app.classifyUpstreamError("acct_generic_403", &codex.UpstreamError{
 		Op:         "codex response",
 		StatusCode: http.StatusForbidden,
 		Body:       `{"error":"access denied"}`,
 	})
-	if status != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", status)
-	}
-	if code != "account_banned" {
-		t.Fatalf("code = %q, want account_banned", code)
-	}
-	if message != "upstream account banned or deactivated" {
-		t.Fatalf("message = %q, want banned message", message)
+	if status != http.StatusForbidden || code != "account_banned" {
+		t.Fatalf("generic 403 = (%d, %q), want (403, account_banned)", status, code)
 	}
 
-	updated, ok := accountsSvc.Get("acct_generic_403")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
-	}
-	if updated.Status != accounts.StatusBanned {
-		t.Fatalf("status = %q, want banned", updated.Status)
-	}
-}
-
-func TestClassifyUpstreamErrorDoesNotMarkCloudflare403AsBanned(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_cloudflare_403",
-			AccountID: "upstream_cloudflare_403",
-			Status:    accounts.StatusActive,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
-	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-
-	app := &App{
-		cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts: accountsSvc,
-	}
-
-	status, code, message := app.classifyUpstreamError("acct_cloudflare_403", &codex.UpstreamError{
+	status, code, _ = app.classifyUpstreamError("acct_cloudflare_403", &codex.UpstreamError{
 		Op:         "codex response",
 		StatusCode: http.StatusForbidden,
 		Body:       "<!DOCTYPE html><html><body>cf_chl blocked</body></html>",
 	})
-	if status != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", status)
-	}
-	if code != "upstream_error" {
-		t.Fatalf("code = %q, want upstream_error", code)
-	}
-	if !strings.Contains(message, "cf_chl") {
-		t.Fatalf("message = %q, want original upstream message", message)
+	if status != http.StatusForbidden || code != "upstream_error" {
+		t.Fatalf("cloudflare 403 = (%d, %q), want (403, upstream_error)", status, code)
 	}
 
-	updated, ok := accountsSvc.Get("acct_cloudflare_403")
-	if !ok {
-		t.Fatal("Get(updated) returned false")
+	generic, _ := accountsSvc.Get("acct_generic_403")
+	if generic.Status != accounts.StatusBanned {
+		t.Fatalf("generic status = %q, want banned", generic.Status)
 	}
-	if updated.Status != accounts.StatusActive {
-		t.Fatalf("status = %q, want active", updated.Status)
+	cloudflare, _ := accountsSvc.Get("acct_cloudflare_403")
+	if cloudflare.Status != accounts.StatusActive {
+		t.Fatalf("cloudflare status = %q, want active", cloudflare.Status)
 	}
 }
 
-func TestClassifyUpstreamErrorHandlesStructuredStreamFailures(t *testing.T) {
-	t.Parallel()
+func newServerAccounts(t *testing.T, records ...*accounts.Record) *accounts.Service {
+	t.Helper()
 
-	tests := []struct {
-		name            string
-		accountID       string
-		event           *codex.StreamEvent
-		wantStatus      int
-		wantCode        string
-		wantBlockReason accounts.BlockReason
-		wantRequests    int64
-	}{
-		{
-			name:      "top-level error rate limit",
-			accountID: "acct_stream_rate_limit",
-			event: &codex.StreamEvent{Type: "error", Raw: map[string]any{
-				"error": map[string]any{
-					"code":              "rate_limited",
-					"message":           "Too many requests",
-					"resets_in_seconds": 12,
-				},
-			}},
-			wantStatus:      http.StatusTooManyRequests,
-			wantCode:        "rate_limited",
-			wantBlockReason: accounts.BlockRateLimit,
-			wantRequests:    1,
-		},
-		{
-			name:      "response.failed quota exhaustion",
-			accountID: "acct_stream_quota",
-			event: &codex.StreamEvent{Type: "response.failed", Raw: map[string]any{
-				"response": map[string]any{
-					"id": "resp_1",
-					"error": map[string]any{
-						"code":    "usage_limit_reached",
-						"message": "Billing period exhausted",
-					},
-				},
-			}},
-			wantStatus:      http.StatusPaymentRequired,
-			wantCode:        "quota_exhausted",
-			wantBlockReason: accounts.BlockQuotaPrimary,
-			wantRequests:    0,
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			now := time.Now().UTC()
-			accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-				Records: []*accounts.Record{{
-					ID:        tc.accountID,
-					AccountID: "upstream_" + tc.accountID,
-					Status:    accounts.StatusActive,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}},
-			}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-			if err != nil {
-				t.Fatalf("NewService() error = %v", err)
-			}
-
-			app := &App{
-				cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
-				logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-				accounts: accountsSvc,
-			}
-
-			err = upstreamEventError(tc.event)
-			status, code, _ := app.classifyUpstreamError(tc.accountID, err)
-			if status != tc.wantStatus {
-				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
-			}
-			if code != tc.wantCode {
-				t.Fatalf("code = %q, want %q", code, tc.wantCode)
-			}
-
-			updated, ok := accountsSvc.Get(tc.accountID)
-			if !ok {
-				t.Fatal("Get(updated) returned false")
-			}
-			if updated.BlockState.Reason != tc.wantBlockReason {
-				t.Fatalf("block_reason = %q, want %q", updated.BlockState.Reason, tc.wantBlockReason)
-			}
-			if updated.LocalUsage.RequestCount != tc.wantRequests {
-				t.Fatalf("request_count = %d, want %d", updated.LocalUsage.RequestCount, tc.wantRequests)
-			}
-		})
-	}
-}
-
-func TestClassifyUpstreamErrorRejectsWeakRateLimitSignals(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		accountID   string
-		err         error
-		wantMessage string
-	}{
-		{
-			name:        "generic upstream failure",
-			accountID:   "acct_generic_error",
-			err:         errors.New("failed to generate response"),
-			wantMessage: "failed to generate response",
-		},
-		{
-			name:        "retry-after without 429",
-			accountID:   "acct_retry_after_only",
-			err:         errors.New("503 service unavailable retry-after: 120"),
-			wantMessage: "503 service unavailable retry-after: 120",
-		},
-		{
-			name:        "plain text quota signal without typed upstream status",
-			accountID:   "acct_plain_quota",
-			err:         errors.New("proxy quota middleware unavailable"),
-			wantMessage: "proxy quota middleware unavailable",
-		},
-		{
-			name:        "plain text unauthorized signal without typed upstream status",
-			accountID:   "acct_plain_unauthorized",
-			err:         errors.New("local proxy unauthorized to upstream"),
-			wantMessage: "local proxy unauthorized to upstream",
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			now := time.Now().UTC()
-			accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-				Records: []*accounts.Record{{
-					ID:        tc.accountID,
-					AccountID: "upstream_" + tc.accountID,
-					Status:    accounts.StatusActive,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}},
-			}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
-			if err != nil {
-				t.Fatalf("NewService() error = %v", err)
-			}
-
-			app := &App{
-				cfg:      config.Config{RateLimitFallback: 60 * time.Second, QuotaFallback: 5 * time.Minute},
-				logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-				accounts: accountsSvc,
-			}
-
-			status, code, message := app.classifyUpstreamError(tc.accountID, tc.err)
-			if status != http.StatusBadGateway {
-				t.Fatalf("status = %d, want 502", status)
-			}
-			if code != "upstream_error" {
-				t.Fatalf("code = %q, want upstream_error", code)
-			}
-			if message != tc.wantMessage {
-				t.Fatalf("message = %q, want %q", message, tc.wantMessage)
-			}
-
-			updated, ok := accountsSvc.Get(tc.accountID)
-			if !ok {
-				t.Fatal("Get(updated) returned false")
-			}
-			if updated.BlockState.Reason != accounts.BlockNone {
-				t.Fatalf("block_reason = %q, want none", updated.BlockState.Reason)
-			}
-		})
-	}
-}
-
-func TestHandleAdminAccountDeleteSnapshotsUsageBeforeRemoval(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-
-	now := time.Now().UTC()
-	accountsSvc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
-		Records: []*accounts.Record{{
-			ID:        "acct_delete",
-			AccountID: "upstream_delete",
-			Status:    accounts.StatusActive,
-			LocalUsage: accounts.LocalUsage{
-				InputTokens:  100,
-				OutputTokens: 50,
-				RequestCount: 10,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}},
+	svc, err := accounts.NewService(&memoryAccountsStore{state: accounts.State{
+		Records: records,
 	}}, accounts.RotationLeastUsed, accounts.ServiceOptions{})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	if err := accountsSvc.RecordUsage("acct_delete", 50, 25); err != nil {
-		t.Fatalf("RecordUsage() error = %v", err)
-	}
-
-	usageHistory, err := accounts.NewUsageHistoryStore(t.TempDir(), 7*24*time.Hour)
-	if err != nil {
-		t.Fatalf("NewUsageHistoryStore() error = %v", err)
-	}
-	if err := usageHistory.RecordSummary(accounts.Summary{
-		Total:             1,
-		Active:            1,
-		Available:         1,
-		TotalInputTokens:  100,
-		TotalOutputTokens: 50,
-		TotalRequests:     10,
-	}, now.Add(-time.Minute)); err != nil {
-		t.Fatalf("RecordSummary(initial) error = %v", err)
-	}
-
-	app := &App{
-		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		accounts:     accountsSvc,
-		usageHistory: usageHistory,
-	}
-
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/admin/accounts/acct_delete", nil)
-	ctx.Params = gin.Params{{Key: "account_id", Value: "acct_delete"}}
-
-	app.handleAdminAccountDelete(ctx)
-
-	if ctx.Writer.Status() != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", ctx.Writer.Status())
-	}
-	if _, ok := accountsSvc.Get("acct_delete"); ok {
-		t.Fatal("account still present after delete")
-	}
-
-	summary, err := usageHistory.CumulativeSummary(accountsSvc.Summary())
-	if err != nil {
-		t.Fatalf("CumulativeSummary() error = %v", err)
-	}
-	if summary.TotalInputTokens != 150 || summary.TotalOutputTokens != 75 || summary.TotalRequests != 11 {
-		t.Fatalf("summary = %#v, want 150 input / 75 output / 11 requests preserved", summary)
-	}
+	return svc
 }

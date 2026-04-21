@@ -41,9 +41,6 @@ func TestGetUsageCachedBypassesEnsureReady(t *testing.T) {
 					ResetAt:      &resetAt,
 				},
 			},
-			LocalUsage: accounts.LocalUsage{
-				RequestCount: 7,
-			},
 			Token: accounts.OAuthToken{
 				AccessToken: "access-token",
 				ExpiresAt:   time.Now().UTC().Add(-time.Hour),
@@ -67,9 +64,6 @@ func TestGetUsageCachedBypassesEnsureReady(t *testing.T) {
 	}
 	if record.Status != accounts.StatusDisabled {
 		t.Fatalf("record.Status = %q, want disabled", record.Status)
-	}
-	if record.LocalUsage.RequestCount != 7 {
-		t.Fatalf("request_count = %d, want 7", record.LocalUsage.RequestCount)
 	}
 	if quota == nil {
 		t.Fatal("quota = nil, want cached quota")

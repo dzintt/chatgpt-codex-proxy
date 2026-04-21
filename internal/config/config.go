@@ -25,8 +25,6 @@ const (
 	defaultLoginTimeoutSeconds   = 900
 	defaultContinuationTTLMinute = 60
 	defaultRequestTimeoutSecond  = 120
-	defaultUsageSnapshotMinutes  = 5
-	defaultHistoryRetentionDays  = 7
 	defaultRateLimitFallbackSec  = 60
 	defaultQuotaFallbackSec      = 300
 )
@@ -47,8 +45,6 @@ type Config struct {
 	ContinuationTTL       time.Duration
 	RequestTimeout        time.Duration
 	RefreshSkew           time.Duration
-	UsageSnapshotInterval time.Duration
-	UsageHistoryRetention time.Duration
 	RateLimitFallback     time.Duration
 	QuotaFallback         time.Duration
 	LogLevel              slogLevel
@@ -99,8 +95,6 @@ func Load() (Config, error) {
 		ContinuationTTL:       time.Duration(defaultContinuationTTLMinute) * time.Minute,
 		RequestTimeout:        time.Duration(defaultRequestTimeoutSecond) * time.Second,
 		RefreshSkew:           60 * time.Second,
-		UsageSnapshotInterval: time.Duration(defaultUsageSnapshotMinutes) * time.Minute,
-		UsageHistoryRetention: time.Duration(defaultHistoryRetentionDays) * 24 * time.Hour,
 		RateLimitFallback:     time.Duration(defaultRateLimitFallbackSec) * time.Second,
 		QuotaFallback:         time.Duration(defaultQuotaFallbackSec) * time.Second,
 		LogLevel:              slogLevel("info"),

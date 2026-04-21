@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +11,27 @@ import (
 )
 
 func (a *App) handleAdminAccounts(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"accounts": a.accounts.List()})
+	records := a.accounts.List()
+	items := make([]gin.H, 0, len(records))
+	for _, record := range records {
+		items = append(items, gin.H{
+			"id":                  record.ID,
+			"upstream_account_id": record.AccountID,
+			"user_id":             record.UserID,
+			"email":               record.Email,
+			"plan_type":           record.PlanType,
+			"label":               record.Label,
+			"status":              record.Status,
+			"eligible_now":        a.accounts.EligibleNow(record.ID),
+			"cooldown_until":      record.CooldownUntil,
+			"last_error":          record.LastError,
+			"cached_quota":        record.CachedQuota,
+			"oauth_expires":       record.Token.ExpiresAt,
+			"created_at":          record.CreatedAt,
+			"updated_at":          record.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": items})
 }
 
 func (a *App) handleAdminDeviceLoginStart(c *gin.Context) {
@@ -38,7 +57,6 @@ func (a *App) handleAdminAccountDelete(c *gin.Context) {
 		a.writeAdminError(c, http.StatusNotFound, "account_not_found", "account not found")
 		return
 	}
-	a.recordUsageSnapshot(time.Now().UTC())
 	if err := a.accounts.Remove(c.Param("account_id")); err != nil {
 		a.writeAdminError(c, http.StatusNotFound, "account_not_found", err.Error())
 		return
@@ -87,13 +105,13 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		"upstream_account_id": record.AccountID,
 		"user_id":             record.UserID,
 		"status":              record.Status,
-		"block_state":         record.BlockState,
+		"eligible_now":        a.accounts.EligibleNow(record.ID),
+		"cooldown_until":      record.CooldownUntil,
+		"last_error":          record.LastError,
 		"cached_quota":        record.CachedQuota,
 		"quota_runtime":       quota,
-		"quota_source":        quotaSource(quota),
-		"quota_fetched_at":    quotaFetchedAt(quota),
-		"local_usage":         record.LocalUsage,
-		"last_error":          record.LastError,
+		"quota_source":        quotaSource(firstQuota(quota, record.CachedQuota)),
+		"quota_fetched_at":    quotaFetchedAt(firstQuota(quota, record.CachedQuota)),
 		"oauth_expires":       record.Token.ExpiresAt,
 	})
 }
@@ -133,54 +151,6 @@ func (a *App) handleAdminRotationPut(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"strategy": strategy})
 }
 
-func (a *App) handleAdminUsageSummary(c *gin.Context) {
-	live := a.accounts.Summary()
-	if a.usageHistory == nil {
-		c.JSON(http.StatusOK, live)
-		return
-	}
-
-	summary, err := a.usageHistory.CumulativeSummary(live)
-	if err != nil {
-		a.logger.Warn("compute cumulative usage summary failed", "error", err.Error())
-	}
-	c.JSON(http.StatusOK, summary)
-}
-
-func (a *App) handleAdminUsageHistory(c *gin.Context) {
-	if a.usageHistory == nil {
-		a.writeAdminError(c, http.StatusServiceUnavailable, "usage_history_unavailable", "usage history store is not configured")
-		return
-	}
-
-	granularity := strings.TrimSpace(c.DefaultQuery("granularity", "hourly"))
-	switch granularity {
-	case "raw", "hourly", "daily":
-	default:
-		a.writeAdminError(c, http.StatusBadRequest, "invalid_granularity", "granularity must be raw, hourly, or daily")
-		return
-	}
-
-	hours := 24
-	if raw := strings.TrimSpace(c.Query("hours")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			a.writeAdminError(c, http.StatusBadRequest, "invalid_hours", "hours must be a positive integer")
-			return
-		}
-		if parsed > 24*30 {
-			parsed = 24 * 30
-		}
-		hours = parsed
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"granularity": granularity,
-		"hours":       hours,
-		"points":      a.usageHistory.History(hours, granularity, time.Now().UTC()),
-	})
-}
-
 func quotaSource(snapshot *accounts.QuotaSnapshot) string {
 	if snapshot == nil {
 		return ""
@@ -194,4 +164,11 @@ func quotaFetchedAt(snapshot *accounts.QuotaSnapshot) *time.Time {
 	}
 	ts := snapshot.FetchedAt.UTC()
 	return &ts
+}
+
+func firstQuota(runtime, cached *accounts.QuotaSnapshot) *accounts.QuotaSnapshot {
+	if runtime != nil {
+		return runtime
+	}
+	return cached
 }
