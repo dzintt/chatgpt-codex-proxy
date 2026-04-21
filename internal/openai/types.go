@@ -3,7 +3,6 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 )
 
 type ChatCompletionsRequest struct {
@@ -240,7 +239,8 @@ type ResponsesInputItem struct {
 	Role             string          `json:"role,omitempty"`
 	Content          MessageContent  `json:"content,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
-	Output           string          `json:"output,omitempty"`
+	OutputText       string          `json:"-"`
+	OutputContent    MessageContent  `json:"-"`
 	Name             string          `json:"name,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
 	ID               string          `json:"id,omitempty"`
@@ -260,76 +260,65 @@ func (r *ResponsesInputItem) UnmarshalJSON(data []byte) error {
 	}
 	*r = ResponsesInputItem(raw.alias)
 
-	output, err := decodeResponsesOutput(raw.Output)
+	outputText, outputContent, err := decodeResponsesOutput(raw.Output)
 	if err != nil {
 		return err
 	}
-	r.Output = output
+	r.OutputText = outputText
+	r.OutputContent = outputContent
 	return nil
 }
 
-func decodeResponsesOutput(raw json.RawMessage) (string, error) {
+func decodeResponsesOutput(raw json.RawMessage) (string, MessageContent, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return "", nil
+		return "", nil, nil
 	}
 
 	if trimmed[0] == '"' {
 		var text string
 		if err := json.Unmarshal(trimmed, &text); err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return text, nil
+		return text, nil, nil
 	}
 
-	if text, ok := flattenResponsesOutputText(trimmed); ok {
-		return text, nil
+	if content, ok := parseResponsesOutputContent(trimmed); ok {
+		return "", content, nil
 	}
 
 	var decoded any
 	if err := json.Unmarshal(trimmed, &decoded); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	normalized, err := json.Marshal(decoded)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return string(normalized), nil
+	return string(normalized), nil, nil
 }
 
-func flattenResponsesOutputText(raw json.RawMessage) (string, bool) {
+func parseResponsesOutputContent(raw json.RawMessage) (MessageContent, bool) {
 	var content MessageContent
 	if err := json.Unmarshal(raw, &content); err == nil && len(content) > 0 {
-		return joinTextParts(content), true
+		return content, true
 	}
 
-	var wrapped struct {
-		Text    string         `json:"text"`
-		Content MessageContent `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &wrapped); err == nil {
-		if strings.TrimSpace(wrapped.Text) != "" {
-			return wrapped.Text, true
-		}
-		if len(wrapped.Content) > 0 {
-			return joinTextParts(wrapped.Content), true
-		}
+	var part ContentPart
+	if err := json.Unmarshal(raw, &part); err == nil && isResponseOutputContentPart(part) {
+		return MessageContent{part}, true
 	}
 
-	return "", false
+	return nil, false
 }
 
-func joinTextParts(parts MessageContent) string {
-	texts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		switch part.Type {
-		case "", "text", "input_text", "output_text", "reasoning_text":
-			if strings.TrimSpace(part.Text) != "" {
-				texts = append(texts, part.Text)
-			}
-		}
+func isResponseOutputContentPart(part ContentPart) bool {
+	switch part.Type {
+	case "input_text", "output_text", "input_image", "input_file":
+		return true
+	default:
+		return false
 	}
-	return strings.Join(texts, "\n")
 }
 
 type ReasoningPart struct {

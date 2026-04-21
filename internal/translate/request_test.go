@@ -106,9 +106,9 @@ func TestResponsesTranslation(t *testing.T) {
 					},
 				},
 				{
-					Type:   "function_call_output",
-					CallID: "call_1",
-					Output: `{"ok":true}`,
+					Type:       "function_call_output",
+					CallID:     "call_1",
+					OutputText: `{"ok":true}`,
 				},
 			},
 		},

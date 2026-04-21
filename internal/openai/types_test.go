@@ -47,8 +47,14 @@ func TestResponsesInputItemUnmarshalFlattensArrayOutput(t *testing.T) {
 	if item.Type != "function_call_output" {
 		t.Fatalf("Type = %q, want function_call_output", item.Type)
 	}
-	if item.Output != "line 1\nline 2" {
-		t.Fatalf("Output = %q, want joined text", item.Output)
+	if item.OutputText != "" {
+		t.Fatalf("OutputText = %q, want empty", item.OutputText)
+	}
+	if len(item.OutputContent) != 2 {
+		t.Fatalf("len(OutputContent) = %d, want 2", len(item.OutputContent))
+	}
+	if item.OutputContent[0].Text != "line 1" || item.OutputContent[1].Text != "line 2" {
+		t.Fatalf("OutputContent = %#v, want preserved output_text parts", item.OutputContent)
 	}
 }
 
@@ -65,7 +71,10 @@ func TestResponsesInputItemUnmarshalNormalizesObjectOutput(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 
-	if item.Output != `{"count":2,"ok":true}` {
-		t.Fatalf("Output = %q, want normalized JSON string", item.Output)
+	if item.OutputText != `{"count":2,"ok":true}` {
+		t.Fatalf("OutputText = %q, want normalized JSON string", item.OutputText)
+	}
+	if len(item.OutputContent) != 0 {
+		t.Fatalf("OutputContent = %#v, want empty", item.OutputContent)
 	}
 }

@@ -97,9 +97,9 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 				return NormalizedRequest{}, err
 			}
 			out.Input = append(out.Input, codex.InputItem{
-				Type:   "function_call_output",
-				CallID: message.ToolCallID,
-				Output: text,
+				Type:       "function_call_output",
+				CallID:     message.ToolCallID,
+				OutputText: text,
 			})
 		default:
 			return NormalizedRequest{}, fmt.Errorf("unsupported role %q", message.Role)
@@ -203,10 +203,15 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 				Arguments: item.Arguments,
 			})
 		case item.Type == "function_call_output":
+			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
+			if err != nil {
+				return NormalizedRequest{}, err
+			}
 			out.Input = append(out.Input, codex.InputItem{
-				Type:   "function_call_output",
-				CallID: item.CallID,
-				Output: item.Output,
+				Type:          "function_call_output",
+				CallID:        item.CallID,
+				OutputText:    item.OutputText,
+				OutputContent: outputContent,
 			})
 		case item.Type == "reasoning":
 			parts, err := normalizeContentPartsChecked(item.Content)

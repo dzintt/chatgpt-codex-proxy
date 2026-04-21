@@ -66,7 +66,8 @@ type ContinuationInputItem struct {
 	CallID           string                    `json:"call_id,omitempty"`
 	Name             string                    `json:"name,omitempty"`
 	Arguments        string                    `json:"arguments,omitempty"`
-	Output           string                    `json:"output,omitempty"`
+	OutputText       string                    `json:"output,omitempty"`
+	OutputContent    []ContinuationContentPart `json:"output_content,omitempty"`
 	ID               string                    `json:"id,omitempty"`
 	Status           string                    `json:"status,omitempty"`
 	Summary          []ContinuationSummaryPart `json:"summary,omitempty"`

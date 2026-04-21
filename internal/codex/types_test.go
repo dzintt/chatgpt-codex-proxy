@@ -84,3 +84,32 @@ func TestInputItemMarshalJSONKeepsEmptyStringContentForRoleMessages(t *testing.T
 		t.Fatalf("content = %#v, want empty string", value)
 	}
 }
+
+func TestInputItemMarshalJSONPreservesStructuredToolOutput(t *testing.T) {
+	t.Parallel()
+
+	payload, err := json.Marshal(InputItem{
+		Type:   "function_call_output",
+		CallID: "call_1",
+		OutputContent: []ContentPart{
+			{Type: "input_text", Text: "Result of search"},
+			{Type: "input_text", Text: "README.md"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	output, ok := decoded["output"].([]any)
+	if !ok {
+		t.Fatalf("output = %#v, want structured array", decoded["output"])
+	}
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want 2", len(output))
+	}
+}

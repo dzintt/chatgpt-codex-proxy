@@ -41,7 +41,8 @@ type InputItem struct {
 	CallID           string                 `json:"call_id,omitempty"`
 	Name             string                 `json:"name,omitempty"`
 	Arguments        string                 `json:"arguments,omitempty"`
-	Output           string                 `json:"output,omitempty"`
+	OutputText       string                 `json:"-"`
+	OutputContent    []ContentPart          `json:"-"`
 	ID               string                 `json:"id,omitempty"`
 	Status           string                 `json:"status,omitempty"`
 	Summary          []openai.ReasoningPart `json:"summary,omitempty"`
@@ -68,8 +69,8 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	if i.Arguments != "" {
 		payload["arguments"] = i.Arguments
 	}
-	if i.Output != "" {
-		payload["output"] = i.Output
+	if output, ok := inputItemOutputValue(i); ok {
+		payload["output"] = output
 	}
 	if i.ID != "" {
 		payload["id"] = i.ID
@@ -106,6 +107,16 @@ func inputItemContentValue(item InputItem) (any, bool) {
 		}
 	}
 	return strings.Join(textParts, "\n"), true
+}
+
+func inputItemOutputValue(item InputItem) (any, bool) {
+	if len(item.OutputContent) > 0 {
+		return item.OutputContent, true
+	}
+	if item.OutputText != "" {
+		return item.OutputText, true
+	}
+	return nil, false
 }
 
 type ContentPart struct {

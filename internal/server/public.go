@@ -699,10 +699,11 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 	)
 	out.Summary = continuationSummaryPartsFromMaps(responseMapsFromAny(item["summary"]))
 	out.Content = continuationContentPartsFromMaps(responseMapsFromAny(item["content"]))
+	out.OutputContent = continuationContentPartsFromMaps(responseMapsFromAny(item["output"]))
 	if out.Role == "" && out.Type == "message" {
 		out.Role = "assistant"
 	}
-	if out.Role == "" && out.Type == "" && len(out.Content) == 0 && out.CallID == "" && out.ID == "" {
+	if out.Role == "" && out.Type == "" && len(out.Content) == 0 && len(out.OutputContent) == 0 && out.CallID == "" && out.ID == "" {
 		return accounts.ContinuationInputItem{}, false
 	}
 	return out, true
@@ -726,13 +727,14 @@ func continuationInputItemFromCodex(item codex.InputItem) accounts.ContinuationI
 		item.CallID,
 		item.Name,
 		item.Arguments,
-		item.Output,
+		item.OutputText,
 		item.ID,
 		item.Status,
 		item.EncryptedContent,
 	)
 	out.Summary = continuationSummaryPartsFromReasoning(item.Summary)
 	out.Content = continuationContentPartsFromCodex(item.Content)
+	out.OutputContent = continuationContentPartsFromCodex(item.OutputContent)
 	return out
 }
 
@@ -743,24 +745,25 @@ func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.Inp
 		CallID:           item.CallID,
 		Name:             item.Name,
 		Arguments:        item.Arguments,
-		Output:           item.Output,
+		OutputText:       item.OutputText,
 		ID:               item.ID,
 		Status:           item.Status,
 		EncryptedContent: item.EncryptedContent,
 	}
 	out.Summary = reasoningPartsFromContinuation(item.Summary)
 	out.Content = codexContentPartsFromContinuation(item.Content)
+	out.OutputContent = codexContentPartsFromContinuation(item.OutputContent)
 	return out
 }
 
-func continuationInputItemBase(role, itemType, callID, name, arguments, output, id, status, encryptedContent string) accounts.ContinuationInputItem {
+func continuationInputItemBase(role, itemType, callID, name, arguments, outputText, id, status, encryptedContent string) accounts.ContinuationInputItem {
 	return accounts.ContinuationInputItem{
 		Role:             role,
 		Type:             itemType,
 		CallID:           callID,
 		Name:             name,
 		Arguments:        arguments,
-		Output:           output,
+		OutputText:       outputText,
 		ID:               id,
 		Status:           status,
 		EncryptedContent: encryptedContent,

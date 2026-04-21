@@ -222,8 +222,14 @@ func TestNormalizeChatCompletionsBodyAcceptsArrayToolOutputInResponsesShape(t *t
 	if normalized.Input[1].Type != "function_call_output" {
 		t.Fatalf("input[1].Type = %q, want function_call_output", normalized.Input[1].Type)
 	}
-	if normalized.Input[1].Output != "Result of search\nREADME.md" {
-		t.Fatalf("input[1].Output = %q, want flattened tool output", normalized.Input[1].Output)
+	if normalized.Input[1].OutputText != "" {
+		t.Fatalf("input[1].OutputText = %q, want empty", normalized.Input[1].OutputText)
+	}
+	if len(normalized.Input[1].OutputContent) != 2 {
+		t.Fatalf("len(input[1].OutputContent) = %d, want 2", len(normalized.Input[1].OutputContent))
+	}
+	if normalized.Input[1].OutputContent[0].Text != "Result of search" || normalized.Input[1].OutputContent[1].Text != "README.md" {
+		t.Fatalf("input[1].OutputContent = %#v, want preserved output parts", normalized.Input[1].OutputContent)
 	}
 }
 
