@@ -605,6 +605,7 @@ func (a *Accumulator) ensureResponseToolCallCompleted(state *ToolCallState) []Re
 		Type: "response.function_call_arguments.done",
 		Payload: map[string]any{
 			"item_id":      state.ItemID,
+			"call_id":      state.CallID,
 			"output_index": state.OutputIndex,
 			"name":         state.Name,
 			"arguments":    state.Arguments,
@@ -701,18 +702,21 @@ func outputItemKey(item map[string]any, outputIndex int) string {
 }
 
 func sliceOfMaps(value any) []map[string]any {
-	items, ok := value.([]any)
-	if !ok {
+	switch items := value.(type) {
+	case []map[string]any:
+		return append([]map[string]any(nil), items...)
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			mapped, ok := item.(map[string]any)
+			if ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
 		return nil
 	}
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		mapped, ok := item.(map[string]any)
-		if ok {
-			out = append(out, mapped)
-		}
-	}
-	return out
 }
 
 func usageFromRaw(value any) *codex.Usage {

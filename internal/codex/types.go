@@ -116,6 +116,9 @@ func inputItemOutputValue(item InputItem) (any, bool) {
 	if item.OutputText != "" {
 		return item.OutputText, true
 	}
+	if item.Type == "function_call_output" {
+		return "", true
+	}
 	return nil, false
 }
 

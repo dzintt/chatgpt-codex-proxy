@@ -113,3 +113,29 @@ func TestInputItemMarshalJSONPreservesStructuredToolOutput(t *testing.T) {
 		t.Fatalf("output len = %d, want 2", len(output))
 	}
 }
+
+func TestInputItemMarshalJSONKeepsEmptyToolOutput(t *testing.T) {
+	t.Parallel()
+
+	payload, err := json.Marshal(InputItem{
+		Type:       "function_call_output",
+		CallID:     "call_1",
+		OutputText: "",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	value, ok := decoded["output"]
+	if !ok {
+		t.Fatalf("output missing from payload = %#v", decoded)
+	}
+	if value != "" {
+		t.Fatalf("output = %#v, want empty string", value)
+	}
+}
