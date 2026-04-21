@@ -15,6 +15,7 @@ import (
 
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/middleware"
 	"chatgpt-codex-proxy/internal/openai"
 	"chatgpt-codex-proxy/internal/translate"
 )
@@ -43,9 +44,11 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 
 	account, stream, quota, err := a.openHTTPStream(c.Request.Context(), normalized, "", "")
 	if err != nil {
+		a.setRequestAccount(c, account)
 		a.handleOpenStreamError(c, "chat_completions", account.ID, account.ID, err)
 		return
 	}
+	a.setRequestAccount(c, account)
 	defer stream.Close()
 	a.observeQuotaSnapshot(account.ID, quota)
 
@@ -97,10 +100,12 @@ func (a *App) handleResponses(c *gin.Context) {
 	}
 	account, stream, quota, err := a.openStream(c.Request.Context(), normalized, preferredID, turnState)
 	if err != nil {
+		a.setRequestAccount(c, account)
 		reportedAccountID := firstString(account.ID, preferredID)
 		a.handleOpenStreamError(c, "responses", account.ID, reportedAccountID, err)
 		return
 	}
+	a.setRequestAccount(c, account)
 	defer stream.Close()
 	a.observeQuotaSnapshot(account.ID, quota)
 
@@ -803,4 +808,11 @@ func (a *App) respondStreamError(c *gin.Context, endpoint, accountID, responseID
 
 func (a *App) acquireReadyAccount(ctx context.Context, preferredID string) (accounts.Record, error) {
 	return a.accountMgr.AcquireReady(ctx, preferredID)
+}
+
+func (a *App) setRequestAccount(c *gin.Context, account accounts.Record) {
+	if c == nil || account.ID == "" {
+		return
+	}
+	middleware.SetRequestAccount(c, account.ID, account.AccountID)
 }

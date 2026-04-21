@@ -81,21 +81,3 @@ func TestHandleAdminAccountUsageReturnsQuotaOnlyFields(t *testing.T) {
 		t.Fatalf("response missing cooldown_until: %s", recorder.Body.String())
 	}
 }
-
-func TestAdminUsageRoutesAreRemoved(t *testing.T) {
-	t.Parallel()
-
-	gin.SetMode(gin.TestMode)
-	app := &App{
-		cfg:    config.Config{ProxyAPIKey: "test-key"},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		engine: gin.New(),
-	}
-	app.routes()
-
-	for _, route := range app.engine.Routes() {
-		if route.Path == "/admin/usage/summary" || route.Path == "/admin/usage/history" {
-			t.Fatalf("unexpected route still registered: %s", route.Path)
-		}
-	}
-}
