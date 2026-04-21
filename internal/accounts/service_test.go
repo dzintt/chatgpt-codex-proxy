@@ -386,6 +386,77 @@ func TestPatchActiveClearsCooldownLastErrorAndQuota(t *testing.T) {
 	}
 }
 
+func TestUpsertFromTokenReusesAccountWhenUserIDMissing(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	svc := newTestService(t, RotationLeastUsed, &Record{
+		ID:        "acct_existing",
+		AccountID: "upstream_same",
+		Status:    StatusActive,
+		Token:     makeTestOAuthToken(t, map[string]any{"email": "old@example.com"}),
+		Cookies:   map[string]string{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, map[string]any{
+		"email": "new@example.com",
+	}))
+	if err != nil {
+		t.Fatalf("UpsertFromToken() error = %v", err)
+	}
+	if record.ID != "acct_existing" {
+		t.Fatalf("UpsertFromToken() returned %q, want acct_existing", record.ID)
+	}
+
+	records := svc.List()
+	if len(records) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(records))
+	}
+	if records[0].Email != "new@example.com" {
+		t.Fatalf("email = %q, want new@example.com", records[0].Email)
+	}
+}
+
+func TestUpsertFromTokenFillsMissingStoredUserID(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	svc := newTestService(t, RotationLeastUsed, &Record{
+		ID:        "acct_existing",
+		AccountID: "upstream_same",
+		Status:    StatusActive,
+		Token:     makeTestOAuthToken(t, map[string]any{"email": "old@example.com"}),
+		Cookies:   map[string]string{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, map[string]any{
+		"email":             "new@example.com",
+		"chatgpt_user_id":   "user_123",
+		"chatgpt_plan_type": "plus",
+	}))
+	if err != nil {
+		t.Fatalf("UpsertFromToken() error = %v", err)
+	}
+	if record.ID != "acct_existing" {
+		t.Fatalf("UpsertFromToken() returned %q, want acct_existing", record.ID)
+	}
+	if record.UserID != "user_123" {
+		t.Fatalf("user_id = %q, want user_123", record.UserID)
+	}
+
+	records := svc.List()
+	if len(records) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(records))
+	}
+	if records[0].PlanType != "plus" {
+		t.Fatalf("plan_type = %q, want plus", records[0].PlanType)
+	}
+}
+
 func newTestService(t *testing.T, strategy RotationStrategy, records ...*Record) *Service {
 	t.Helper()
 

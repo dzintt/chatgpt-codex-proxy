@@ -129,7 +129,7 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 
 	metadata := metadataFromToken(token)
 	for _, existing := range s.records {
-		if existing.AccountID == accountID && existing.UserID == metadata.UserID {
+		if sameAccount(existing, accountID, metadata.UserID) {
 			existing.Token = token
 			existing.Email = metadata.Email
 			existing.PlanType = metadata.PlanType
@@ -163,6 +163,18 @@ func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, e
 		return Record{}, err
 	}
 	return cloneRecord(record), nil
+}
+
+func sameAccount(existing *Record, accountID, userID string) bool {
+	if existing == nil || existing.AccountID != accountID {
+		return false
+	}
+	existingUserID := strings.TrimSpace(existing.UserID)
+	newUserID := strings.TrimSpace(userID)
+	if existingUserID == "" || newUserID == "" {
+		return true
+	}
+	return existingUserID == newUserID
 }
 
 func (s *Service) Remove(id string) error {
