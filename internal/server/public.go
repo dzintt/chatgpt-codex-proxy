@@ -215,7 +215,8 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 
 	accumulator := translate.NewAccumulator(normalized)
 	toolCallIndex := make(map[string]int)
-	toolCallSawDelta := make(map[string]bool)
+	toolCallInitialized := make(map[string]bool)
+	toolCallArgumentsSent := make(map[string]int)
 	nextToolCallIndex := 0
 	var tupleTextBuffer strings.Builder
 	writeSSE(c.Writer, "", translate.MustJSON(translate.ChatChunk("", normalized.Model, map[string]any{"role": "assistant"}, "")))
@@ -242,7 +243,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
 			return
 		}
-		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallSawDelta, &nextToolCallIndex); emitted {
+		if emitted := streamChatToolCallChunk(c.Writer, accumulator, normalized, event, toolCallIndex, toolCallInitialized, toolCallArgumentsSent, &nextToolCallIndex); emitted {
 			c.Writer.Flush()
 			continue
 		}
@@ -386,67 +387,60 @@ func writeResponseStreamEvents(w io.Writer, responseID string, events []translat
 	}
 }
 
-func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, normalized translate.NormalizedRequest, event *codex.StreamEvent, toolCallIndex map[string]int, toolCallSawDelta map[string]bool, nextToolCallIndex *int) bool {
-	if event == nil || !strings.HasPrefix(event.Type, "response.function_call_arguments.") {
+func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, normalized translate.NormalizedRequest, event *codex.StreamEvent, toolCallIndex map[string]int, toolCallInitialized map[string]bool, toolCallArgumentsSent map[string]int, nextToolCallIndex *int) bool {
+	if event == nil {
 		return false
 	}
-
-	callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(event.Raw["call_id"]), jsonutil.StringValue(event.Raw["item_id"]))
-	if callID == "" {
+	state := accumulator.ToolCallStateForEvent(event)
+	if state == nil || strings.TrimSpace(state.CallID) == "" {
 		return false
 	}
+	callID := state.CallID
 
 	idx, exists := toolCallIndex[callID]
 	if !exists {
 		idx = *nextToolCallIndex
 		toolCallIndex[callID] = idx
 		*nextToolCallIndex = *nextToolCallIndex + 1
+	}
+
+	emitted := false
+	if !toolCallInitialized[callID] && strings.TrimSpace(state.Name) != "" {
 		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{{
 				"index": idx,
 				"id":    callID,
 				"type":  "function",
 				"function": map[string]any{
-					"name":      jsonutil.StringValue(event.Raw["name"]),
+					"name":      state.Name,
 					"arguments": "",
 				},
 			}},
 		}, "")))
+		toolCallInitialized[callID] = true
+		emitted = true
 	}
 
-	switch event.Type {
-	case "response.function_call_arguments.delta":
-		delta := jsonutil.StringValue(event.Raw["delta"])
-		if delta == "" {
-			return false
-		}
-		toolCallSawDelta[callID] = true
-		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
-			"tool_calls": []map[string]any{{
-				"index": idx,
-				"function": map[string]any{
-					"arguments": delta,
-				},
-			}},
-		}, "")))
-		return true
-	case "response.function_call_arguments.done":
-		if toolCallSawDelta[callID] {
-			return false
-		}
-		arguments := jsonutil.StringValue(event.Raw["arguments"])
-		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
-			"tool_calls": []map[string]any{{
-				"index": idx,
-				"function": map[string]any{
-					"arguments": arguments,
-				},
-			}},
-		}, "")))
-		return true
-	default:
-		return false
+	if !toolCallInitialized[callID] {
+		return emitted
 	}
+
+	arguments := state.Arguments
+	sent := toolCallArgumentsSent[callID]
+	if sent >= len(arguments) {
+		return emitted
+	}
+
+	writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
+		"tool_calls": []map[string]any{{
+			"index": idx,
+			"function": map[string]any{
+				"arguments": arguments[sent:],
+			},
+		}},
+	}, "")))
+	toolCallArgumentsSent[callID] = len(arguments)
+	return true
 }
 
 func chatStreamFinishReason(accumulator *translate.Accumulator) string {

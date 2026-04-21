@@ -1048,6 +1048,126 @@ func TestStreamChatCompletionDoesNotSynthesizeReasoningContentFromCompletedOutpu
 	}
 }
 
+func TestStreamChatCompletionUsesToolNameFromOutputItemWhenArgumentEventsOmitIt(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_chat_tool_name",
+		AccountID: "upstream_chat_tool_name",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record, _ := accountsSvc.Get("acct_chat_tool_name")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.function_call_arguments.delta",
+				Raw: map[string]any{
+					"response_id":  "resp_chat_tool_name",
+					"item_id":      "fc_tool",
+					"output_index": 0,
+					"delta":        `{"path":"C:\\`,
+				},
+			},
+			{
+				Type: "response.output_item.added",
+				Raw: map[string]any{
+					"response_id":  "resp_chat_tool_name",
+					"output_index": 0,
+					"item": map[string]any{
+						"id":        "fc_tool",
+						"call_id":   "fc_tool",
+						"type":      "function_call",
+						"name":      "Glob",
+						"arguments": `{"path":"C:\\`,
+						"status":    "in_progress",
+					},
+				},
+			},
+			{
+				Type: "response.function_call_arguments.done",
+				Raw: map[string]any{
+					"response_id":  "resp_chat_tool_name",
+					"item_id":      "fc_tool",
+					"output_index": 0,
+					"arguments":    `{"path":"C:\\Users\\Anson"}`,
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_chat_tool_name",
+						"model":  "gpt-5.4",
+						"status": "completed",
+					},
+				},
+			},
+		},
+	}
+
+	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointChat,
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	if len(events) != 6 {
+		t.Fatalf("event count = %d, want 6", len(events))
+	}
+
+	toolNameChunk := events[1].Data
+	choices := sliceOfMapsFromAny(toolNameChunk["choices"])
+	delta := nestedMapFromAny(choices[0]["delta"])
+	toolCalls := sliceOfMapsFromAny(delta["tool_calls"])
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(toolCalls))
+	}
+	function := nestedMapFromAny(toolCalls[0]["function"])
+	if function["name"] != "Glob" {
+		t.Fatalf("function.name = %#v, want Glob", function["name"])
+	}
+
+	firstArgumentsChunk := events[2].Data
+	choices = sliceOfMapsFromAny(firstArgumentsChunk["choices"])
+	delta = nestedMapFromAny(choices[0]["delta"])
+	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
+	function = nestedMapFromAny(toolCalls[0]["function"])
+	firstArguments, _ := function["arguments"].(string)
+
+	secondArgumentsChunk := events[3].Data
+	choices = sliceOfMapsFromAny(secondArgumentsChunk["choices"])
+	delta = nestedMapFromAny(choices[0]["delta"])
+	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
+	function = nestedMapFromAny(toolCalls[0]["function"])
+	secondArguments, _ := function["arguments"].(string)
+
+	if firstArguments+secondArguments != `{"path":"C:\\Users\\Anson"}` {
+		t.Fatalf("combined function.arguments = %q, want complete arguments", firstArguments+secondArguments)
+	}
+}
+
 func TestStreamResponsesPreservesReasoningItemsAndEvents(t *testing.T) {
 	t.Parallel()
 
