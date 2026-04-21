@@ -233,7 +233,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 				Input:  item.Input,
 			})
 		case item.Type == "function_call_output":
-			outputContent, err := normalizeOutputContentPartsChecked(item.OutputContent)
+			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
 			if err != nil {
 				return NormalizedRequest{}, err
 			}
@@ -244,7 +244,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 				OutputContent: outputContent,
 			})
 		case item.Type == "custom_tool_call_output":
-			outputContent, err := normalizeOutputContentPartsChecked(item.OutputContent)
+			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
 			if err != nil {
 				return NormalizedRequest{}, err
 			}
@@ -447,20 +447,6 @@ func normalizeChatResponseFormat(format *openai.ResponseFormat) (*codex.TextConf
 func normalizeContentParts(parts openai.MessageContent) []codex.ContentPart {
 	out, _ := normalizeContentPartsChecked(parts)
 	return out
-}
-
-func normalizeOutputContentPartsChecked(parts openai.MessageContent) ([]codex.ContentPart, error) {
-	out, err := normalizeContentPartsChecked(parts)
-	if err != nil {
-		return nil, err
-	}
-	for idx := range out {
-		switch out[idx].Type {
-		case "", "input_text", "text":
-			out[idx].Type = "output_text"
-		}
-	}
-	return out, nil
 }
 
 func reasoningInclude(reasoning *codex.Reasoning) []string {

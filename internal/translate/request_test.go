@@ -490,7 +490,7 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	}
 }
 
-func TestResponsesTranslationCoercesToolOutputTextPartsToOutputText(t *testing.T) {
+func TestResponsesTranslationPreservesToolOutputContentTypes(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ResponsesRequest{
@@ -522,11 +522,11 @@ func TestResponsesTranslationCoercesToolOutputTextPartsToOutputText(t *testing.T
 		t.Fatalf("Responses() error = %v", err)
 	}
 
-	if normalized.Input[0].OutputContent[0].Type != "output_text" {
-		t.Fatalf("function output part type = %q, want output_text", normalized.Input[0].OutputContent[0].Type)
+	if normalized.Input[0].OutputContent[0].Type != "input_text" {
+		t.Fatalf("function output part type = %q, want input_text", normalized.Input[0].OutputContent[0].Type)
 	}
-	if normalized.Input[1].OutputContent[0].Type != "output_text" {
-		t.Fatalf("custom output part type = %q, want output_text", normalized.Input[1].OutputContent[0].Type)
+	if normalized.Input[1].OutputContent[0].Type != "input_text" {
+		t.Fatalf("custom output part type = %q, want input_text", normalized.Input[1].OutputContent[0].Type)
 	}
 }
 
