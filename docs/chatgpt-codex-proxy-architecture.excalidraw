@@ -112,7 +112,7 @@
       "type": "rectangle",
       "x": 40,
       "y": 660,
-      "width": 1513,
+      "width": 1061,
       "height": 160,
       "angle": 0,
       "strokeColor": "#dee2e6",
@@ -128,11 +128,11 @@
         "type": 3
       },
       "seed": 120001,
-      "version": 149,
-      "versionNonce": 1532116770,
+      "version": 610,
+      "versionNonce": 1921557385,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739275402,
+      "updated": 1776763699513,
       "link": null,
       "locked": false,
       "index": "a3"
@@ -156,11 +156,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 120002,
-      "version": 11,
-      "versionNonce": 1512159806,
+      "version": 217,
+      "versionNonce": 3006407,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739291242,
+      "updated": 1776763664168,
       "link": null,
       "locked": false,
       "text": "2. Account onboarding  (one-time per account)",
@@ -666,8 +666,8 @@
         "type": 3
       },
       "seed": 800001,
-      "version": 84,
-      "versionNonce": 893299262,
+      "version": 86,
+      "versionNonce": 1240867881,
       "isDeleted": false,
       "boundElements": [
         {
@@ -683,7 +683,7 @@
           "type": "arrow"
         }
       ],
-      "updated": 1776739274130,
+      "updated": 1776763664168,
       "link": null,
       "locked": false,
       "index": "aH"
@@ -707,11 +707,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 800002,
-      "version": 87,
-      "versionNonce": 1095426466,
+      "version": 88,
+      "versionNonce": 1181575817,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739066636,
+      "updated": 1776763664168,
       "link": null,
       "locked": false,
       "text": "data/accounts.json\n(local persistence)",
@@ -728,8 +728,8 @@
     {
       "id": "admin_box",
       "type": "rectangle",
-      "x": 81,
-      "y": 710,
+      "x": 66,
+      "y": 709,
       "width": 200,
       "height": 90,
       "angle": 0,
@@ -746,8 +746,8 @@
         "type": 3
       },
       "seed": 900001,
-      "version": 38,
-      "versionNonce": 1541471586,
+      "version": 267,
+      "versionNonce": 322895817,
       "isDeleted": false,
       "boundElements": [
         {
@@ -759,7 +759,7 @@
           "type": "arrow"
         }
       ],
-      "updated": 1776739274130,
+      "updated": 1776763726047,
       "link": null,
       "locked": false,
       "index": "aJ"
@@ -767,8 +767,8 @@
     {
       "id": "admin_text",
       "type": "text",
-      "x": 101.95207214355469,
-      "y": 735,
+      "x": 86.95207214355469,
+      "y": 734,
       "width": 158.09585571289062,
       "height": 40,
       "angle": 0,
@@ -783,11 +783,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 900002,
-      "version": 42,
-      "versionNonce": 1065455742,
+      "version": 681,
+      "versionNonce": 2092834473,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274130,
+      "updated": 1776763726047,
       "link": null,
       "locked": false,
       "text": "Admin / Operator\n(/admin device-login)",
@@ -804,8 +804,8 @@
     {
       "id": "oauth_box",
       "type": "rectangle",
-      "x": 1181,
-      "y": 710,
+      "x": 822,
+      "y": 711,
       "width": 220,
       "height": 90,
       "angle": 0,
@@ -822,8 +822,8 @@
         "type": 3
       },
       "seed": 1000001,
-      "version": 38,
-      "versionNonce": 1273400546,
+      "version": 442,
+      "versionNonce": 955796361,
       "isDeleted": false,
       "boundElements": [
         {
@@ -839,7 +839,7 @@
           "type": "arrow"
         }
       ],
-      "updated": 1776739274130,
+      "updated": 1776763756343,
       "link": null,
       "locked": false,
       "index": "aL"
@@ -847,8 +847,8 @@
     {
       "id": "oauth_text",
       "type": "text",
-      "x": 1201.720085144043,
-      "y": 725,
+      "x": 842.720085144043,
+      "y": 726,
       "width": 178.55982971191406,
       "height": 60,
       "angle": 0,
@@ -863,11 +863,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1000002,
-      "version": 42,
-      "versionNonce": 1412878526,
+      "version": 856,
+      "versionNonce": 83646407,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274130,
+      "updated": 1776763756343,
       "link": null,
       "locked": false,
       "text": "OAuth Issuer\nauth.openai.com\n(device login + refresh)",
@@ -1388,10 +1388,10 @@
     {
       "id": "arrow_admin_oauth",
       "type": "arrow",
-      "x": 287,
-      "y": 755.009,
-      "width": 888,
-      "height": 0,
+      "x": 272,
+      "y": 754.0305827338129,
+      "width": 544,
+      "height": 1.9568345323741596,
       "angle": 0,
       "strokeColor": "#7950f2",
       "backgroundColor": "transparent",
@@ -1404,11 +1404,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1700001,
-      "version": 73,
-      "versionNonce": 1319809662,
+      "version": 500,
+      "versionNonce": 707448199,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274131,
+      "updated": 1776763756343,
       "link": null,
       "locked": false,
       "startBinding": {
@@ -1436,8 +1436,8 @@
           0
         ],
         [
-          888,
-          0
+          544,
+          1.9568345323741596
         ]
       ],
       "index": "aW",
@@ -1446,8 +1446,8 @@
     {
       "id": "arrow_admin_oauth_label",
       "type": "text",
-      "x": 559.4641418457031,
-      "y": 724,
+      "x": 368.4641418457031,
+      "y": 723,
       "width": 343.07171630859375,
       "height": 20,
       "angle": 0,
@@ -1462,11 +1462,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1700002,
-      "version": 41,
-      "versionNonce": 1490684158,
+      "version": 370,
+      "versionNonce": 303933831,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274130,
+      "updated": 1776763730753,
       "link": null,
       "locked": false,
       "text": "device-login flow → access + refresh tokens",
@@ -1483,10 +1483,10 @@
     {
       "id": "arrow_oauth_store",
       "type": "arrow",
-      "x": 1271.020533333333,
-      "y": 704,
-      "width": 260.0190666666664,
-      "height": 78,
+      "x": 931.9560659340659,
+      "y": 705,
+      "width": 0.8681318681318544,
+      "height": 79,
       "angle": 0,
       "strokeColor": "#7950f2",
       "backgroundColor": "transparent",
@@ -1499,11 +1499,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1800001,
-      "version": 147,
-      "versionNonce": 1080397282,
+      "version": 603,
+      "versionNonce": 1386579111,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274130,
+      "updated": 1776763756343,
       "link": null,
       "locked": false,
       "startBinding": {
@@ -1518,7 +1518,7 @@
         "elementId": "store_box",
         "mode": "orbit",
         "fixedPoint": [
-          0.7727272727272727,
+          0.5001,
           1
         ]
       },
@@ -1531,8 +1531,8 @@
           0
         ],
         [
-          -260.0190666666664,
-          -78
+          -0.8681318681318544,
+          -79
         ]
       ],
       "index": "aY",
@@ -1541,8 +1541,8 @@
     {
       "id": "arrow_oauth_store_label",
       "type": "text",
-      "x": 1098.3760528564453,
-      "y": 631,
+      "x": 945.3760528564453,
+      "y": 669,
       "width": 131.24789428710938,
       "height": 20,
       "angle": 0,
@@ -1557,11 +1557,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1800002,
-      "version": 164,
-      "versionNonce": 216807742,
+      "version": 528,
+      "versionNonce": 912003047,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1776739274130,
+      "updated": 1776763697538,
       "link": null,
       "locked": false,
       "text": "tokens persisted",
