@@ -47,6 +47,7 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 	}
 
 	var instructions []string
+	toolCallTypes := make(map[string]string)
 	for _, message := range req.Messages {
 		switch message.Role {
 		case "system", "developer":
@@ -66,12 +67,30 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 					})
 				}
 				for _, call := range message.ToolCalls {
-					out.Input = append(out.Input, codex.InputItem{
-						Type:      "function_call",
-						CallID:    call.ID,
-						Name:      call.Function.Name,
-						Arguments: call.Function.Arguments,
-					})
+					callType := strings.TrimSpace(call.Type)
+					if callType == "" {
+						callType = "function"
+					}
+					toolCallTypes[call.ID] = callType
+					switch callType {
+					case "custom":
+						if call.Custom == nil {
+							continue
+						}
+						out.Input = append(out.Input, codex.InputItem{
+							Type:   "custom_tool_call",
+							CallID: call.ID,
+							Name:   call.Custom.Name,
+							Input:  call.Custom.Input,
+						})
+					default:
+						out.Input = append(out.Input, codex.InputItem{
+							Type:      "function_call",
+							CallID:    call.ID,
+							Name:      call.Function.Name,
+							Arguments: call.Function.Arguments,
+						})
+					}
 				}
 				continue
 			}
@@ -96,8 +115,12 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 			if err != nil {
 				return NormalizedRequest{}, err
 			}
+			itemType := "function_call_output"
+			if toolCallTypes[message.ToolCallID] == "custom" {
+				itemType = "custom_tool_call_output"
+			}
 			out.Input = append(out.Input, codex.InputItem{
-				Type:       "function_call_output",
+				Type:       itemType,
 				CallID:     message.ToolCallID,
 				OutputText: text,
 			})
@@ -202,6 +225,13 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 				Name:      item.Name,
 				Arguments: item.Arguments,
 			})
+		case item.Type == "custom_tool_call":
+			out.Input = append(out.Input, codex.InputItem{
+				Type:   "custom_tool_call",
+				CallID: item.CallID,
+				Name:   item.Name,
+				Input:  item.Input,
+			})
 		case item.Type == "function_call_output":
 			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
 			if err != nil {
@@ -209,6 +239,17 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 			}
 			out.Input = append(out.Input, codex.InputItem{
 				Type:          "function_call_output",
+				CallID:        item.CallID,
+				OutputText:    item.OutputText,
+				OutputContent: outputContent,
+			})
+		case item.Type == "custom_tool_call_output":
+			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
+			if err != nil {
+				return NormalizedRequest{}, err
+			}
+			out.Input = append(out.Input, codex.InputItem{
+				Type:          "custom_tool_call_output",
 				CallID:        item.CallID,
 				OutputText:    item.OutputText,
 				OutputContent: outputContent,

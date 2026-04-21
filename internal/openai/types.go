@@ -42,6 +42,11 @@ type FunctionPayload struct {
 	Arguments string `json:"arguments"`
 }
 
+type CustomToolPayload struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
+}
+
 type LegacyFunctionDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -216,9 +221,10 @@ type FunctionTool struct {
 }
 
 type ToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	Function FunctionPayload `json:"function"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function FunctionPayload    `json:"function,omitempty"`
+	Custom   *CustomToolPayload `json:"custom,omitempty"`
 }
 
 type ResponseFormat struct {
@@ -301,6 +307,7 @@ type ResponsesInputItem struct {
 	OutputText       string          `json:"-"`
 	OutputContent    MessageContent  `json:"-"`
 	Name             string          `json:"name,omitempty"`
+	Input            string          `json:"input,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
 	ID               string          `json:"id,omitempty"`
 	Status           string          `json:"status,omitempty"`

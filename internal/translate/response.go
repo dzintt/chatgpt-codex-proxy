@@ -13,7 +13,9 @@ import (
 type ToolCallState struct {
 	ItemID           string
 	CallID           string
+	ToolType         string
 	Name             string
+	Input            string
 	Arguments        string
 	OutputIndex      int
 	Status           string
@@ -119,7 +121,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	); delta != "" && a.TextBuilder.Len() == 0 && strings.Contains(event.Type, "text") {
 		a.TextBuilder.WriteString(delta)
 	}
-	if strings.HasPrefix(event.Type, "response.function_call_arguments.") {
+	if strings.HasPrefix(event.Type, "response.function_call_arguments.") || strings.HasPrefix(event.Type, "response.custom_tool_call_input.") {
 		a.applyToolArgumentEvent(event)
 	}
 	if item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item")); item != nil {
@@ -177,15 +179,20 @@ func (a *Accumulator) ResponsesStreamEventsForEvent(event *codex.StreamEvent) ([
 	}
 
 	switch event.Type {
-	case "response.function_call_arguments.delta":
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		state := a.toolCallStateForEvent(event)
 		if state == nil {
 			return nil, false
 		}
 		events := a.ensureResponseOutputItemAdded(state)
-		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
+		delta := jsonutil.StringValue(event.Raw["delta"])
+		if delta != "" {
+			eventType := "response.function_call_arguments.delta"
+			if event.Type == "response.custom_tool_call_input.delta" {
+				eventType = "response.custom_tool_call_input.delta"
+			}
 			events = append(events, ResponseStreamEvent{
-				Type: "response.function_call_arguments.delta",
+				Type: eventType,
 				Payload: map[string]any{
 					"item_id":      state.ItemID,
 					"output_index": state.OutputIndex,
@@ -194,7 +201,7 @@ func (a *Accumulator) ResponsesStreamEventsForEvent(event *codex.StreamEvent) ([
 			})
 		}
 		return events, true
-	case "response.function_call_arguments.done":
+	case "response.function_call_arguments.done", "response.custom_tool_call_input.done":
 		state := a.toolCallStateForEvent(event)
 		if state == nil {
 			return nil, false
@@ -234,7 +241,7 @@ func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) 
 	}
 
 	itemType := jsonutil.StringValue(item["type"])
-	if itemType == "function_call" {
+	if itemType == "function_call" || itemType == "custom_tool_call" {
 		callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["call_id"]), jsonutil.StringValue(item["id"]))
 		itemID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["id"]), callID)
 		if callID == "" && itemID == "" {
@@ -247,8 +254,17 @@ func (a *Accumulator) captureOutputItem(item map[string]any, explicitIndex int) 
 		if name := jsonutil.StringValue(item["name"]); name != "" {
 			state.Name = name
 		}
-		if arguments := jsonutil.StringValue(item["arguments"]); arguments != "" {
-			state.Arguments = arguments
+		switch itemType {
+		case "custom_tool_call":
+			state.ToolType = "custom"
+			if input := jsonutil.StringValue(item["input"]); input != "" {
+				state.Input = input
+			}
+		default:
+			state.ToolType = "function"
+			if arguments := jsonutil.StringValue(item["arguments"]); arguments != "" {
+				state.Arguments = arguments
+			}
 		}
 		if status := jsonutil.StringValue(item["status"]); status != "" {
 			state.Status = status
@@ -500,11 +516,23 @@ func (a *Accumulator) applyToolArgumentEvent(event *codex.StreamEvent) {
 
 	switch event.Type {
 	case "response.function_call_arguments.delta":
+		state.ToolType = "function"
 		state.Arguments += jsonutil.StringValue(event.Raw["delta"])
 		state.SawArgumentDelta = true
 	case "response.function_call_arguments.done":
+		state.ToolType = "function"
 		if args := jsonutil.StringValue(event.Raw["arguments"]); args != "" {
 			state.Arguments = args
+		}
+		state.Status = "completed"
+	case "response.custom_tool_call_input.delta":
+		state.ToolType = "custom"
+		state.Input += jsonutil.StringValue(event.Raw["delta"])
+		state.SawArgumentDelta = true
+	case "response.custom_tool_call_input.done":
+		state.ToolType = "custom"
+		if input := jsonutil.StringValue(event.Raw["input"]); input != "" {
+			state.Input = input
 		}
 		state.Status = "completed"
 	}
@@ -563,13 +591,14 @@ func (a *Accumulator) toolCallStateForEvent(event *codex.StreamEvent) *ToolCallS
 	}
 
 	switch event.Type {
-	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done":
 		itemID := jsonutil.StringValue(event.Raw["item_id"])
 		callID := jsonutil.FirstNonEmpty(jsonutil.StringValue(event.Raw["call_id"]), itemID)
 		return firstToolCallState(a.toolCallByID[callID], a.toolCallByID[itemID])
 	case "response.output_item.added", "response.output_item.done":
 		item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item"))
-		if jsonutil.StringValue(item["type"]) != "function_call" {
+		itemType := jsonutil.StringValue(item["type"])
+		if itemType != "function_call" && itemType != "custom_tool_call" {
 			return nil
 		}
 		itemID := jsonutil.FirstNonEmpty(jsonutil.StringValue(item["id"]), jsonutil.StringValue(event.Raw["item_id"]))
@@ -601,16 +630,27 @@ func (a *Accumulator) ensureResponseToolCallCompleted(state *ToolCallState) []Re
 	}
 
 	events := a.ensureResponseOutputItemAdded(state)
-	events = append(events, ResponseStreamEvent{
-		Type: "response.function_call_arguments.done",
-		Payload: map[string]any{
-			"item_id":      state.ItemID,
-			"call_id":      state.CallID,
-			"output_index": state.OutputIndex,
-			"name":         state.Name,
-			"arguments":    state.Arguments,
-		},
-	})
+	if state.ToolType == "custom" {
+		events = append(events, ResponseStreamEvent{
+			Type: "response.custom_tool_call_input.done",
+			Payload: map[string]any{
+				"item_id":      state.ItemID,
+				"output_index": state.OutputIndex,
+				"input":        state.Input,
+			},
+		})
+	} else {
+		events = append(events, ResponseStreamEvent{
+			Type: "response.function_call_arguments.done",
+			Payload: map[string]any{
+				"item_id":      state.ItemID,
+				"call_id":      state.CallID,
+				"output_index": state.OutputIndex,
+				"name":         state.Name,
+				"arguments":    state.Arguments,
+			},
+		})
+	}
 	state.Status = "completed"
 	state.DoneEmitted = true
 	events = append(events, ResponseStreamEvent{
@@ -656,6 +696,16 @@ func (t *ToolCallState) chatCompletionToolCall() map[string]any {
 	if t == nil {
 		return nil
 	}
+	if t.ToolType == "custom" {
+		return map[string]any{
+			"id":   t.CallID,
+			"type": "custom",
+			"custom": map[string]any{
+				"name":  t.Name,
+				"input": t.Input,
+			},
+		}
+	}
 	return map[string]any{
 		"id":   t.CallID,
 		"type": "function",
@@ -671,6 +721,16 @@ func (t *ToolCallState) responseOutputItem(status string) map[string]any {
 		return nil
 	}
 	itemStatus := jsonutil.FirstNonEmpty(status, t.Status, "completed")
+	if t.ToolType == "custom" {
+		return map[string]any{
+			"type":    "custom_tool_call",
+			"id":      t.ItemID,
+			"call_id": t.CallID,
+			"name":    t.Name,
+			"input":   t.Input,
+			"status":  itemStatus,
+		}
+	}
 	return map[string]any{
 		"type":      "function_call",
 		"id":        t.ItemID,

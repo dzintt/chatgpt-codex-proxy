@@ -40,6 +40,7 @@ type InputItem struct {
 	Content          []ContentPart          `json:"content,omitempty"`
 	CallID           string                 `json:"call_id,omitempty"`
 	Name             string                 `json:"name,omitempty"`
+	Input            string                 `json:"input,omitempty"`
 	Arguments        string                 `json:"arguments,omitempty"`
 	OutputText       string                 `json:"-"`
 	OutputContent    []ContentPart          `json:"-"`
@@ -65,6 +66,9 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	}
 	if i.Name != "" {
 		payload["name"] = i.Name
+	}
+	if i.Input != "" {
+		payload["input"] = i.Input
 	}
 	if i.Arguments != "" {
 		payload["arguments"] = i.Arguments
@@ -116,7 +120,7 @@ func inputItemOutputValue(item InputItem) (any, bool) {
 	if item.OutputText != "" {
 		return item.OutputText, true
 	}
-	if item.Type == "function_call_output" {
+	if item.Type == "function_call_output" || item.Type == "custom_tool_call_output" {
 		return "", true
 	}
 	return nil, false

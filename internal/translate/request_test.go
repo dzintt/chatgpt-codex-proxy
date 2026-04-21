@@ -320,6 +320,53 @@ func TestChatCompletionsTranslationPreservesCustomToolShape(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsTranslationPreservesCustomToolCallsAndOutputs(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []openai.ChatMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []openai.ToolCall{{
+					ID:   "call_patch",
+					Type: "custom",
+					Custom: &openai.CustomToolPayload{
+						Name:  "ApplyPatch",
+						Input: "*** Begin Patch\n*** Add File: dummy.txt\n+hello\n*** End Patch\n",
+					},
+				}},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_patch",
+				Content:    openai.MessageContent{{Type: "text", Text: "patched"}},
+			},
+		},
+	}
+
+	normalized, err := ChatCompletions(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("ChatCompletions() error = %v", err)
+	}
+
+	if len(normalized.Input) != 2 {
+		t.Fatalf("input len = %d, want 2", len(normalized.Input))
+	}
+	if normalized.Input[0].Type != "custom_tool_call" {
+		t.Fatalf("input[0].Type = %q, want custom_tool_call", normalized.Input[0].Type)
+	}
+	if normalized.Input[0].Input == "" {
+		t.Fatal("expected custom tool input to be preserved")
+	}
+	if normalized.Input[1].Type != "custom_tool_call_output" {
+		t.Fatalf("input[1].Type = %q, want custom_tool_call_output", normalized.Input[1].Type)
+	}
+	if normalized.Input[1].OutputText != "patched" {
+		t.Fatalf("input[1].OutputText = %q, want patched", normalized.Input[1].OutputText)
+	}
+}
+
 func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 	t.Parallel()
 

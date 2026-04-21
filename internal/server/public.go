@@ -406,16 +406,25 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 
 	emitted := false
 	if !toolCallInitialized[callID] && strings.TrimSpace(state.Name) != "" {
+		chunkToolCall := map[string]any{
+			"index": idx,
+			"id":    callID,
+		}
+		if state.ToolType == "custom" {
+			chunkToolCall["type"] = "custom"
+			chunkToolCall["custom"] = map[string]any{
+				"name":  state.Name,
+				"input": "",
+			}
+		} else {
+			chunkToolCall["type"] = "function"
+			chunkToolCall["function"] = map[string]any{
+				"name":      state.Name,
+				"arguments": "",
+			}
+		}
 		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
-			"tool_calls": []map[string]any{{
-				"index": idx,
-				"id":    callID,
-				"type":  "function",
-				"function": map[string]any{
-					"name":      state.Name,
-					"arguments": "",
-				},
-			}},
+			"tool_calls": []map[string]any{chunkToolCall},
 		}, "")))
 		toolCallInitialized[callID] = true
 		emitted = true
@@ -425,21 +434,28 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 		return emitted
 	}
 
-	arguments := state.Arguments
+	value := state.Arguments
+	key := "function"
+	field := "arguments"
+	if state.ToolType == "custom" {
+		value = state.Input
+		key = "custom"
+		field = "input"
+	}
 	sent := toolCallArgumentsSent[callID]
-	if sent >= len(arguments) {
+	if sent >= len(value) {
 		return emitted
 	}
 
 	writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 		"tool_calls": []map[string]any{{
 			"index": idx,
-			"function": map[string]any{
-				"arguments": arguments[sent:],
+			key: map[string]any{
+				field: value[sent:],
 			},
 		}},
 	}, "")))
-	toolCallArgumentsSent[callID] = len(arguments)
+	toolCallArgumentsSent[callID] = len(value)
 	return true
 }
 
@@ -691,6 +707,7 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 		jsonutil.StringValue(item["type"]),
 		jsonutil.StringValue(item["call_id"]),
 		jsonutil.StringValue(item["name"]),
+		jsonutil.StringValue(item["input"]),
 		jsonutil.StringValue(item["arguments"]),
 		jsonutil.StringValue(item["output"]),
 		jsonutil.StringValue(item["id"]),
@@ -726,6 +743,7 @@ func continuationInputItemFromCodex(item codex.InputItem) accounts.ContinuationI
 		item.Type,
 		item.CallID,
 		item.Name,
+		item.Input,
 		item.Arguments,
 		item.OutputText,
 		item.ID,
@@ -744,6 +762,7 @@ func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.Inp
 		Type:             item.Type,
 		CallID:           item.CallID,
 		Name:             item.Name,
+		Input:            item.Input,
 		Arguments:        item.Arguments,
 		OutputText:       item.OutputText,
 		ID:               item.ID,
@@ -756,12 +775,13 @@ func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.Inp
 	return out
 }
 
-func continuationInputItemBase(role, itemType, callID, name, arguments, outputText, id, status, encryptedContent string) accounts.ContinuationInputItem {
+func continuationInputItemBase(role, itemType, callID, name, input, arguments, outputText, id, status, encryptedContent string) accounts.ContinuationInputItem {
 	return accounts.ContinuationInputItem{
 		Role:             role,
 		Type:             itemType,
 		CallID:           callID,
 		Name:             name,
+		Input:            input,
 		Arguments:        arguments,
 		OutputText:       outputText,
 		ID:               id,
