@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -25,6 +26,8 @@ type AccountManager struct {
 type ModelSupport interface {
 	SupportsRecord(record accounts.Record, modelID string) bool
 }
+
+var errAccountNotFound = errors.New("account not found")
 
 func NewAccountManager(cfg config.Config, accountsSvc *accounts.Service, oauth *OAuthService, httpClient *HTTPClient, modelSupport ModelSupport) *AccountManager {
 	return &AccountManager{
@@ -59,18 +62,12 @@ func (m *AccountManager) AcquireReadyForModel(ctx context.Context, preferredID, 
 }
 
 func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.Record, error) {
-	record, ok, err := m.accounts.Get(id)
+	record, err := m.getRecord(id)
 	if err != nil {
 		return accounts.Record{}, err
 	}
-	if !ok {
-		return accounts.Record{}, fmt.Errorf("account not found")
-	}
-	if record.Status == accounts.StatusDisabled {
-		return accounts.Record{}, fmt.Errorf("account disabled")
-	}
-	if record.Token.AccessToken == "" {
-		return accounts.Record{}, fmt.Errorf("account has no access token")
+	if err := validateReadyRecord(record); err != nil {
+		return accounts.Record{}, err
 	}
 	if time.Until(record.Token.ExpiresAt) > m.cfg.RefreshSkew {
 		return record, nil
@@ -80,33 +77,18 @@ func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.R
 	lock.Lock()
 	defer lock.Unlock()
 
-	record, ok, err = m.accounts.Get(id)
+	record, err = m.getRecord(id)
 	if err != nil {
 		return accounts.Record{}, err
 	}
-	if !ok {
-		return accounts.Record{}, fmt.Errorf("account not found")
+	if err := validateReadyRecord(record); err != nil {
+		return accounts.Record{}, err
 	}
 	if time.Until(record.Token.ExpiresAt) > m.cfg.RefreshSkew {
 		return record, nil
 	}
 
-	nextToken, nextAccountID, err := m.oauth.Refresh(ctx, record.Token, record.AccountID)
-	if err != nil {
-		m.markRefreshFailure(id, err)
-		return accounts.Record{}, err
-	}
-	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
-		return accounts.Record{}, err
-	}
-	updated, ok, err := m.accounts.Get(id)
-	if err != nil {
-		return accounts.Record{}, err
-	}
-	if !ok {
-		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
-	}
-	return updated, nil
+	return m.refreshLocked(ctx, record)
 }
 
 func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Record, error) {
@@ -114,29 +96,11 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 	lock.Lock()
 	defer lock.Unlock()
 
-	record, ok, err := m.accounts.Get(id)
+	record, err := m.getRecord(id)
 	if err != nil {
 		return accounts.Record{}, err
 	}
-	if !ok {
-		return accounts.Record{}, fmt.Errorf("account not found")
-	}
-	nextToken, nextAccountID, err := m.oauth.Refresh(ctx, record.Token, record.AccountID)
-	if err != nil {
-		m.markRefreshFailure(id, err)
-		return accounts.Record{}, err
-	}
-	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
-		return accounts.Record{}, err
-	}
-	updated, ok, err := m.accounts.Get(id)
-	if err != nil {
-		return accounts.Record{}, err
-	}
-	if !ok {
-		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
-	}
-	return updated, nil
+	return m.refreshLocked(ctx, record)
 }
 
 func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (accounts.Record, *accounts.QuotaSnapshot, error) {
@@ -181,6 +145,46 @@ func (m *AccountManager) markRefreshFailure(id string, cause error) {
 			"error", err.Error(),
 		)
 	}
+}
+
+func (m *AccountManager) refreshLocked(ctx context.Context, record accounts.Record) (accounts.Record, error) {
+	nextToken, nextAccountID, err := m.oauth.Refresh(ctx, record.Token, record.AccountID)
+	if err != nil {
+		m.markRefreshFailure(record.ID, err)
+		return accounts.Record{}, err
+	}
+	if err := m.accounts.UpdateAuth(record.ID, nextAccountID, nextToken); err != nil {
+		return accounts.Record{}, err
+	}
+	updated, err := m.getRecord(record.ID)
+	if err != nil {
+		if errors.Is(err, errAccountNotFound) {
+			return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", record.ID)
+		}
+		return accounts.Record{}, err
+	}
+	return updated, nil
+}
+
+func (m *AccountManager) getRecord(id string) (accounts.Record, error) {
+	record, ok, err := m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
+	if !ok {
+		return accounts.Record{}, errAccountNotFound
+	}
+	return record, nil
+}
+
+func validateReadyRecord(record accounts.Record) error {
+	if record.Status == accounts.StatusDisabled {
+		return fmt.Errorf("account disabled")
+	}
+	if record.Token.AccessToken == "" {
+		return fmt.Errorf("account has no access token")
+	}
+	return nil
 }
 
 func (m *AccountManager) lockFor(id string) *sync.Mutex {

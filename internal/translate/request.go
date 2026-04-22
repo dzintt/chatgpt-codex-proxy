@@ -497,19 +497,17 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 	}
 	out := make([]codex.ContentPart, 0, len(parts))
 	for _, part := range parts {
-		switch part.Type {
-		case "", "text", "input_text", "output_text", "reasoning_text":
-			contentType := "input_text"
-			if part.Type == "output_text" {
-				contentType = "output_text"
-			} else if part.Type == "reasoning_text" {
-				contentType = "reasoning_text"
-			}
+		contentType, kind, ok := classifyContentPartType(part.Type)
+		if !ok {
+			return nil, unsupportedContentPartError(part.Type)
+		}
+		switch kind {
+		case contentPartText:
 			out = append(out, codex.ContentPart{
 				Type: contentType,
 				Text: part.Text,
 			})
-		case "image_url", "input_image":
+		case contentPartImage:
 			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
 				return nil, fmt.Errorf("image_url.url is required")
 			}
@@ -518,7 +516,7 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 				ImageURL: strings.TrimSpace(part.ImageURL.URL),
 				Detail:   strings.TrimSpace(part.Detail),
 			})
-		case "input_file":
+		case contentPartFile:
 			if strings.TrimSpace(part.FileData) == "" && strings.TrimSpace(part.FileURL) == "" && strings.TrimSpace(part.FileID) == "" {
 				return nil, fmt.Errorf("input_file requires file_data, file_url, or file_id")
 			}
@@ -530,8 +528,6 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 				FileID:   strings.TrimSpace(part.FileID),
 				Filename: strings.TrimSpace(part.Filename),
 			})
-		default:
-			return nil, fmt.Errorf("unsupported_content_part: %s", part.Type)
 		}
 	}
 	return out, nil
@@ -552,18 +548,44 @@ func webSearchToolChoiceJSON() json.RawMessage {
 func flattenContent(content openai.MessageContent) (string, error) {
 	var parts []string
 	for _, part := range content {
-		switch part.Type {
-		case "", "text", "input_text", "output_text", "reasoning_text":
-			if strings.TrimSpace(part.Text) != "" {
-				parts = append(parts, part.Text)
-			}
-		case "image_url", "input_image":
-			return "", fmt.Errorf("unsupported_content_part: %s", part.Type)
-		default:
-			return "", fmt.Errorf("unsupported_content_part: %s", part.Type)
+		_, kind, ok := classifyContentPartType(part.Type)
+		if !ok || kind != contentPartText {
+			return "", unsupportedContentPartError(part.Type)
+		}
+		if strings.TrimSpace(part.Text) != "" {
+			parts = append(parts, part.Text)
 		}
 	}
 	return strings.Join(parts, "\n"), nil
+}
+
+type contentPartKind uint8
+
+const (
+	contentPartText contentPartKind = iota
+	contentPartImage
+	contentPartFile
+)
+
+func classifyContentPartType(partType string) (string, contentPartKind, bool) {
+	switch partType {
+	case "", "text", "input_text":
+		return "input_text", contentPartText, true
+	case "output_text":
+		return "output_text", contentPartText, true
+	case "reasoning_text":
+		return "reasoning_text", contentPartText, true
+	case "image_url", "input_image":
+		return "input_image", contentPartImage, true
+	case "input_file":
+		return "input_file", contentPartFile, true
+	default:
+		return "", 0, false
+	}
+}
+
+func unsupportedContentPartError(partType string) error {
+	return fmt.Errorf("unsupported_content_part: %s", partType)
 }
 
 func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string, catalogs ...*models.Catalog) (string, bool, *codex.Reasoning, string, error) {

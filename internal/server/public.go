@@ -50,81 +50,75 @@ type openedRequest struct {
 }
 
 func (a *App) handleChatCompletions(c *gin.Context) {
-	body, err := captureRequestBody(c)
-	if err != nil {
-		a.respondOpenAIInvalidRequest(c, err)
-		return
-	}
-	a.logIncomingPayload(c, "chat_completions", body)
-
-	normalized, err := normalizeChatCompletionsBody(body, a.cfg.DefaultModel, a.modelCatalog())
-	if err != nil {
-		a.respondOpenAINormalizeError(c, err)
-		return
-	}
-
-	opened, ok := a.resolveAndOpenRequest(c, "chat_completions", normalized)
-	if !ok {
-		return
-	}
-	defer opened.Stream.Close()
-
-	if opened.Resolution.Request.Stream {
-		a.streamChatCompletion(c, opened.Account, opened.Resolution.Request, opened.Stream)
-		return
-	}
-
-	accumulator, err := a.collectEvents(opened.Account, opened.Resolution.Request, opened.Stream)
-	if err != nil {
-		a.respondOpenAIUpstreamStreamError(c, "chat_completions", opened.Account.ID, "", err)
-		return
-	}
-	response := accumulator.ChatCompletionObject()
-	if err := translate.PatchChatCompletionObjectForTuple(response, normalized.TupleSchema); err != nil {
-		a.logTupleReconversionWarning(c, "chat_completions", accumulator.ResponseID, err)
-	}
-	c.JSON(http.StatusOK, response)
+	a.handlePublicRequest(
+		c,
+		"chat_completions",
+		func(body []byte) (translate.NormalizedRequest, error) {
+			return normalizeChatCompletionsBody(body, a.cfg.DefaultModel, a.modelCatalog())
+		},
+		a.streamChatCompletion,
+		func(accumulator *translate.Accumulator) map[string]any {
+			return accumulator.ChatCompletionObject()
+		},
+		translate.PatchChatCompletionObjectForTuple,
+	)
 }
 
 func (a *App) handleResponses(c *gin.Context) {
+	a.handlePublicRequest(
+		c,
+		"responses",
+		func(body []byte) (translate.NormalizedRequest, error) {
+			return normalizeResponsesBody(body, a.cfg.DefaultModel, a.modelCatalog())
+		},
+		a.streamResponses,
+		func(accumulator *translate.Accumulator) map[string]any {
+			return accumulator.ResponsesObject()
+		},
+		translate.PatchResponsesObjectForTuple,
+	)
+}
+
+func (a *App) handlePublicRequest(
+	c *gin.Context,
+	endpoint string,
+	normalize func([]byte) (translate.NormalizedRequest, error),
+	stream func(*gin.Context, accounts.Record, translate.NormalizedRequest, eventStream),
+	buildResponse func(*translate.Accumulator) map[string]any,
+	patchTuple func(map[string]any, map[string]any) error,
+) {
 	body, err := captureRequestBody(c)
 	if err != nil {
 		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
-	a.logIncomingPayload(c, "responses", body)
+	a.logIncomingPayload(c, endpoint, body)
 
-	var req openai.ResponsesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		a.respondOpenAIInvalidRequest(c, err)
-		return
-	}
-
-	normalized, err := translate.Responses(req, a.cfg.DefaultModel, a.modelCatalog())
+	normalized, err := normalize(body)
 	if err != nil {
 		a.respondOpenAINormalizeError(c, err)
 		return
 	}
 
-	opened, ok := a.resolveAndOpenRequest(c, "responses", normalized)
+	opened, ok := a.resolveAndOpenRequest(c, endpoint, normalized)
 	if !ok {
 		return
 	}
 	defer opened.Stream.Close()
 
 	if opened.Resolution.Request.Stream {
-		a.streamResponses(c, opened.Account, opened.Resolution.Request, opened.Stream)
+		stream(c, opened.Account, opened.Resolution.Request, opened.Stream)
 		return
 	}
 
 	accumulator, err := a.collectEvents(opened.Account, opened.Resolution.Request, opened.Stream)
 	if err != nil {
-		a.respondOpenAIUpstreamStreamError(c, "responses", opened.Account.ID, "", err)
+		a.respondOpenAIUpstreamStreamError(c, endpoint, opened.Account.ID, "", err)
 		return
 	}
-	response := accumulator.ResponsesObject()
-	if err := translate.PatchResponsesObjectForTuple(response, normalized.TupleSchema); err != nil {
-		a.logTupleReconversionWarning(c, "responses", accumulator.ResponseID, err)
+	response := buildResponse(accumulator)
+	if err := patchTuple(response, normalized.TupleSchema); err != nil {
+		a.logTupleReconversionWarning(c, endpoint, accumulator.ResponseID, err)
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -930,6 +924,14 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *mod
 	}
 	normalized.Endpoint = translate.EndpointChat
 	return normalized, nil
+}
+
+func normalizeResponsesBody(body []byte, defaultModel string, catalog *models.Catalog) (translate.NormalizedRequest, error) {
+	var req openai.ResponsesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return translate.NormalizedRequest{}, err
+	}
+	return translate.Responses(req, defaultModel, catalog)
 }
 
 func prepareStreamResponse(c *gin.Context) {
