@@ -103,12 +103,12 @@ func (f *Fetcher) refreshOnce(ctx context.Context) bool {
 		record := routes[key]
 		ready, err := f.accountMgr.EnsureReady(ctx, record.ID)
 		if err != nil {
-			f.logger.Warn("model fetch ensure-ready failed", "route_key", key, "account_id", record.ID, "error", err.Error())
+			f.logger.Warn("codex model fetch ensure-ready failed", "route_key", key, "account_id", record.ID, "error", err.Error())
 			continue
 		}
-		entries, err := f.http.GetModels(ctx, ready)
+		entries, err := f.http.GetCodexModels(ctx, ready)
 		if err != nil {
-			f.logger.Warn("model fetch failed", "route_key", key, "account_id", ready.ID, "error", err.Error())
+			f.logger.Warn("codex model fetch failed", "route_key", key, "account_id", ready.ID, "error", err.Error())
 			continue
 		}
 		normalized := NormalizeBackendEntries(entries)

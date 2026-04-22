@@ -78,7 +78,7 @@ func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (Usag
 	return decoded, QuotaFromUsageResponse(decoded), nil
 }
 
-func (c *HTTPClient) GetModels(ctx context.Context, record accounts.Record) ([]BackendModelEntry, error) {
+func (c *HTTPClient) GetCodexModels(ctx context.Context, record accounts.Record) ([]BackendModelEntry, error) {
 	session := c.sessionFor(record.ID)
 	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
 		AccountID:      record.AccountID,
@@ -88,30 +88,25 @@ func (c *HTTPClient) GetModels(ctx context.Context, record accounts.Record) ([]B
 		AcceptEncoding: "gzip, deflate",
 	}), c.cfg.HeaderOrder)
 
-	endpoints := []string{
-		c.modelsURL("/codex/models", true),
-		c.modelsURL("/models", false),
-		c.modelsURL("/sentinel/chat-requirements", false),
+	endpoint := c.codexModelsURL()
+	resp, err := session.Get(ctx, endpoint, headers)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := resp.Text()
+	resp.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, NewUpstreamError("codex models", resp.StatusCode, payload, toHTTPHeader(resp.Headers))
 	}
 
-	for _, endpoint := range endpoints {
-		resp, err := session.Get(ctx, endpoint, headers)
-		if err != nil {
-			continue
-		}
-		payload, readErr := resp.Text()
-		resp.Close()
-		if readErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			continue
-		}
-		models, parseErr := parseBackendModels(payload)
-		if parseErr != nil || len(models) == 0 {
-			continue
-		}
-		return models, nil
+	models, err := parseCodexModelsResponse(payload)
+	if err != nil {
+		return nil, fmt.Errorf("codex models returned an unusable body: %w", err)
 	}
-
-	return nil, fmt.Errorf("no upstream model endpoints returned a usable catalog")
+	return models, nil
 }
 
 func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record, req Request, turnState string) (*StreamReader, error) {
@@ -263,9 +258,9 @@ func StreamRequestPayload(req Request) Request {
 	return bodyReq
 }
 
-func (c *HTTPClient) modelsURL(path string, includeClientVersion bool) string {
-	base := JoinURL(c.cfg.CodexBaseURL, path)
-	if !includeClientVersion || strings.TrimSpace(c.cfg.ClientVersion) == "" {
+func (c *HTTPClient) codexModelsURL() string {
+	base := JoinURL(c.cfg.CodexBaseURL, "/codex/models")
+	if strings.TrimSpace(c.cfg.ClientVersion) == "" {
 		return base
 	}
 	parsed, err := url.Parse(base)
@@ -278,71 +273,29 @@ func (c *HTTPClient) modelsURL(path string, includeClientVersion bool) string {
 	return parsed.String()
 }
 
-func parseBackendModels(payload string) ([]BackendModelEntry, error) {
-	var decoded backendModelCatalogPayload
+func parseCodexModelsResponse(payload string) ([]BackendModelEntry, error) {
+	var decoded struct {
+		Models json.RawMessage `json:"models"`
+	}
 	decoder := json.NewDecoder(strings.NewReader(payload))
 	decoder.UseNumber()
 	if err := decoder.Decode(&decoded); err != nil {
-		var array []backendModelNode
-		if err := json.Unmarshal([]byte(payload), &array); err != nil {
-			return nil, err
+		return nil, err
+	}
+	if len(decoded.Models) == 0 {
+		return nil, fmt.Errorf("missing models field")
+	}
+	var models []BackendModelEntry
+	if err := json.Unmarshal(decoded.Models, &models); err != nil {
+		return nil, fmt.Errorf("models field is not a model array: %w", err)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("models array is empty")
+	}
+	for idx, model := range models {
+		if strings.TrimSpace(model.Slug) == "" && strings.TrimSpace(model.ID) == "" && strings.TrimSpace(model.Name) == "" {
+			return nil, fmt.Errorf("models[%d] is missing slug, id, and name", idx)
 		}
-		models := flattenBackendModelNodes(array)
-		if len(models) == 0 {
-			return nil, fmt.Errorf("no backend models found")
-		}
-		return models, nil
 	}
-
-	if models := decoded.flatten(); len(models) > 0 {
-		return models, nil
-	}
-	return nil, fmt.Errorf("no backend models found")
-}
-
-type backendModelCatalogPayload struct {
-	ChatModels *backendModelGroup `json:"chat_models,omitempty"`
-	Models     []backendModelNode `json:"models,omitempty"`
-	Data       []backendModelNode `json:"data,omitempty"`
-	Categories []backendModelNode `json:"categories,omitempty"`
-}
-
-type backendModelGroup struct {
-	Models []backendModelNode `json:"models,omitempty"`
-}
-
-type backendModelNode struct {
-	BackendModelEntry
-	Models []backendModelNode `json:"models,omitempty"`
-}
-
-func (p backendModelCatalogPayload) flatten() []BackendModelEntry {
-	var out []BackendModelEntry
-	if p.ChatModels != nil {
-		out = append(out, flattenBackendModelNodes(p.ChatModels.Models)...)
-	}
-	out = append(out, flattenBackendModelNodes(p.Models)...)
-	out = append(out, flattenBackendModelNodes(p.Data)...)
-	out = append(out, flattenBackendModelNodes(p.Categories)...)
-	return out
-}
-
-func flattenBackendModelNodes(nodes []backendModelNode) []BackendModelEntry {
-	if len(nodes) == 0 {
-		return nil
-	}
-
-	out := make([]BackendModelEntry, 0, len(nodes))
-	for _, node := range nodes {
-		if len(node.Models) > 0 {
-			out = append(out, flattenBackendModelNodes(node.Models)...)
-			continue
-		}
-		entry := node.BackendModelEntry
-		if strings.TrimSpace(entry.Slug) == "" && strings.TrimSpace(entry.ID) == "" && strings.TrimSpace(entry.Name) == "" {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
+	return models, nil
 }
