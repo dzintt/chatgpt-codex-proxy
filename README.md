@@ -8,98 +8,54 @@ This project depends on the private `chatgpt.com/backend-api/codex/*` surface. T
 
 Use it for local or small-scale deployments.
 
-## What This Project Does
+## Contents
 
-- Exposes OpenAI-style endpoints such as `POST /v1/chat/completions` and `POST /v1/responses`
-- Translates those requests into the upstream Codex request format
-- Streams upstream events back as OpenAI-style JSON or SSE
-- Manages one or more Codex accounts authenticated through ChatGPT device login
-- Rotates requests across healthy accounts
-- Provides a small admin API for onboarding, quota checks, and routing visibility
-
-## What It Supports
-
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `GET /v1/models`
-- `GET /v1/models/<model_id>`
-- Streaming and non-streaming responses
-- Tool calling via `tools`
-- Legacy Chat Completions `functions` and top-level `function_call`
-- Hosted web search tool passthrough
-- Structured outputs
-- Text, image, and file inputs on Chat Completions
-- Text, image, and file inputs on Responses
-- Chat Completions reasoning summaries via `reasoning_content`
-- Responses reasoning-item replay, including `encrypted_content`
-- Dynamic public model catalog fetched from the upstream Codex backend
-- Explicit `previous_response_id` continuations on both Chat Completions and Responses
-- Stable `prompt_cache_key` derivation plus guarded implicit resume when follow-up requests replay prior assistant or tool history
-- Multi-account rotation with `least_used`, `round_robin`, and `sticky`
-- Local JSON persistence for accounts, cached quota state, and the most recent discovered model catalog
-- Automatic recovery when cached quota or transient cooldown windows expire
-
-## How It Works
-
-1. A Gin server accepts OpenAI-style HTTP requests.
-2. The request is normalized into one internal format.
-3. That normalized request is translated into the upstream Codex backend shape.
-4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
-
-<img width="4599" height="2073" alt="image" src="https://github.com/user-attachments/assets/05cd8446-dd4b-43bc-a3fc-eb370ad917e6" />
-
-The proxy talks to:
-
-- `POST https://chatgpt.com/backend-api/codex/responses`
-- `GET https://chatgpt.com/backend-api/codex/usage`
-- `GET https://chatgpt.com/backend-api/codex/models`, with fallback probes to other upstream model-list endpoints
-- `WSS https://chatgpt.com/backend-api/codex/responses` for continuation requests
-- `https://auth.openai.com/api/accounts/deviceauth/*` and `https://auth.openai.com/oauth/token` for device login and token refresh
-
-For follow-up turns, the proxy keeps short-lived in-memory state so explicit and implicit continuations stay pinned to the correct account, reuse upstream turn state when safe, and set a stable `prompt_cache_key`.
-
-## Project Layout
-
-- `cmd/api`
-  Server entry point.
-- `internal/config`
-  Small runtime configuration.
-- `internal/server`
-  HTTP routes and handlers.
-- `internal/middleware`
-  API key auth, request IDs, logging, and panic recovery.
-- `internal/openai`
-  OpenAI-facing request and response types.
-- `internal/translate`
-  OpenAI-to-Codex request translation and response shaping.
-- `internal/codex`
-  Upstream Codex types, headers, OAuth, quota parsing, plus HTTP and WebSocket
-  transport for upstream continuation support.
-- `internal/accounts`
-  Account records, cached quota state, continuation affinity, and rotation logic.
-- `internal/admin`
-  Device login flow orchestration.
-- `internal/store`
-  Local JSON persistence.
-- `internal/observability`
-  Structured logging setup.
-- `internal/integration`
-  Build-tagged live API tests for end-to-end compatibility checks against a running proxy instance.
-- `docs/`
-  Supplemental notes, including the multi-account rotation design and the architecture diagram source.
-
-## Requirements
-
-- Go `1.26.x`
-- A valid `PROXY_API_KEY`
-- At least one Codex account before the proxy can route public model requests
-- Docker Desktop or Docker Engine if you want to run the provided container setup
+- [Quick Start](#quick-start)
+- [Authentication](#authentication)
+- [Configuration](#configuration)
+- [Public API](#public-api)
+- [Admin API](#admin-api)
+- [Docker Deployment](#docker-deployment)
+- [Persistence](#persistence)
+- [What This Project Does](#what-this-project-does)
+- [How It Works](#how-it-works)
+- [Project Layout](#project-layout)
+- [Account Rotation](#account-rotation)
+- [Observability](#observability)
+- [Testing](#testing)
+- [Limitations](#limitations)
 
 ## Quick Start
 
+Recommended path: Docker Compose.
+
+### Requirements
+
+If you want the recommended Docker setup:
+
+- Docker Desktop or Docker Engine
+- A valid `PROXY_API_KEY`
+- At least one Codex account before the proxy can serve public model requests
+
+If you want to run it directly with Go instead:
+
+- Go `1.26.x`
+- A valid `PROXY_API_KEY`
+- At least one Codex account before the proxy can serve public model requests
+
 ### 1. Configure the proxy
 
-Create a `.env` file or export the variables in your shell.
+Start from the example file:
+
+```bash
+cp .env.example .env
+```
+
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
 
 Required:
 
@@ -114,25 +70,19 @@ Optional:
 - `DATA_DIR`
   Overrides the default local state directory. Defaults to `data` for local runs. The Docker setup forces this to `/app/data`.
 - `DEBUG_LOG_PAYLOADS`
-  When set to `true`, logs the raw incoming JSON body sent to the proxy and the translated upstream Codex payload that gets sent out. Leave it off outside local debugging because it logs full request contents.
+  When set to `true`, logs the raw incoming JSON body sent to the proxy and the translated upstream Codex payload. Leave it off outside local debugging because it logs full request contents.
 
-You can start from the example file:
+`.env.example` is intentionally minimal:
 
-```bash
-cp .env.example .env
+```env
+PROXY_API_KEY=change-me-to-a-long-random-string
+# PORT=8080
+# DEBUG_LOG_PAYLOADS=false
 ```
 
-PowerShell:
+`docker compose` reads `.env` automatically for variable substitution.
 
-```powershell
-Copy-Item .env.example .env
-```
-
-`.env.example` is intentionally minimal. `DATA_DIR` is also supported if you want to override the default local state directory.
-
-`docker compose` will read `.env` automatically for variable substitution.
-
-### 2. Run the server
+### 2. Start the proxy
 
 Recommended: Docker Compose
 
@@ -140,19 +90,19 @@ Recommended: Docker Compose
 docker compose up -d --build
 ```
 
-That will:
-
-- Build the image from this repository
-- Expose the API on `http://localhost:8080`
-- Persist account state in the named Docker volume `chatgpt-codex-proxy-data`
-- Run the service as a non-root user with a read-only root filesystem plus a writable data volume
-
 Useful container commands:
 
 ```bash
 docker compose logs -f
 docker compose down
 ```
+
+That setup:
+
+- Builds the image from this repository
+- Exposes the API on `http://localhost:8080`
+- Persists account state in the named Docker volume `chatgpt-codex-proxy-data`
+- Runs the service as a non-root user with a read-only root filesystem plus a writable data volume
 
 Alternative: run it directly with Go
 
@@ -171,6 +121,17 @@ curl -X POST http://localhost:8080/admin/accounts/device-login/start \
   -H "Authorization: Bearer change-me"
 ```
 
+PowerShell:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/admin/accounts/device-login/start" `
+  -Headers @{ Authorization = "Bearer change-me" }
+```
+
+The response includes:
+
 - `login_id`
 - `auth_url`
 - `user_code`
@@ -183,14 +144,20 @@ curl http://localhost:8080/admin/accounts/device-login/<login_id> \
   -H "Authorization: Bearer change-me"
 ```
 
+PowerShell:
+
+```powershell
+Invoke-RestMethod `
+  -Method Get `
+  -Uri "http://localhost:8080/admin/accounts/device-login/<login_id>" `
+  -Headers @{ Authorization = "Bearer change-me" }
+```
+
 When the login status becomes `ready`, the account has been saved locally and can be used for proxy requests.
 
-### 4. Point an OpenAI client at the proxy
+### 4. Test the proxy
 
-- Base URL: `http://localhost:8080/v1`
-- API key: your `PROXY_API_KEY`
-
-Example with `curl`:
+Example Chat Completions request:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -205,7 +172,30 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-Example `Responses API` request:
+PowerShell:
+
+```powershell
+$headers = @{
+  Authorization = "Bearer change-me"
+  "Content-Type" = "application/json"
+}
+
+$body = @{
+  model = "gpt-5.4"
+  messages = @(
+    @{ role = "system"; content = "Be concise." }
+    @{ role = "user"; content = "Explain what this repository does." }
+  )
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/v1/chat/completions" `
+  -Headers $headers `
+  -Body $body
+```
+
+Example Responses request:
 
 ```bash
 curl http://localhost:8080/v1/responses \
@@ -216,6 +206,11 @@ curl http://localhost:8080/v1/responses \
     "input": "Summarize this project in three bullet points."
   }'
 ```
+
+### 5. Point an OpenAI client at the proxy
+
+- Base URL: `http://localhost:8080/v1`
+- API key: your `PROXY_API_KEY`
 
 ## Authentication
 
@@ -228,7 +223,35 @@ The proxy accepts either:
 
 The same API key protects both public and admin routes.
 
+## Configuration
+
+Supported environment variables:
+
+- `PROXY_API_KEY`
+  Required. Protects both public and admin routes.
+- `PORT`
+  Optional. Defaults to `8080`.
+- `DATA_DIR`
+  Optional. Defaults to `data` for local runs.
+- `DEBUG_LOG_PAYLOADS`
+  Optional. Defaults to `false`. When enabled, emits structured logs for incoming public API JSON bodies and translated upstream Codex request payloads.
+
+Everything else is fixed in code on purpose:
+
+- The configured default model starts as `gpt-5.4`, but request validation and `/v1/models` are driven by the runtime catalog rather than a hardcoded public model list.
+- A fresh data store starts with the `least_used` rotation strategy. Changes made through `PUT /admin/rotation` are persisted and restored on restart.
+- Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
+
 ## Public API
+
+Summary:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/models`
+- `GET /v1/models/<model_id>`
+- `GET /health/live`
+- `GET /health`
 
 ### `POST /v1/chat/completions`
 
@@ -366,47 +389,6 @@ Valid strategies:
 - General account routing is blocked only by primary or secondary quota exhaustion. `code_review_rate_limit` is retained for observability and does not affect normal routing.
 - Exhausted quota windows are treated as temporary routing blocks. Accounts automatically become eligible again after the cached reset time passes.
 
-## Persistence
-
-Account state is stored locally in:
-
-- `${DATA_DIR}/accounts.json`
-- `${DATA_DIR}/models-cache.json`
-
-That file includes:
-
-- Account metadata
-- OAuth tokens
-- A reserved `cookies` field in the persisted schema
-- Cached quota snapshots
-- Transient cooldown state
-- Admin labels and status flags
-
-The model cache file stores the last successful discovered model catalog plus per-route support metadata.
-
-Continuation mappings, conversation affinity, and in-flight device-login coordination are kept in memory and are not persisted across restarts.
-
-When running with `docker compose`, the same account state is stored in the named volume `chatgpt-codex-proxy-data`, mounted at `/app/data`.
-
-## Configuration
-
-Supported environment variables:
-
-- `PROXY_API_KEY`
-  Required. Protects both public and admin routes.
-- `PORT`
-  Optional. Defaults to `8080`.
-- `DATA_DIR`
-  Optional. Defaults to `data` for local runs.
-- `DEBUG_LOG_PAYLOADS`
-  Optional. Defaults to `false`. When enabled, emits structured logs for incoming public API JSON bodies and translated upstream Codex request payloads.
-
-Everything else is fixed in code on purpose:
-
-- The configured default model starts as `gpt-5.4`, but request validation and `/v1/models` are driven by the runtime catalog rather than a hardcoded public model list.
-- A fresh data store starts with the `least_used` rotation strategy. Changes made through `PUT /admin/rotation` are persisted and restored on restart.
-- Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
-
 ## Docker Deployment
 
 The repository includes:
@@ -440,7 +422,73 @@ docker run -d \
 
 If you set a non-default `PORT` in `.env`, publish that same port from the container.
 
-## Translation Notes
+## Persistence
+
+Account state is stored locally in:
+
+- `${DATA_DIR}/accounts.json`
+- `${DATA_DIR}/models-cache.json`
+
+That file includes:
+
+- Account metadata
+- OAuth tokens
+- A reserved `cookies` field in the persisted schema
+- Cached quota snapshots
+- Transient cooldown state
+- Admin labels and status flags
+
+The model cache file stores the last successful discovered model catalog plus per-route support metadata.
+
+Continuation mappings, conversation affinity, and in-flight device-login coordination are kept in memory and are not persisted across restarts.
+
+When running with `docker compose`, the same account state is stored in the named volume `chatgpt-codex-proxy-data`, mounted at `/app/data`.
+
+## What This Project Does
+
+- Exposes OpenAI-style endpoints such as `POST /v1/chat/completions` and `POST /v1/responses`
+- Translates those requests into the upstream Codex request format
+- Streams upstream events back as OpenAI-style JSON or SSE
+- Manages one or more Codex accounts authenticated through ChatGPT device login
+- Rotates requests across healthy accounts
+- Provides a small admin API for onboarding, quota checks, and routing visibility
+
+Supported capabilities:
+
+- Streaming and non-streaming responses
+- Tool calling via `tools`
+- Legacy Chat Completions `functions` and top-level `function_call`
+- Hosted web search tool passthrough
+- Structured outputs
+- Text, image, and file inputs on Chat Completions
+- Text, image, and file inputs on Responses
+- Chat Completions reasoning summaries via `reasoning_content`
+- Responses reasoning-item replay, including `encrypted_content`
+- Dynamic public model catalog fetched from the upstream Codex backend
+- Explicit `previous_response_id` continuations on both Chat Completions and Responses
+- Stable `prompt_cache_key` derivation plus guarded implicit resume when follow-up requests replay prior assistant or tool history
+- Multi-account rotation with `least_used`, `round_robin`, and `sticky`
+- Local JSON persistence for accounts, cached quota state, and the most recent discovered model catalog
+- Automatic recovery when cached quota or transient cooldown windows expire
+
+## How It Works
+
+1. A Gin server accepts OpenAI-style HTTP requests.
+2. The request is normalized into one internal format.
+3. That normalized request is translated into the upstream Codex backend shape.
+4. The upstream response stream is converted back into OpenAI-style JSON or SSE.
+
+<img width="4599" height="2073" alt="image" src="https://github.com/user-attachments/assets/05cd8446-dd4b-43bc-a3fc-eb370ad917e6" />
+
+The proxy talks to:
+
+- `POST https://chatgpt.com/backend-api/codex/responses`
+- `GET https://chatgpt.com/backend-api/codex/usage`
+- `GET https://chatgpt.com/backend-api/codex/models`, with fallback probes to other upstream model-list endpoints
+- `WSS https://chatgpt.com/backend-api/codex/responses` for continuation requests
+- `https://auth.openai.com/api/accounts/deviceauth/*` and `https://auth.openai.com/oauth/token` for device login and token refresh
+
+For follow-up turns, the proxy keeps short-lived in-memory state so explicit and implicit continuations stay pinned to the correct account, reuse upstream turn state when safe, and set a stable `prompt_cache_key`.
 
 Both public request styles are normalized into one internal request model before being sent upstream.
 
@@ -455,12 +503,41 @@ Key translation rules:
 - Responses reasoning items are preserved and can be replayed on later turns
 - Responses API assistant replay content such as `output_text` is accepted for stateless continuation reconstruction
 - Function tools are accepted in both Chat Completions-style nested form and the modern Responses API top-level form
-- Chat Completions custom tools are accepted in their native `type = "custom"` form.
+- Chat Completions custom tools are accepted in their native `type = "custom"` form
 - On Chat Completions replay turns, function-shaped assistant tool calls are mapped back to upstream custom tool calls when their name matches a declared custom tool. This preserves compatibility with clients that replay custom tools through function-shaped `tool_calls`.
 - A stable conversation key is derived from the normalized request and used as `prompt_cache_key` when possible.
 - Explicit continuation requests stay pinned to the account that created the earlier response and use the upstream WebSocket continuation transport on both public endpoints.
 - Implicit continuation is only attempted when model, instructions, and replayed assistant or tool history line up with a recent in-memory continuation record. Tool outputs are only resumed when their `call_id` values match known prior tool calls.
 - Unsupported content types return `400` instead of being dropped silently
+
+## Project Layout
+
+- `cmd/api`
+  Server entry point.
+- `internal/config`
+  Small runtime configuration.
+- `internal/server`
+  HTTP routes and handlers.
+- `internal/middleware`
+  API key auth, request IDs, logging, and panic recovery.
+- `internal/openai`
+  OpenAI-facing request and response types.
+- `internal/translate`
+  OpenAI-to-Codex request translation and response shaping.
+- `internal/codex`
+  Upstream Codex types, headers, OAuth, quota parsing, plus HTTP and WebSocket transport for upstream continuation support.
+- `internal/accounts`
+  Account records, cached quota state, continuation affinity, and rotation logic.
+- `internal/admin`
+  Device login flow orchestration.
+- `internal/store`
+  Local JSON persistence.
+- `internal/observability`
+  Structured logging setup.
+- `internal/integration`
+  Build-tagged live API tests for end-to-end compatibility checks against a running proxy instance.
+- `docs/`
+  Supplemental notes, including the multi-account rotation design and the architecture diagram source.
 
 ## Account Rotation
 
