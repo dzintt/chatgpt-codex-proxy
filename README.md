@@ -225,6 +225,12 @@ In-memory only:
 3. The proxy selects a ready account, translates the request, and sends it to the private Codex backend over HTTP SSE or WebSocket.
 4. Upstream events are converted back into OpenAI-style JSON or SSE.
 
+Architecture overview:
+
+<img width="4599" height="2073" alt="chatgpt-codex-proxy architecture flowchart" src="https://github.com/user-attachments/assets/05cd8446-dd4b-43bc-a3fc-eb370ad917e6" />
+
+The diagram shows the per-request translation path, local account state, and the one-time device-login onboarding flow.
+
 The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
