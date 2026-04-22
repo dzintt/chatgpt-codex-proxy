@@ -10,23 +10,28 @@ import (
 )
 
 type Catalog struct {
-	mu          sync.RWMutex
-	bootstrap   []Entry
-	visible     []Entry
-	entriesByID map[string]Entry
-	support     map[string]map[string]struct{}
-	knownRoutes map[string]struct{}
-	fetchedAt   time.Time
+	mu           sync.RWMutex
+	bootstrap    []Entry
+	visible      []Entry
+	bootstrapIDs map[string]struct{}
+	visibleIDs   map[string]struct{}
+	entriesByID  map[string]Entry
+	support      map[string]map[string]struct{}
+	knownRoutes  map[string]struct{}
+	fetchedAt    time.Time
 }
 
 func NewCatalog(bootstrap []Entry) *Catalog {
 	c := &Catalog{
-		bootstrap:   cloneEntries(bootstrap),
-		entriesByID: make(map[string]Entry),
-		support:     make(map[string]map[string]struct{}),
-		knownRoutes: make(map[string]struct{}),
+		bootstrap:    cloneEntries(bootstrap),
+		bootstrapIDs: make(map[string]struct{}),
+		visibleIDs:   make(map[string]struct{}),
+		entriesByID:  make(map[string]Entry),
+		support:      make(map[string]map[string]struct{}),
+		knownRoutes:  make(map[string]struct{}),
 	}
 	for _, entry := range c.bootstrap {
+		c.bootstrapIDs[entry.ID] = struct{}{}
 		c.entriesByID[entry.ID] = entry
 	}
 	c.rebuildVisibleLocked()
@@ -36,8 +41,10 @@ func NewCatalog(bootstrap []Entry) *Catalog {
 func (c *Catalog) Has(modelID string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	_, ok := c.entriesByID[strings.TrimSpace(modelID)]
-	return ok && c.visibleContainsLocked(strings.TrimSpace(modelID))
+
+	modelID = strings.TrimSpace(modelID)
+	_, ok := c.entriesByID[modelID]
+	return ok && c.visibleContainsLocked(modelID)
 }
 
 func (c *Catalog) Get(modelID string) (Entry, bool) {
@@ -178,12 +185,8 @@ func RoutingKeyForRecord(record accounts.Record) string {
 }
 
 func (c *Catalog) visibleContainsLocked(modelID string) bool {
-	for _, entry := range c.visible {
-		if entry.ID == modelID {
-			return true
-		}
-	}
-	return false
+	_, ok := c.visibleIDs[modelID]
+	return ok
 }
 
 func (c *Catalog) rebuildVisibleLocked() {
@@ -203,6 +206,7 @@ func (c *Catalog) rebuildVisibleLocked() {
 
 	if len(visibleIDs) == 0 {
 		c.visible = cloneEntries(c.bootstrap)
+		c.visibleIDs = cloneSet(c.bootstrapIDs)
 		for _, entry := range c.bootstrap {
 			c.entriesByID[entry.ID] = entry
 		}
@@ -224,6 +228,7 @@ func (c *Catalog) rebuildVisibleLocked() {
 		visible = append(visible, cloneEntry(entry))
 	}
 	c.visible = visible
+	c.visibleIDs = visibleIDs
 }
 
 func (c *Catalog) hasUnrefreshedRoutesLocked() bool {
@@ -236,12 +241,8 @@ func (c *Catalog) hasUnrefreshedRoutesLocked() bool {
 }
 
 func (c *Catalog) bootstrapContainsLocked(modelID string) bool {
-	for _, entry := range c.bootstrap {
-		if entry.ID == modelID {
-			return true
-		}
-	}
-	return false
+	_, ok := c.bootstrapIDs[modelID]
+	return ok
 }
 
 func (c *Catalog) supportsRecordLocked(record accounts.Record, modelID string) bool {
@@ -315,4 +316,12 @@ func cloneEntry(entry Entry) Entry {
 		cloned.SupportedReasoningEfforts = append([]ReasoningEffort(nil), entry.SupportedReasoningEfforts...)
 	}
 	return cloned
+}
+
+func cloneSet(values map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for key := range values {
+		out[key] = struct{}{}
+	}
+	return out
 }

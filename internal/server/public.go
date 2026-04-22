@@ -43,6 +43,12 @@ type sessionResolution struct {
 var errIncompleteResponse = errors.New("upstream stream ended before response.completed")
 var errEmptyChatCompletionsBody = errors.New("request body must include chat messages or responses input")
 
+type openedRequest struct {
+	Resolution sessionResolution
+	Account    accounts.Record
+	Stream     eventStream
+}
+
 func (a *App) handleChatCompletions(c *gin.Context) {
 	body, err := captureRequestBody(c)
 	if err != nil {
@@ -57,34 +63,20 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	resolution, err := a.resolveSession(normalized)
-	if err != nil {
-		if a.writeRequestError(c, err) {
-			return
-		}
-		a.respondOpenAINormalizeError(c, err)
+	opened, ok := a.resolveAndOpenRequest(c, "chat_completions", normalized)
+	if !ok {
+		return
+	}
+	defer opened.Stream.Close()
+
+	if opened.Resolution.Request.Stream {
+		a.streamChatCompletion(c, opened.Account, opened.Resolution.Request, opened.Stream)
 		return
 	}
 
-	account, stream, quota, err := a.openStream(c, c.Request.Context(), "chat_completions", &resolution)
+	accumulator, err := a.collectEvents(opened.Account, opened.Resolution.Request, opened.Stream)
 	if err != nil {
-		a.setRequestAccount(c, account)
-		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, resolution.PreferredAccountID)
-		a.handleOpenStreamError(c, "chat_completions", account.ID, reportedAccountID, err)
-		return
-	}
-	a.setRequestAccount(c, account)
-	defer stream.Close()
-	a.observeQuotaSnapshot(account.ID, quota)
-
-	if resolution.Request.Stream {
-		a.streamChatCompletion(c, account, resolution.Request, stream)
-		return
-	}
-
-	accumulator, err := a.collectEvents(account, resolution.Request, stream)
-	if err != nil {
-		a.respondOpenAIUpstreamStreamError(c, "chat_completions", account.ID, "", err)
+		a.respondOpenAIUpstreamStreamError(c, "chat_completions", opened.Account.ID, "", err)
 		return
 	}
 	response := accumulator.ChatCompletionObject()
@@ -114,34 +106,20 @@ func (a *App) handleResponses(c *gin.Context) {
 		return
 	}
 
-	resolution, err := a.resolveSession(normalized)
-	if err != nil {
-		if a.writeRequestError(c, err) {
-			return
-		}
-		a.respondOpenAINormalizeError(c, err)
+	opened, ok := a.resolveAndOpenRequest(c, "responses", normalized)
+	if !ok {
+		return
+	}
+	defer opened.Stream.Close()
+
+	if opened.Resolution.Request.Stream {
+		a.streamResponses(c, opened.Account, opened.Resolution.Request, opened.Stream)
 		return
 	}
 
-	account, stream, quota, err := a.openStream(c, c.Request.Context(), "responses", &resolution)
+	accumulator, err := a.collectEvents(opened.Account, opened.Resolution.Request, opened.Stream)
 	if err != nil {
-		a.setRequestAccount(c, account)
-		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, resolution.PreferredAccountID)
-		a.handleOpenStreamError(c, "responses", account.ID, reportedAccountID, err)
-		return
-	}
-	a.setRequestAccount(c, account)
-	defer stream.Close()
-	a.observeQuotaSnapshot(account.ID, quota)
-
-	if resolution.Request.Stream {
-		a.streamResponses(c, account, resolution.Request, stream)
-		return
-	}
-
-	accumulator, err := a.collectEvents(account, resolution.Request, stream)
-	if err != nil {
-		a.respondOpenAIUpstreamStreamError(c, "responses", account.ID, "", err)
+		a.respondOpenAIUpstreamStreamError(c, "responses", opened.Account.ID, "", err)
 		return
 	}
 	response := accumulator.ResponsesObject()
@@ -149,6 +127,34 @@ func (a *App) handleResponses(c *gin.Context) {
 		a.logTupleReconversionWarning(c, "responses", accumulator.ResponseID, err)
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func (a *App) resolveAndOpenRequest(c *gin.Context, endpoint string, normalized translate.NormalizedRequest) (openedRequest, bool) {
+	resolution, err := a.resolveSession(normalized)
+	if err != nil {
+		if a.writeRequestError(c, err) {
+			return openedRequest{}, false
+		}
+		a.respondOpenAINormalizeError(c, err)
+		return openedRequest{}, false
+	}
+
+	account, stream, quota, err := a.openStream(c, c.Request.Context(), endpoint, &resolution)
+	if err != nil {
+		a.setRequestAccount(c, account)
+		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, resolution.PreferredAccountID)
+		a.handleOpenStreamError(c, endpoint, account.ID, reportedAccountID, err)
+		return openedRequest{}, false
+	}
+
+	a.setRequestAccount(c, account)
+	a.observeQuotaSnapshot(account.ID, quota)
+
+	return openedRequest{
+		Resolution: resolution,
+		Account:    account,
+		Stream:     stream,
+	}, true
 }
 
 func (a *App) openStream(c *gin.Context, ctx context.Context, endpoint string, resolution *sessionResolution) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {

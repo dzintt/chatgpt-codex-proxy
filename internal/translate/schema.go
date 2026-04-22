@@ -39,59 +39,9 @@ func injectAdditionalProperties(node map[string]any) map[string]any {
 		}
 	}
 
-	if properties, ok := node["properties"].(map[string]any); ok {
-		for key, raw := range properties {
-			if child, ok := raw.(map[string]any); ok {
-				properties[key] = injectAdditionalProperties(child)
-			}
-		}
-	}
-
-	if patternProperties, ok := node["patternProperties"].(map[string]any); ok {
-		for key, raw := range patternProperties {
-			if child, ok := raw.(map[string]any); ok {
-				patternProperties[key] = injectAdditionalProperties(child)
-			}
-		}
-	}
-
-	for _, defsKey := range []string{"$defs", "definitions"} {
-		if defs, ok := node[defsKey].(map[string]any); ok {
-			for key, raw := range defs {
-				if child, ok := raw.(map[string]any); ok {
-					defs[key] = injectAdditionalProperties(child)
-				}
-			}
-		}
-	}
-
-	if items, ok := node["items"].(map[string]any); ok {
-		node["items"] = injectAdditionalProperties(items)
-	}
-
-	if prefixItems, ok := node["prefixItems"].([]any); ok {
-		for i, raw := range prefixItems {
-			if child, ok := raw.(map[string]any); ok {
-				prefixItems[i] = injectAdditionalProperties(child)
-			}
-		}
-	}
-
-	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
-		if entries, ok := node[key].([]any); ok {
-			for i, raw := range entries {
-				if child, ok := raw.(map[string]any); ok {
-					entries[i] = injectAdditionalProperties(child)
-				}
-			}
-		}
-	}
-
-	for _, key := range []string{"if", "then", "else", "not"} {
-		if child, ok := node[key].(map[string]any); ok {
-			node[key] = injectAdditionalProperties(child)
-		}
-	}
+	forEachSchemaChild(node, func(child map[string]any) {
+		injectAdditionalProperties(child)
+	})
 
 	return node
 }
@@ -121,4 +71,67 @@ func cloneJSONMap(value map[string]any) map[string]any {
 		return nil
 	}
 	return cloned
+}
+
+func forEachSchemaChild(node map[string]any, visit func(map[string]any)) {
+	if node == nil || visit == nil {
+		return
+	}
+
+	for _, key := range []string{"properties", "patternProperties", "$defs", "definitions"} {
+		children, ok := node[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range children {
+			child, ok := raw.(map[string]any)
+			if ok {
+				visit(child)
+			}
+		}
+	}
+
+	if items, ok := node["items"].(map[string]any); ok {
+		visit(items)
+	}
+
+	if prefixItems, ok := node["prefixItems"].([]any); ok {
+		for _, raw := range prefixItems {
+			child, ok := raw.(map[string]any)
+			if ok {
+				visit(child)
+			}
+		}
+	}
+
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		entries, ok := node[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range entries {
+			child, ok := raw.(map[string]any)
+			if ok {
+				visit(child)
+			}
+		}
+	}
+
+	for _, key := range []string{"if", "then", "else", "not"} {
+		child, ok := node[key].(map[string]any)
+		if ok {
+			visit(child)
+		}
+	}
+}
+
+func anySchemaChild(node map[string]any, match func(map[string]any) bool) bool {
+	found := false
+	forEachSchemaChild(node, func(child map[string]any) {
+		if found {
+			return
+		}
+		found = match(child)
+	})
+	return found
 }

@@ -16,46 +16,7 @@ func hasTupleSchemas(node map[string]any) bool {
 	if _, ok := node["prefixItems"].([]any); ok {
 		return true
 	}
-
-	if properties, ok := node["properties"].(map[string]any); ok {
-		for _, raw := range properties {
-			if child, ok := raw.(map[string]any); ok && hasTupleSchemas(child) {
-				return true
-			}
-		}
-	}
-
-	if items, ok := node["items"].(map[string]any); ok && hasTupleSchemas(items) {
-		return true
-	}
-
-	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
-		if entries, ok := node[key].([]any); ok {
-			for _, raw := range entries {
-				if child, ok := raw.(map[string]any); ok && hasTupleSchemas(child) {
-					return true
-				}
-			}
-		}
-	}
-
-	for _, key := range []string{"$defs", "definitions"} {
-		if defs, ok := node[key].(map[string]any); ok {
-			for _, raw := range defs {
-				if child, ok := raw.(map[string]any); ok && hasTupleSchemas(child) {
-					return true
-				}
-			}
-		}
-	}
-
-	for _, key := range []string{"if", "then", "else", "not"} {
-		if child, ok := node[key].(map[string]any); ok && hasTupleSchemas(child) {
-			return true
-		}
-	}
-
-	return false
+	return anySchemaChild(node, hasTupleSchemas)
 }
 
 func ConvertTupleSchemas(node map[string]any) map[string]any {
@@ -88,43 +49,9 @@ func convertTupleSchemas(node map[string]any) map[string]any {
 		return node
 	}
 
-	if properties, ok := node["properties"].(map[string]any); ok {
-		for key, raw := range properties {
-			if child, ok := raw.(map[string]any); ok {
-				properties[key] = convertTupleSchemas(child)
-			}
-		}
-	}
-
-	if items, ok := node["items"].(map[string]any); ok {
-		node["items"] = convertTupleSchemas(items)
-	}
-
-	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
-		if entries, ok := node[key].([]any); ok {
-			for i, raw := range entries {
-				if child, ok := raw.(map[string]any); ok {
-					entries[i] = convertTupleSchemas(child)
-				}
-			}
-		}
-	}
-
-	for _, key := range []string{"$defs", "definitions"} {
-		if defs, ok := node[key].(map[string]any); ok {
-			for childKey, raw := range defs {
-				if child, ok := raw.(map[string]any); ok {
-					defs[childKey] = convertTupleSchemas(child)
-				}
-			}
-		}
-	}
-
-	for _, key := range []string{"if", "then", "else", "not"} {
-		if child, ok := node[key].(map[string]any); ok {
-			node[key] = convertTupleSchemas(child)
-		}
-	}
+	forEachSchemaChild(node, func(child map[string]any) {
+		convertTupleSchemas(child)
+	})
 
 	return node
 }
@@ -194,11 +121,14 @@ func reconvertTupleValues(data any, schema map[string]any, root map[string]any) 
 	}
 
 	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
-		if entries, ok := schema[key].([]any); ok {
-			for _, raw := range entries {
-				if child, ok := raw.(map[string]any); ok && hasTupleSchemas(child) {
-					return reconvertTupleValues(data, child, root)
-				}
+		entries, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range entries {
+			child, ok := raw.(map[string]any)
+			if ok && hasTupleSchemas(child) {
+				return reconvertTupleValues(data, child, root)
 			}
 		}
 	}
