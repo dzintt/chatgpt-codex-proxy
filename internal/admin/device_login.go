@@ -50,7 +50,7 @@ func (s *DeviceLoginService) Start(ctx context.Context) (accounts.DeviceLoginRec
 			ExpiresAt: now.Add(s.timeout),
 		},
 		DeviceAuthID: resp.DeviceAuthID,
-		Interval:     time.Duration(maxInt(resp.Interval, 5)) * time.Second,
+		Interval:     time.Duration(max(resp.Interval, 5)) * time.Second,
 	}
 
 	s.mu.Lock()
@@ -147,13 +147,6 @@ func (s *DeviceLoginService) update(loginID string, fn func(*pendingLogin)) {
 		return
 	}
 	fn(login)
-}
-
-func maxInt(value, minimum int) int {
-	if value < minimum {
-		return minimum
-	}
-	return value
 }
 
 func isAuthorizationPending(err error) bool {

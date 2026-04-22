@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/textproto"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -76,9 +75,5 @@ func cloneHeaders(resp *http.Response) http.Header {
 	if resp == nil {
 		return make(http.Header)
 	}
-	out := make(http.Header, len(resp.Header))
-	for key, values := range resp.Header {
-		out[textproto.CanonicalMIMEHeaderKey(key)] = append([]string(nil), values...)
-	}
-	return out
+	return codex.CanonicalHeader(resp.Header)
 }

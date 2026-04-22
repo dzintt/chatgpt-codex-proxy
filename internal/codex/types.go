@@ -3,7 +3,6 @@ package codex
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"chatgpt-codex-proxy/internal/openai"
 )
@@ -181,10 +180,4 @@ type UsageWindow struct {
 	LimitWindowSeconds int     `json:"limit_window_seconds"`
 	ResetAfterSeconds  int     `json:"reset_after_seconds"`
 	ResetAt            int64   `json:"reset_at"`
-}
-
-type RateWindow struct {
-	UsedPercent        float64
-	LimitWindowSeconds int
-	ResetAt            time.Time
 }

@@ -773,7 +773,9 @@ func outputItemKey(item map[string]any, outputIndex int) string {
 	return fmt.Sprintf("anon:%p", item)
 }
 
-func sliceOfMaps(value any) []map[string]any {
+// SliceOfMaps coerces a JSON-decoded value into []map[string]any, copying the
+// outer slice. Returns nil when value is neither []map[string]any nor []any.
+func SliceOfMaps(value any) []map[string]any {
 	switch items := value.(type) {
 	case []map[string]any:
 		return append([]map[string]any(nil), items...)
@@ -790,6 +792,9 @@ func sliceOfMaps(value any) []map[string]any {
 		return nil
 	}
 }
+
+// sliceOfMaps is the internal alias used by this package.
+func sliceOfMaps(value any) []map[string]any { return SliceOfMaps(value) }
 
 func usageFromRaw(value any) *codex.Usage {
 	if value == nil {

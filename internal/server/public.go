@@ -43,7 +43,6 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
-	a.logCompatibilityWarnings(c, "chat_completions", normalized.CompatibilityWarnings)
 
 	account, stream, quota, err := a.openHTTPStream(c, c.Request.Context(), "chat_completions", normalized, "", "")
 	if err != nil {
@@ -91,7 +90,6 @@ func (a *App) handleResponses(c *gin.Context) {
 		a.respondOpenAIInvalidRequest(c, err)
 		return
 	}
-	a.logCompatibilityWarnings(c, "responses", normalized.CompatibilityWarnings)
 
 	preferredID := ""
 	turnState := ""
@@ -578,7 +576,7 @@ func extractUpstreamEventDetails(event *codex.StreamEvent) *codex.UpstreamError 
 		statusCode, ok = serverIntValue(event.Raw["status_code"])
 	}
 	if !ok {
-		statusCode, ok = serverIntValue(event.Raw["status"])
+		statusCode, _ = serverIntValue(event.Raw["status"])
 	}
 	if statusCode == 0 {
 		statusCode = upstreamStatusCodeFromCode(code)
@@ -653,20 +651,7 @@ func serverIntValue(value any) (int, bool) {
 }
 
 func responseMapsFromAny(value any) []map[string]any {
-	switch typed := value.(type) {
-	case []map[string]any:
-		return append([]map[string]any(nil), typed...)
-	case []any:
-		out := make([]map[string]any, 0, len(typed))
-		for _, item := range typed {
-			if mapped, ok := item.(map[string]any); ok {
-				out = append(out, mapped)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	return translate.SliceOfMaps(value)
 }
 
 func continuationInputHistory(accumulator *translate.Accumulator) []accounts.ContinuationInputItem {

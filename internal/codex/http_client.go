@@ -194,7 +194,8 @@ func parseStreamEvent(eventName, data string) (*StreamEvent, error) {
 	}, nil
 }
 
-func toHTTPHeader(headers map[string][]string) http.Header {
+// CanonicalHeader copies headers into an http.Header, canonicalizing keys.
+func CanonicalHeader(headers map[string][]string) http.Header {
 	out := make(http.Header, len(headers))
 	for key, values := range headers {
 		canonical := textproto.CanonicalMIMEHeaderKey(key)
@@ -202,6 +203,8 @@ func toHTTPHeader(headers map[string][]string) http.Header {
 	}
 	return out
 }
+
+func toHTTPHeader(headers map[string][]string) http.Header { return CanonicalHeader(headers) }
 
 // JoinURL trims trailing slashes from base and appends path.
 func JoinURL(base, path string) string {

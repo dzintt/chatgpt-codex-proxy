@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"chatgpt-codex-proxy/internal/accounts"
+	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 func ParseQuotaFromHeaders(headers http.Header) *accounts.QuotaSnapshot {
@@ -97,7 +98,7 @@ func ParseQuotaFromEvent(event *StreamEvent, planType string) *accounts.QuotaSna
 	}
 
 	snapshot := &accounts.QuotaSnapshot{
-		PlanType:  firstNonEmpty(planType, "unknown"),
+		PlanType:  jsonutil.FirstNonEmpty(planType, "unknown"),
 		Source:    "response_event",
 		FetchedAt: time.Now().UTC(),
 		RateLimit: accounts.RateLimitWindow{
@@ -282,18 +283,6 @@ func parseInt(value any) (int, bool) {
 	}
 }
 
-func parseBool(value any) (bool, bool) {
-	switch typed := value.(type) {
-	case bool:
-		return typed, true
-	case string:
-		parsed, err := strconv.ParseBool(typed)
-		return parsed, err == nil
-	default:
-		return false, false
-	}
-}
-
 func parseUnixTime(value any) (time.Time, bool) {
 	switch typed := value.(type) {
 	case int64:
@@ -305,15 +294,6 @@ func parseUnixTime(value any) (time.Time, bool) {
 	default:
 		return time.Time{}, false
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func floatPtr[T any](value *T, getter func(*T) float64) *float64 {

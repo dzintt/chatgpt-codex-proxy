@@ -12,6 +12,7 @@ import (
 	"chatgpt-codex-proxy/internal/translate"
 )
 
+
 func (a *App) logUpstreamRequestFailure(c *gin.Context, endpoint, accountID string, status int, code string, err error) {
 	if a == nil || a.logger == nil || err == nil {
 		return
@@ -46,18 +47,6 @@ func logErrorText(err error) string {
 		return ""
 	}
 	return strings.TrimSpace(err.Error())
-}
-
-func (a *App) logCompatibilityWarnings(c *gin.Context, endpoint string, warnings []translate.CompatibilityWarning) {
-	if a == nil || a.logger == nil || len(warnings) == 0 {
-		return
-	}
-
-	for _, warning := range warnings {
-		attrs := contextLogAttrs(c, endpoint)
-		attrs = append(attrs, "field", warning.Field, "behavior", warning.Behavior, "detail", warning.Detail)
-		// a.logger.Warn("request compatibility warning", attrs...)
-	}
 }
 
 func (a *App) logTupleReconversionWarning(c *gin.Context, endpoint, responseID string, err error) {
