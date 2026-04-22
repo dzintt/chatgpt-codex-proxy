@@ -108,7 +108,10 @@ func TestToolDefinitionRoundTripPreservesCustomFields(t *testing.T) {
 	if got := tool.Format["type"]; got != "grammar" {
 		t.Fatalf("Format[type] = %#v, want grammar", got)
 	}
-	metadata, _ := tool.ExtraFields["metadata"].(map[string]any)
+	var metadata map[string]any
+	if err := json.Unmarshal(tool.ExtraFields["metadata"], &metadata); err != nil {
+		t.Fatalf("metadata unmarshal error = %v", err)
+	}
 	if got := metadata["origin"]; got != "cursor" {
 		t.Fatalf("ExtraFields[metadata][origin] = %#v, want cursor", got)
 	}

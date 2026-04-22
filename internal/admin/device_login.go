@@ -7,12 +7,31 @@ import (
 	"time"
 
 	"chatgpt-codex-proxy/internal/accounts"
-	"chatgpt-codex-proxy/internal/codex"
 )
+
+type oauthProvider interface {
+	DeviceAuthURL() string
+	RequestDeviceCode(context.Context) (OAuthDeviceCode, error)
+	PollDeviceCode(context.Context, string, string) (*OAuthDevicePollResult, error)
+	ExchangeAuthorizationCode(context.Context, string, string) (accounts.OAuthToken, string, error)
+}
+
+// OAuthDeviceCode is the device-code payload needed by the admin login flow.
+type OAuthDeviceCode struct {
+	UserCode     string
+	DeviceAuthID string
+	Interval     int
+}
+
+// OAuthDevicePollResult is the completed device poll payload used to exchange tokens.
+type OAuthDevicePollResult struct {
+	AuthorizationCode string
+	CodeVerifier      string
+}
 
 type DeviceLoginService struct {
 	mu       sync.RWMutex
-	oauth    *codex.OAuthService
+	oauth    oauthProvider
 	accounts *accounts.Service
 	timeout  time.Duration
 	logins   map[string]*pendingLogin
@@ -24,7 +43,7 @@ type pendingLogin struct {
 	Interval     time.Duration
 }
 
-func NewDeviceLoginService(oauth *codex.OAuthService, accountsSvc *accounts.Service, timeout time.Duration) *DeviceLoginService {
+func NewDeviceLoginService(oauth oauthProvider, accountsSvc *accounts.Service, timeout time.Duration) *DeviceLoginService {
 	return &DeviceLoginService{
 		oauth:    oauth,
 		accounts: accountsSvc,
@@ -166,4 +185,3 @@ func (s *DeviceLoginService) DeleteExpired(now time.Time) {
 		}
 	}
 }
-

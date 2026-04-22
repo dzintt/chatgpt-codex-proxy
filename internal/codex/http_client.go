@@ -105,10 +105,10 @@ func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record,
 		return nil, err
 	}
 	if streamResp.StatusCode < 200 || streamResp.StatusCode >= 300 {
-		data, _ := io.ReadAll(streamResp)
+		data := readLimitedErrorBody(streamResp)
 		headers := toHTTPHeader(streamResp.Headers)
 		streamResp.Close()
-		return nil, NewUpstreamError("codex response", streamResp.StatusCode, string(data), headers)
+		return nil, NewUpstreamError("codex response", streamResp.StatusCode, data, headers)
 	}
 
 	return &StreamReader{
@@ -181,7 +181,9 @@ func parseStreamEvent(eventName, data string) (*StreamEvent, error) {
 		return nil, io.EOF
 	}
 	var raw map[string]any
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		return nil, err
 	}
 	eventType := strings.TrimSpace(eventName)

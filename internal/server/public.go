@@ -642,16 +642,22 @@ func serverIntValue(value any) (int, bool) {
 		return int(typed), true
 	case float64:
 		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed), true
+		}
+		floatValue, floatErr := typed.Float64()
+		if floatErr == nil {
+			return int(floatValue), true
+		}
+		return 0, false
 	case string:
 		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
 		return parsed, err == nil
 	default:
 		return 0, false
 	}
-}
-
-func responseMapsFromAny(value any) []map[string]any {
-	return translate.SliceOfMaps(value)
 }
 
 func continuationInputHistory(accumulator *translate.Accumulator) []accounts.ContinuationInputItem {
@@ -698,9 +704,9 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 		jsonutil.StringValue(item["status"]),
 		jsonutil.StringValue(item["encrypted_content"]),
 	)
-	out.Summary = continuationSummaryPartsFromMaps(responseMapsFromAny(item["summary"]))
-	out.Content = continuationContentPartsFromMaps(responseMapsFromAny(item["content"]))
-	out.OutputContent = continuationContentPartsFromMaps(responseMapsFromAny(item["output"]))
+	out.Summary = continuationSummaryPartsFromMaps(translate.SliceOfMaps(item["summary"]))
+	out.Content = continuationContentPartsFromMaps(translate.SliceOfMaps(item["content"]))
+	out.OutputContent = continuationContentPartsFromMaps(translate.SliceOfMaps(item["output"]))
 	if out.Role == "" && out.Type == "message" {
 		out.Role = "assistant"
 	}
@@ -789,31 +795,11 @@ func continuationSummaryPartsFromMaps(parts []map[string]any) []accounts.Continu
 }
 
 func continuationSummaryPartsFromReasoning(parts []openai.ReasoningPart) []accounts.ContinuationSummaryPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]accounts.ContinuationSummaryPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, accounts.ContinuationSummaryPart{
-			Type: part.Type,
-			Text: part.Text,
-		})
-	}
-	return out
+	return append([]accounts.ContinuationSummaryPart(nil), parts...)
 }
 
 func reasoningPartsFromContinuation(parts []accounts.ContinuationSummaryPart) []openai.ReasoningPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]openai.ReasoningPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, openai.ReasoningPart{
-			Type: part.Type,
-			Text: part.Text,
-		})
-	}
-	return out
+	return append([]openai.ReasoningPart(nil), parts...)
 }
 
 func continuationContentPartsFromMaps(parts []map[string]any) []accounts.ContinuationContentPart {
@@ -837,43 +823,11 @@ func continuationContentPartsFromMaps(parts []map[string]any) []accounts.Continu
 }
 
 func continuationContentPartsFromCodex(parts []codex.ContentPart) []accounts.ContinuationContentPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]accounts.ContinuationContentPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, accounts.ContinuationContentPart{
-			Type:     part.Type,
-			Text:     part.Text,
-			ImageURL: part.ImageURL,
-			Detail:   part.Detail,
-			FileURL:  part.FileURL,
-			FileData: part.FileData,
-			FileID:   part.FileID,
-			Filename: part.Filename,
-		})
-	}
-	return out
+	return append([]accounts.ContinuationContentPart(nil), parts...)
 }
 
 func codexContentPartsFromContinuation(parts []accounts.ContinuationContentPart) []codex.ContentPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]codex.ContentPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, codex.ContentPart{
-			Type:     part.Type,
-			Text:     part.Text,
-			ImageURL: part.ImageURL,
-			Detail:   part.Detail,
-			FileURL:  part.FileURL,
-			FileData: part.FileData,
-			FileID:   part.FileID,
-			Filename: part.Filename,
-		})
-	}
-	return out
+	return append([]codex.ContentPart(nil), parts...)
 }
 
 func captureRequestBody(c *gin.Context) ([]byte, error) {

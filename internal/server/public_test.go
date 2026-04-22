@@ -1683,13 +1683,5 @@ func nestedMapFromAny(value any) map[string]any {
 }
 
 func sliceOfMapsFromAny(value any) []map[string]any {
-	items, _ := value.([]any)
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		mapped, _ := item.(map[string]any)
-		if mapped != nil {
-			out = append(out, mapped)
-		}
-	}
-	return out
+	return translate.SliceOfMaps(value)
 }

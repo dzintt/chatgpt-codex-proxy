@@ -1,0 +1,80 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/gorilla/websocket"
+)
+
+// WSClient opens and initializes Codex websocket response streams.
+type WSClient struct{}
+
+// NewWSClient constructs a websocket client for Codex response streams.
+func NewWSClient() *WSClient {
+	return &WSClient{}
+}
+
+// WSStream wraps a websocket connection and exposes the event-stream interface used by the server package.
+type WSStream struct {
+	conn    *websocket.Conn
+	headers http.Header
+}
+
+func (c *WSClient) Connect(ctx context.Context, endpoint string, headers http.Header, body any) (*WSStream, error) {
+	dialer := websocket.Dialer{}
+	conn, resp, err := dialer.DialContext(ctx, endpoint, headers)
+	if err != nil {
+		if resp != nil {
+			payload := readLimitedErrorBody(resp.Body)
+			resp.Body.Close()
+			return nil, NewUpstreamError("websocket dial", resp.StatusCode, payload, resp.Header)
+		}
+		return nil, err
+	}
+	if err := conn.WriteJSON(body); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &WSStream{
+		conn:    conn,
+		headers: cloneResponseHeaders(resp),
+	}, nil
+}
+
+func (s *WSStream) Close() error {
+	return s.conn.Close()
+}
+
+func (s *WSStream) Headers() http.Header {
+	return s.headers.Clone()
+}
+
+func (s *WSStream) NextEvent() (*StreamEvent, error) {
+	_, message, err := s.conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(message, &raw); err != nil {
+		return nil, err
+	}
+	eventType := ""
+	if typ, ok := raw["type"].(string); ok {
+		eventType = typ
+	}
+	if strings.TrimSpace(eventType) == "" {
+		return nil, io.EOF
+	}
+	return &StreamEvent{Type: eventType, Raw: raw}, nil
+}
+
+func cloneResponseHeaders(resp *http.Response) http.Header {
+	if resp == nil {
+		return make(http.Header)
+	}
+	return resp.Header.Clone()
+}

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,13 +86,13 @@ func ParseQuotaFromEvent(event *StreamEvent, planType string) *accounts.QuotaSna
 	if event == nil || event.Type != "codex.rate_limits" {
 		return nil
 	}
-	rateLimits, _ := event.Raw["rate_limits"].(map[string]any)
+	rateLimits := jsonutil.MapValue(event.Raw, "rate_limits")
 	if rateLimits == nil {
 		return nil
 	}
 
-	primary := parseEventRateWindow(rateLimits["primary"])
-	secondary := parseEventRateWindow(rateLimits["secondary"])
+	primary := parseEventRateWindow(jsonutil.MapValue(rateLimits, "primary"))
+	secondary := parseEventRateWindow(jsonutil.MapValue(rateLimits, "secondary"))
 	codeReview := parseEventRateWindow(firstMapValue(rateLimits, "code_review", "code_review_rate_limit"))
 	if primary == nil && secondary == nil && codeReview == nil {
 		return nil
@@ -146,8 +147,7 @@ func parseRateWindow(headers http.Header, prefix string) *accounts.RateLimitWind
 	return window
 }
 
-func parseEventRateWindow(value any) *accounts.RateLimitWindow {
-	raw, _ := value.(map[string]any)
+func parseEventRateWindow(raw map[string]any) *accounts.RateLimitWindow {
 	if raw == nil {
 		return nil
 	}
@@ -172,9 +172,9 @@ func parseEventRateWindow(value any) *accounts.RateLimitWindow {
 	return window
 }
 
-func firstMapValue(values map[string]any, keys ...string) any {
+func firstMapValue(values map[string]any, keys ...string) map[string]any {
 	for _, key := range keys {
-		if value, ok := values[key]; ok {
+		if value, ok := values[key].(map[string]any); ok {
 			return value
 		}
 	}
@@ -265,6 +265,9 @@ func parseFloat(value any) (float64, bool) {
 		return float64(typed), true
 	case int64:
 		return float64(typed), true
+	case json.Number:
+		number, err := typed.Float64()
+		return number, err == nil
 	default:
 		return 0, false
 	}
@@ -278,6 +281,9 @@ func parseInt(value any) (int, bool) {
 		return int(typed), true
 	case float64:
 		return int(typed), true
+	case json.Number:
+		number, err := typed.Int64()
+		return int(number), err == nil
 	default:
 		return 0, false
 	}
@@ -291,6 +297,16 @@ func parseUnixTime(value any) (time.Time, bool) {
 		return time.Unix(int64(typed), 0).UTC(), true
 	case float64:
 		return time.Unix(int64(typed), 0).UTC(), true
+	case json.Number:
+		number, err := typed.Int64()
+		if err == nil {
+			return time.Unix(number, 0).UTC(), true
+		}
+		floatValue, floatErr := typed.Float64()
+		if floatErr == nil {
+			return time.Unix(int64(floatValue), 0).UTC(), true
+		}
+		return time.Time{}, false
 	default:
 		return time.Time{}, false
 	}

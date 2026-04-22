@@ -1,9 +1,9 @@
 package accounts
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"strings"
+
+	"chatgpt-codex-proxy/internal/jwtutil"
 )
 
 type tokenMetadata struct {
@@ -64,18 +64,8 @@ func metadataFromToken(token OAuthToken) tokenMetadata {
 }
 
 func parseJWTClaims(token string) (jwtClaims, bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return jwtClaims{}, false
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return jwtClaims{}, false
-	}
-
 	var claims jwtClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	if !jwtutil.DecodePayload(token, &claims) {
 		return jwtClaims{}, false
 	}
 	return claims, true

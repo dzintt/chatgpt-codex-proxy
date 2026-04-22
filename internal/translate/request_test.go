@@ -290,8 +290,8 @@ func TestChatCompletionsTranslationPreservesCustomToolShape(t *testing.T) {
 				"type":       "grammar",
 				"definition": "start: item+",
 			},
-			ExtraFields: map[string]any{
-				"metadata": map[string]any{"origin": "cursor"},
+			ExtraFields: map[string]json.RawMessage{
+				"metadata": json.RawMessage(`{"origin":"cursor"}`),
 			},
 		}},
 		ToolChoice: json.RawMessage(`{"type":"custom","name":"ApplyPatch"}`),
@@ -314,7 +314,10 @@ func TestChatCompletionsTranslationPreservesCustomToolShape(t *testing.T) {
 	if got := normalized.Tools[0].Format["type"]; got != "grammar" {
 		t.Fatalf("tool format type = %#v, want grammar", got)
 	}
-	metadata, _ := normalized.Tools[0].ExtraFields["metadata"].(map[string]any)
+	var metadata map[string]any
+	if err := json.Unmarshal(normalized.Tools[0].ExtraFields["metadata"], &metadata); err != nil {
+		t.Fatalf("metadata unmarshal error = %v", err)
+	}
 	if got := metadata["origin"]; got != "cursor" {
 		t.Fatalf("tool metadata origin = %#v, want cursor", got)
 	}
@@ -695,6 +698,34 @@ func TestUnsupportedContentPartRejected(t *testing.T) {
 	}, "gpt-5.4")
 	if err == nil {
 		t.Fatal("expected unsupported content part error")
+	}
+}
+
+func TestChatCompletionsTranslationRejectsInvalidToolCallContent(t *testing.T) {
+	t.Parallel()
+
+	_, err := ChatCompletions(openai.ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []openai.ChatMessage{{
+			Role: "assistant",
+			Content: openai.MessageContent{{
+				Type: "image_url",
+			}},
+			ToolCalls: []openai.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: openai.FunctionPayload{
+					Name:      "lookup_weather",
+					Arguments: `{"city":"SF"}`,
+				},
+			}},
+		}},
+	}, "gpt-5.4")
+	if err == nil {
+		t.Fatal("expected invalid tool call content error")
+	}
+	if got := err.Error(); got != "image_url.url is required" {
+		t.Fatalf("error = %q, want image_url.url is required", got)
 	}
 }
 

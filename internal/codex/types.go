@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"chatgpt-codex-proxy/internal/conversation"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
@@ -57,9 +58,7 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	if i.Type != "" {
 		payload["type"] = i.Type
 	}
-	if content, ok := inputItemContentValue(i); ok {
-		payload["content"] = content
-	}
+	appendInputItemContent(payload, i)
 	if i.CallID != "" {
 		payload["call_id"] = i.CallID
 	}
@@ -72,9 +71,7 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	if i.Arguments != "" {
 		payload["arguments"] = i.Arguments
 	}
-	if output, ok := inputItemOutputValue(i); ok {
-		payload["output"] = output
-	}
+	appendInputItemOutput(payload, i)
 	if i.ID != "" {
 		payload["id"] = i.ID
 	}
@@ -90,12 +87,13 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func inputItemContentValue(item InputItem) (any, bool) {
+func appendInputItemContent(payload map[string]any, item InputItem) {
 	if len(item.Content) == 0 {
-		return nil, false
+		return
 	}
 	if item.Role == "" {
-		return item.Content, true
+		payload["content"] = item.Content
+		return
 	}
 
 	textParts := make([]string, 0, len(item.Content))
@@ -106,35 +104,28 @@ func inputItemContentValue(item InputItem) (any, bool) {
 				textParts = append(textParts, part.Text)
 			}
 		default:
-			return item.Content, true
+			payload["content"] = item.Content
+			return
 		}
 	}
-	return strings.Join(textParts, "\n"), true
+	payload["content"] = strings.Join(textParts, "\n")
 }
 
-func inputItemOutputValue(item InputItem) (any, bool) {
+func appendInputItemOutput(payload map[string]any, item InputItem) {
 	if len(item.OutputContent) > 0 {
-		return item.OutputContent, true
+		payload["output"] = item.OutputContent
+		return
 	}
 	if item.OutputText != "" {
-		return item.OutputText, true
+		payload["output"] = item.OutputText
+		return
 	}
 	if item.Type == "function_call_output" || item.Type == "custom_tool_call_output" {
-		return "", true
+		payload["output"] = ""
 	}
-	return nil, false
 }
 
-type ContentPart struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	ImageURL string `json:"image_url,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	FileURL  string `json:"file_url,omitempty"`
-	FileData string `json:"file_data,omitempty"`
-	FileID   string `json:"file_id,omitempty"`
-	Filename string `json:"filename,omitempty"`
-}
+type ContentPart = conversation.ContentPart
 
 type Usage struct {
 	InputTokens     int64  `json:"input_tokens"`

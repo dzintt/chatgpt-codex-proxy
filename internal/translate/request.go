@@ -61,7 +61,11 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 			}
 		case "user", "assistant":
 			if len(message.ToolCalls) > 0 {
-				if parts := normalizeContentParts(message.Content); len(parts) > 0 {
+				parts, err := normalizeContentPartsChecked(message.Content)
+				if err != nil {
+					return NormalizedRequest{}, err
+				}
+				if len(parts) > 0 {
 					out.Input = append(out.Input, codex.InputItem{
 						Role:    message.Role,
 						Content: parts,
@@ -417,22 +421,10 @@ func normalizeToolChoice(raw json.RawMessage) json.RawMessage {
 			name = strings.TrimSpace(choice.Function.Name)
 		}
 		if name != "" {
-			data, _ := json.Marshal(struct {
-				Type string `json:"type"`
-				Name string `json:"name"`
-			}{
-				Type: "function",
-				Name: name,
-			})
-			return data
+			return functionToolChoiceJSON(name)
 		}
 	case "web_search", "web_search_preview":
-		data, _ := json.Marshal(struct {
-			Type string `json:"type"`
-		}{
-			Type: "web_search",
-		})
-		return data
+		return webSearchToolChoiceJSON()
 	}
 	return append(json.RawMessage(nil), raw...)
 }
@@ -446,14 +438,7 @@ func normalizeLegacyFunctionChoice(choice *openai.LegacyFunctionCallChoice) json
 		return mustJSONString(choice.Mode)
 	}
 	if name := strings.TrimSpace(choice.Name); name != "" {
-		data, _ := json.Marshal(struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		}{
-			Type: "function",
-			Name: name,
-		})
-		return data
+		return functionToolChoiceJSON(name)
 	}
 	return nil
 }
@@ -485,11 +470,6 @@ func normalizeChatResponseFormat(format *openai.ResponseFormat) (*codex.TextConf
 	default:
 		return nil, nil, fmt.Errorf("unsupported response_format %q", format.Type)
 	}
-}
-
-func normalizeContentParts(parts openai.MessageContent) []codex.ContentPart {
-	out, _ := normalizeContentPartsChecked(parts)
-	return out
 }
 
 func reasoningInclude(reasoning *codex.Reasoning) []string {
@@ -547,6 +527,14 @@ func normalizeContentPartsChecked(parts openai.MessageContent) ([]codex.ContentP
 
 func mustJSONString(value string) json.RawMessage {
 	return json.RawMessage(strconv.Quote(value))
+}
+
+func functionToolChoiceJSON(name string) json.RawMessage {
+	return json.RawMessage(`{"type":"function","name":` + strconv.Quote(name) + `}`)
+}
+
+func webSearchToolChoiceJSON() json.RawMessage {
+	return json.RawMessage(`{"type":"web_search"}`)
 }
 
 func flattenContent(content openai.MessageContent) (string, error) {

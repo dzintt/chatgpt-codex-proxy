@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -134,60 +135,62 @@ func parseRetryAfterHeaders(headers http.Header) int {
 type upstreamErrorEnvelope struct {
 	Error           *upstreamErrorFields `json:"error"`
 	Code            string               `json:"code"`
-	ResetsInSeconds any                  `json:"resets_in_seconds"`
-	RetryAfter      any                  `json:"retry_after"`
-	ResetsAt        any                  `json:"resets_at"`
+	ResetsInSeconds json.RawMessage      `json:"resets_in_seconds"`
+	RetryAfter      json.RawMessage      `json:"retry_after"`
+	ResetsAt        json.RawMessage      `json:"resets_at"`
 }
 
 type upstreamErrorFields struct {
-	Code            string `json:"code"`
-	ResetsInSeconds any    `json:"resets_in_seconds"`
-	RetryAfter      any    `json:"retry_after"`
-	ResetsAt        any    `json:"resets_at"`
+	Code            string          `json:"code"`
+	ResetsInSeconds json.RawMessage `json:"resets_in_seconds"`
+	RetryAfter      json.RawMessage `json:"retry_after"`
+	ResetsAt        json.RawMessage `json:"resets_at"`
 }
 
-func parseRetryAfterValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case float64:
-		if typed > 0 {
-			return int(typed), true
-		}
-	case int:
-		if typed > 0 {
-			return typed, true
-		}
-	case int64:
-		if typed > 0 {
-			return int(typed), true
-		}
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err == nil && parsed > 0 {
-			return parsed, true
-		}
+func parseRetryAfterValue(raw json.RawMessage) (int, bool) {
+	if parsed, ok := parsePositiveInt64(raw); ok && parsed > 0 {
+		return int(parsed), true
 	}
 	return 0, false
 }
 
-func parseUnixTimestamp(value any) (time.Time, bool) {
-	switch typed := value.(type) {
-	case float64:
-		if typed > 0 {
-			return time.Unix(int64(typed), 0).UTC(), true
-		}
-	case int:
-		if typed > 0 {
-			return time.Unix(int64(typed), 0).UTC(), true
-		}
-	case int64:
-		if typed > 0 {
-			return time.Unix(typed, 0).UTC(), true
-		}
-	case string:
-		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
-		if err == nil && parsed > 0 {
-			return time.Unix(parsed, 0).UTC(), true
-		}
+func parseUnixTimestamp(raw json.RawMessage) (time.Time, bool) {
+	if parsed, ok := parsePositiveInt64(raw); ok && parsed > 0 {
+		return time.Unix(parsed, 0).UTC(), true
 	}
 	return time.Time{}, false
+}
+
+func parsePositiveInt64(raw json.RawMessage) (int64, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, false
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(trimmed, &number); err == nil {
+		if value, err := number.Int64(); err == nil && value > 0 {
+			return value, true
+		}
+		if value, err := number.Float64(); err == nil && value > 0 {
+			return int64(value), true
+		}
+		return 0, false
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return 0, false
+		}
+		if value, err := strconv.ParseInt(text, 10, 64); err == nil && value > 0 {
+			return value, true
+		}
+		if value, err := strconv.ParseFloat(text, 64); err == nil && value > 0 {
+			return int64(value), true
+		}
+	}
+
+	return 0, false
 }

@@ -957,45 +957,14 @@ func PatchChatCompletionObjectForTuple(object map[string]any, schema map[string]
 	if message == nil {
 		return nil
 	}
-
-	reconverted, err := ReconvertJSONText(jsonutil.StringValue(message["content"]), schema)
-	if err != nil {
-		return err
-	}
-	message["content"] = reconverted
-	return nil
+	return patchTupleTextField(message, "content", schema)
 }
 
 func PatchResponsesObjectForTuple(object map[string]any, schema map[string]any) error {
 	if schema == nil || len(object) == 0 {
 		return nil
 	}
-
-	if text := jsonutil.StringValue(object["output_text"]); strings.TrimSpace(text) != "" {
-		reconverted, err := ReconvertJSONText(text, schema)
-		if err != nil {
-			return err
-		}
-		object["output_text"] = reconverted
-	}
-
-	for _, item := range sliceOfMaps(object["output"]) {
-		if jsonutil.StringValue(item["type"]) != "message" {
-			continue
-		}
-		for _, content := range sliceOfMaps(item["content"]) {
-			if jsonutil.StringValue(content["type"]) != "output_text" {
-				continue
-			}
-			reconverted, err := ReconvertJSONText(jsonutil.StringValue(content["text"]), schema)
-			if err != nil {
-				return err
-			}
-			content["text"] = reconverted
-		}
-	}
-
-	return nil
+	return patchTupleResponseBody(object, schema)
 }
 
 func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[string]any) error {
@@ -1007,16 +976,18 @@ func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[st
 	if response == nil {
 		return nil
 	}
+	return patchTupleResponseBody(response, schema)
+}
 
-	if text := jsonutil.StringValue(response["output_text"]); strings.TrimSpace(text) != "" {
-		reconverted, err := ReconvertJSONText(text, schema)
-		if err != nil {
-			return err
-		}
-		response["output_text"] = reconverted
+func patchTupleResponseBody(response map[string]any, schema map[string]any) error {
+	if err := patchTupleTextField(response, "output_text", schema); err != nil {
+		return err
 	}
+	return patchTupleOutputMessages(sliceOfMaps(response["output"]), schema)
+}
 
-	for _, item := range sliceOfMaps(response["output"]) {
+func patchTupleOutputMessages(items []map[string]any, schema map[string]any) error {
+	for _, item := range items {
 		if jsonutil.StringValue(item["type"]) != "message" {
 			continue
 		}
@@ -1024,13 +995,23 @@ func PatchResponseCompletedPayloadForTuple(payload map[string]any, schema map[st
 			if jsonutil.StringValue(content["type"]) != "output_text" {
 				continue
 			}
-			reconverted, err := ReconvertJSONText(jsonutil.StringValue(content["text"]), schema)
-			if err != nil {
+			if err := patchTupleTextField(content, "text", schema); err != nil {
 				return err
 			}
-			content["text"] = reconverted
 		}
 	}
+	return nil
+}
 
+func patchTupleTextField(target map[string]any, key string, schema map[string]any) error {
+	text := jsonutil.StringValue(target[key])
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	reconverted, err := ReconvertJSONText(text, schema)
+	if err != nil {
+		return err
+	}
+	target[key] = reconverted
 	return nil
 }

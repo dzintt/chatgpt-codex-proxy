@@ -38,14 +38,6 @@ Use it for local or small-scale deployments.
 - Local JSON persistence for accounts and cached quota state
 - Automatic recovery when cached quota or transient cooldown windows expire
 
-## What It Does Not Try To Be
-
-- A full public OpenAI API implementation
-- A reimplementation of the ChatGPT desktop app
-- A distributed or multi-node service
-- A dashboard product
-- A generic credential vault
-
 ## How It Works
 
 1. A Gin server accepts OpenAI-style HTTP requests.
@@ -79,9 +71,8 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
 - `internal/translate`
   OpenAI-to-Codex request translation and response shaping.
 - `internal/codex`
-  Upstream Codex types, headers, OAuth, quota parsing, and HTTP transport.
-- `internal/codex/wsclient`
-  WebSocket client kept for upstream continuation support.
+  Upstream Codex types, headers, OAuth, quota parsing, plus HTTP and WebSocket
+  transport for upstream continuation support.
 - `internal/accounts`
   Account records, cached quota state, continuation affinity, and rotation logic.
 - `internal/admin`
@@ -508,8 +499,5 @@ The live suite currently checks:
 ## Limitations
 
 - The upstream Codex backend is private and may change without notice.
-- This project is single-process only.
-- There is no database backend.
-- There is no dashboard UI.
 - Account onboarding is device-auth only.
 - The implementation is intentionally small and does not aim to cover every edge case of the public OpenAI platform.

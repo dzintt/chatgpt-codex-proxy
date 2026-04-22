@@ -3,6 +3,8 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+
+	"chatgpt-codex-proxy/internal/conversation"
 )
 
 type ChatCompletionsRequest struct {
@@ -144,16 +146,16 @@ func (i *ImageURLValue) UnmarshalJSON(data []byte) error {
 }
 
 type ToolDefinition struct {
-	Type              string         `json:"type"`
-	Function          *FunctionTool  `json:"function,omitempty"`
-	Name              string         `json:"name,omitempty"`
-	Description       string         `json:"description,omitempty"`
-	Parameters        map[string]any `json:"parameters,omitempty"`
-	Format            map[string]any `json:"format,omitempty"`
-	Strict            bool           `json:"strict,omitempty"`
-	SearchContextSize string         `json:"search_context_size,omitempty"`
-	UserLocation      map[string]any `json:"user_location,omitempty"`
-	ExtraFields       map[string]any `json:"-"`
+	Type              string                     `json:"type"`
+	Function          *FunctionTool              `json:"function,omitempty"`
+	Name              string                     `json:"name,omitempty"`
+	Description       string                     `json:"description,omitempty"`
+	Parameters        map[string]any             `json:"parameters,omitempty"`
+	Format            map[string]any             `json:"format,omitempty"`
+	Strict            bool                       `json:"strict,omitempty"`
+	SearchContextSize string                     `json:"search_context_size,omitempty"`
+	UserLocation      map[string]any             `json:"user_location,omitempty"`
+	ExtraFields       map[string]json.RawMessage `json:"-"`
 }
 
 func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
@@ -177,13 +179,9 @@ func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
 	delete(raw, "search_context_size")
 	delete(raw, "user_location")
 
-	extra := make(map[string]any, len(raw))
+	extra := make(map[string]json.RawMessage, len(raw))
 	for key, value := range raw {
-		var decodedValue any
-		if err := json.Unmarshal(value, &decodedValue); err != nil {
-			return err
-		}
-		extra[key] = decodedValue
+		extra[key] = append(json.RawMessage(nil), value...)
 	}
 	decoded.ExtraFields = extra
 	*t = ToolDefinition(decoded)
@@ -200,7 +198,7 @@ func (t ToolDefinition) MarshalJSON() ([]byte, error) {
 		return base, nil
 	}
 
-	var payload map[string]any
+	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(base, &payload); err != nil {
 		return nil, err
 	}
@@ -208,7 +206,7 @@ func (t ToolDefinition) MarshalJSON() ([]byte, error) {
 		if _, exists := payload[key]; exists {
 			continue
 		}
-		payload[key] = value
+		payload[key] = append(json.RawMessage(nil), value...)
 	}
 	return json.Marshal(payload)
 }
@@ -387,7 +385,4 @@ func isResponseOutputContentPart(part ContentPart) bool {
 	}
 }
 
-type ReasoningPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
+type ReasoningPart = conversation.ReasoningPart

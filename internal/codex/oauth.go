@@ -2,10 +2,8 @@ package codex
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +12,7 @@ import (
 
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/config"
+	"chatgpt-codex-proxy/internal/jwtutil"
 )
 
 const (
@@ -238,16 +237,8 @@ func extractAccountID(raw oauthTokenResponse) string {
 }
 
 func parseJWTClaims(token string) oauthClaims {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return oauthClaims{}
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return oauthClaims{}
-	}
 	var claims oauthClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	if !jwtutil.DecodePayload(token, &claims) {
 		return oauthClaims{}
 	}
 	return claims
@@ -282,12 +273,14 @@ func doJSONAllowPending[T any](ctx context.Context, client *http.Client, method,
 	}
 	defer resp.Body.Close()
 	if _, ok := pendingStatuses[resp.StatusCode]; ok {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 32*1024))
+		if err := drainLimitedBody(resp.Body); err != nil {
+			return zero, false, fmt.Errorf("drain pending oauth response: %w", err)
+		}
 		return zero, true, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
-		return zero, false, fmt.Errorf("oauth request failed: %s", strings.TrimSpace(string(bodyBytes)))
+		bodyText := strings.TrimSpace(readLimitedErrorBody(resp.Body))
+		return zero, false, fmt.Errorf("oauth request failed: %s", bodyText)
 	}
 	var decoded T
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
@@ -308,12 +301,12 @@ func doForm(ctx context.Context, client *http.Client, endpoint string, values ur
 		return oauthTokenResponse{}, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	bodyText := readLimitedErrorBody(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return oauthTokenResponse{}, fmt.Errorf("oauth token exchange failed: %s", strings.TrimSpace(string(body)))
+		return oauthTokenResponse{}, fmt.Errorf("oauth token exchange failed: %s", strings.TrimSpace(bodyText))
 	}
 	var decoded oauthTokenResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	if err := json.Unmarshal([]byte(bodyText), &decoded); err != nil {
 		return oauthTokenResponse{}, err
 	}
 	return decoded, nil

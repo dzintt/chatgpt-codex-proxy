@@ -15,7 +15,6 @@ import (
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/admin"
 	"chatgpt-codex-proxy/internal/codex"
-	"chatgpt-codex-proxy/internal/codex/wsclient"
 	"chatgpt-codex-proxy/internal/config"
 	"chatgpt-codex-proxy/internal/middleware"
 	"chatgpt-codex-proxy/internal/store"
@@ -29,7 +28,7 @@ type App struct {
 	deviceLogins  *admin.DeviceLoginService
 	accountMgr    *codex.AccountManager
 	httpClient    *codex.HTTPClient
-	wsClient      *wsclient.Client
+	wsClient      *codex.WSClient
 	continuations *accounts.ContinuationManager
 	cancel        context.CancelFunc
 }
@@ -44,7 +43,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	httpClient := codex.NewHTTPClient(cfg)
 	oauthSvc := codex.NewOAuthService(cfg)
 	accountMgr := codex.NewAccountManager(cfg, accountsSvc, oauthSvc, httpClient)
-	deviceLogins := admin.NewDeviceLoginService(oauthSvc, accountsSvc, cfg.LoginTimeout)
+	deviceLogins := admin.NewDeviceLoginService(adminOAuthProvider{oauth: oauthSvc}, accountsSvc, cfg.LoginTimeout)
 
 	engine := gin.New()
 	engine.SetTrustedProxies(nil)
@@ -64,7 +63,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		deviceLogins:  deviceLogins,
 		accountMgr:    accountMgr,
 		httpClient:    httpClient,
-		wsClient:      wsclient.New(),
+		wsClient:      codex.NewWSClient(),
 		continuations: accounts.NewContinuationManager(cfg.ContinuationTTL),
 	}
 	app.routes()

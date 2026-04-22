@@ -74,7 +74,10 @@ func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.R
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
 		return accounts.Record{}, err
 	}
-	updated, _ := m.accounts.Get(id)
+	updated, ok := m.accounts.Get(id)
+	if !ok {
+		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
+	}
 	return updated, nil
 }
 
@@ -95,7 +98,10 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
 		return accounts.Record{}, err
 	}
-	updated, _ := m.accounts.Get(id)
+	updated, ok := m.accounts.Get(id)
+	if !ok {
+		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
+	}
 	return updated, nil
 }
 
@@ -120,7 +126,10 @@ func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (
 	if err := m.accounts.ObserveQuota(record.ID, quota); err != nil {
 		return record, nil, err
 	}
-	updated, _ := m.accounts.Get(record.ID)
+	updated, ok := m.accounts.Get(record.ID)
+	if !ok {
+		return accounts.Record{}, nil, fmt.Errorf("account %q disappeared after quota update", record.ID)
+	}
 	return updated, quota, nil
 }
 
