@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"chatgpt-codex-proxy/internal/config"
+	"chatgpt-codex-proxy/internal/models"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
@@ -106,5 +108,44 @@ func TestHandleModelByID(t *testing.T) {
 			}
 			tc.assertBody(t, recorder.Body.Bytes())
 		})
+	}
+}
+
+func TestHandleModelsUsesRuntimeCatalog(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+
+	catalog := models.NewCatalog(models.BootstrapEntries())
+	catalog.ApplyRouteModels("plan:plus", []models.Entry{{
+		ID:        "gpt-dynamic-test",
+		Source:    models.SourceUpstream,
+		IsDefault: true,
+	}}, time.Now().UTC())
+
+	app := &App{
+		cfg:    config.Config{DefaultModel: openai.CanonicalDefaultModel},
+		models: catalog,
+	}
+	app.handleModels(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(body.Data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(body.Data))
+	}
+	if body.Data[0]["id"] != "gpt-dynamic-test" {
+		t.Fatalf("id = %#v, want gpt-dynamic-test", body.Data[0]["id"])
 	}
 }

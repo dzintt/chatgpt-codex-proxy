@@ -53,7 +53,7 @@ func TestGetUsageCachedBypassesEnsureReady(t *testing.T) {
 		t.Fatalf("accounts.NewService() error = %v", err)
 	}
 
-	manager := NewAccountManager(config.Config{}, accountsSvc, nil, nil)
+	manager := NewAccountManager(config.Config{}, accountsSvc, nil, nil, nil)
 
 	record, quota, err := manager.GetUsage(context.Background(), "acct_disabled", true)
 	if err != nil {

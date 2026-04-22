@@ -8,26 +8,27 @@ import (
 )
 
 type ChatCompletionsRequest struct {
-	Model             string                     `json:"model"`
-	Messages          []ChatMessage              `json:"messages"`
-	Stream            bool                       `json:"stream"`
-	ReasoningEffort   string                     `json:"reasoning_effort,omitempty"`
-	ServiceTier       string                     `json:"service_tier,omitempty"`
-	Tools             []ToolDefinition           `json:"tools,omitempty"`
-	ToolChoice        json.RawMessage            `json:"tool_choice,omitempty"`
-	ResponseFormat    *ResponseFormat            `json:"response_format,omitempty"`
-	Functions         []LegacyFunctionDefinition `json:"functions,omitempty"`
-	FunctionCall      *LegacyFunctionCallChoice  `json:"function_call,omitempty"`
-	N                 *int                       `json:"n,omitempty"`
-	Temperature       *float64                   `json:"temperature,omitempty"`
-	TopP              *float64                   `json:"top_p,omitempty"`
-	MaxTokens         *int                       `json:"max_tokens,omitempty"`
-	PresencePenalty   *float64                   `json:"presence_penalty,omitempty"`
-	FrequencyPenalty  *float64                   `json:"frequency_penalty,omitempty"`
-	Stop              json.RawMessage            `json:"stop,omitempty"`
-	User              *string                    `json:"user,omitempty"`
-	ParallelToolCalls *bool                      `json:"parallel_tool_calls,omitempty"`
-	StreamOptions     json.RawMessage            `json:"stream_options,omitempty"`
+	Model              string                     `json:"model"`
+	Messages           []ChatMessage              `json:"messages"`
+	Stream             bool                       `json:"stream"`
+	ReasoningEffort    string                     `json:"reasoning_effort,omitempty"`
+	ServiceTier        string                     `json:"service_tier,omitempty"`
+	PreviousResponseID string                     `json:"previous_response_id,omitempty"`
+	Tools              []ToolDefinition           `json:"tools,omitempty"`
+	ToolChoice         json.RawMessage            `json:"tool_choice,omitempty"`
+	ResponseFormat     *ResponseFormat            `json:"response_format,omitempty"`
+	Functions          []LegacyFunctionDefinition `json:"functions,omitempty"`
+	FunctionCall       *LegacyFunctionCallChoice  `json:"function_call,omitempty"`
+	N                  *int                       `json:"n,omitempty"`
+	Temperature        *float64                   `json:"temperature,omitempty"`
+	TopP               *float64                   `json:"top_p,omitempty"`
+	MaxTokens          *int                       `json:"max_tokens,omitempty"`
+	PresencePenalty    *float64                   `json:"presence_penalty,omitempty"`
+	FrequencyPenalty   *float64                   `json:"frequency_penalty,omitempty"`
+	Stop               json.RawMessage            `json:"stop,omitempty"`
+	User               *string                    `json:"user,omitempty"`
+	ParallelToolCalls  *bool                      `json:"parallel_tool_calls,omitempty"`
+	StreamOptions      json.RawMessage            `json:"stream_options,omitempty"`
 }
 
 type ChatMessage struct {

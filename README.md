@@ -32,10 +32,11 @@ Use it for local or small-scale deployments.
 - Text, image, and file inputs on Responses
 - Chat Completions reasoning summaries via `reasoning_content`
 - Responses reasoning-item replay, including `encrypted_content`
-- Supported public model IDs: `gpt-5.4`, `gpt-5.2-codex`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`
-- `previous_response_id` continuations
+- Dynamic public model catalog fetched from the upstream Codex backend
+- Explicit `previous_response_id` continuations on both Chat Completions and Responses
+- Stable `prompt_cache_key` derivation plus guarded implicit resume when follow-up requests replay prior assistant or tool history
 - Multi-account rotation with `least_used`, `round_robin`, and `sticky`
-- Local JSON persistence for accounts and cached quota state
+- Local JSON persistence for accounts, cached quota state, and the most recent discovered model catalog
 - Automatic recovery when cached quota or transient cooldown windows expire
 
 ## How It Works
@@ -51,10 +52,11 @@ The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
 - `GET https://chatgpt.com/backend-api/codex/usage`
-- `WSS https://chatgpt.com/backend-api/codex/responses` for explicit continuation requests
+- `GET https://chatgpt.com/backend-api/codex/models`, with fallback probes to other upstream model-list endpoints
+- `WSS https://chatgpt.com/backend-api/codex/responses` for continuation requests
 - `https://auth.openai.com/api/accounts/deviceauth/*` and `https://auth.openai.com/oauth/token` for device login and token refresh
 
-For continuations, the proxy keeps short-lived in-memory state so a `previous_response_id` request stays pinned to the correct account and preserves the prior turn context.
+For follow-up turns, the proxy keeps short-lived in-memory state so explicit and implicit continuations stay pinned to the correct account, reuse upstream turn state when safe, and set a stable `prompt_cache_key`.
 
 ## Project Layout
 
@@ -244,6 +246,8 @@ Supported behavior:
 - Reasoning effort
 - Reasoning summaries surfaced as `reasoning_content` when the client requested reasoning via `reasoning_effort`
 - Text, image, and file input parts
+- Explicit `previous_response_id` continuation
+- Guarded implicit continuation when the request replays prior assistant or tool history
 - A compatibility path that accepts a Responses-shaped request body on this endpoint when `messages` is omitted
 
 Compatibility notes:
@@ -253,6 +257,9 @@ Compatibility notes:
 - For streaming Chat Completions responses, the proxy currently emits custom tool calls as function-shaped `tool_calls` deltas for broader client compatibility on the chat-completions streaming path.
 - Non-streaming Chat Completions responses currently preserve the native custom tool-call shape. If your client depends on `stream = false` and expects the same compatibility behavior as the streaming path, treat that as a current limitation.
 - Chat usage is returned in OpenAI Chat Completions shape: `prompt_tokens`, `completion_tokens`, `total_tokens`, plus token-detail objects when known.
+- `previous_response_id` on Chat Completions now uses the upstream WebSocket continuation path instead of local full-history replay.
+- When the proxy can derive a stable conversation key, it sets `prompt_cache_key` upstream automatically.
+- Implicit resume is opportunistic. If the continuation guards fail or the continuation transport cannot be opened before streaming starts, the proxy falls back to the original full request.
 - If both `messages` and Responses-style fields are present on this endpoint, `messages` wins.
 - The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
 - Chat Completions fields currently ignored by the proxy: `n`, `temperature`, `top_p`, `max_tokens`, `presence_penalty`, `frequency_penalty`, `stop`, `user`, `parallel_tool_calls`, `stream_options`, and `service_tier`.
@@ -270,28 +277,31 @@ Supported behavior:
 - Text, image, and file inputs
 - Reasoning items in `input[]`, including `summary`, `content`, and `encrypted_content`
 - Explicit `previous_response_id` continuation
+- Guarded implicit continuation when the request replays prior assistant or tool history
 - Follow-up turns that replay prior `output_text` items from the OpenAI Responses shape
 
 Compatibility notes:
 
 - Native Responses reasoning summary events are passed through as-is.
+- When the proxy can derive a stable conversation key, it sets `prompt_cache_key` upstream automatically.
+- Implicit resume is opportunistic. If the continuation guards fail or the continuation transport cannot be opened before streaming starts, the proxy falls back to the original full request.
 - Structured-output schemas are normalized before they are sent upstream, including tuple-schema handling and stricter object-shape normalization for Codex compatibility.
 - Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
 - Responses fields currently ignored by the proxy: `temperature`, `top_p`, `max_output_tokens`, `parallel_tool_calls`, `store`, `background`, `user`, `metadata`, `stream_options`, and `service_tier`.
 
 ### `GET /v1/models`
 
-Returns the curated supported model list:
+Returns the current upstream-backed model catalog in the standard OpenAI model-list shape.
 
-- `gpt-5.4`
-- `gpt-5.2-codex`
-- `gpt-5.4-mini`
-- `gpt-5.3-codex`
-- `gpt-5.2`
+Notes:
+
+- Model IDs mirror upstream exactly. The proxy does not add local aliases such as `codex`.
+- A fresh startup begins with a small bootstrap fallback list, then refreshes the catalog asynchronously from the upstream Codex backend.
+- The latest successful catalog snapshot is cached locally in `${DATA_DIR}/models-cache.json` so `/v1/models` stays populated across restarts.
 
 ### `GET /v1/models/<model_id>`
 
-Returns one model object in the OpenAI model shape for one of the supported model IDs. Unknown IDs return an OpenAI-style `model_not_found` error.
+Returns one model object in the OpenAI model shape for one known runtime model ID. Unknown IDs return an OpenAI-style `model_not_found` error.
 
 ### `GET /health/live`
 
@@ -361,6 +371,7 @@ Valid strategies:
 Account state is stored locally in:
 
 - `${DATA_DIR}/accounts.json`
+- `${DATA_DIR}/models-cache.json`
 
 That file includes:
 
@@ -371,7 +382,9 @@ That file includes:
 - Transient cooldown state
 - Admin labels and status flags
 
-Continuation mappings and in-flight device-login coordination are kept in memory and are not persisted across restarts.
+The model cache file stores the last successful discovered model catalog plus per-route support metadata.
+
+Continuation mappings, conversation affinity, and in-flight device-login coordination are kept in memory and are not persisted across restarts.
 
 When running with `docker compose`, the same account state is stored in the named volume `chatgpt-codex-proxy-data`, mounted at `/app/data`.
 
@@ -390,7 +403,7 @@ Supported environment variables:
 
 Everything else is fixed in code on purpose:
 
-- The default model is `gpt-5.4`.
+- The configured default model starts as `gpt-5.4`, but request validation and `/v1/models` are driven by the runtime catalog rather than a hardcoded public model list.
 - A fresh data store starts with the `least_used` rotation strategy. Changes made through `PUT /admin/rotation` are persisted and restored on restart.
 - Upstream base URLs, OAuth client details, request timeouts, fallback cooldowns, and desktop-like headers are implementation constants rather than deployment knobs.
 
@@ -444,6 +457,9 @@ Key translation rules:
 - Function tools are accepted in both Chat Completions-style nested form and the modern Responses API top-level form
 - Chat Completions custom tools are accepted in their native `type = "custom"` form.
 - On Chat Completions replay turns, function-shaped assistant tool calls are mapped back to upstream custom tool calls when their name matches a declared custom tool. This preserves compatibility with clients that replay custom tools through function-shaped `tool_calls`.
+- A stable conversation key is derived from the normalized request and used as `prompt_cache_key` when possible.
+- Explicit continuation requests stay pinned to the account that created the earlier response and use the upstream WebSocket continuation transport on both public endpoints.
+- Implicit continuation is only attempted when model, instructions, and replayed assistant or tool history line up with a recent in-memory continuation record. Tool outputs are only resumed when their `call_id` values match known prior tool calls.
 - Unsupported content types return `400` instead of being dropped silently
 
 ## Account Rotation
@@ -455,7 +471,7 @@ Key translation rules:
 - `sticky`
   Reuse the last successfully used healthy account in memory.
 
-Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response.
+Continuation affinity is handled separately from global rotation. Continuation requests prefer the account that created the earlier response, and explicit continuations fail closed if that account is no longer usable for the requested model.
 
 Quota observations are updated from upstream response headers, explicit `/codex/usage` fetches, and `codex.rate_limits` stream events. Internal `codex.rate_limits` events are consumed by the proxy and are not forwarded to downstream OpenAI clients.
 
@@ -501,3 +517,4 @@ The live suite currently checks:
 - The upstream Codex backend is private and may change without notice.
 - Account onboarding is device-auth only.
 - The implementation is intentionally small and does not aim to cover every edge case of the public OpenAI platform.
+- Session affinity and implicit continuation state are in memory only and expire with the configured continuation TTL.

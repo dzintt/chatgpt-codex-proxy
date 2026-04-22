@@ -16,8 +16,10 @@ import (
 
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/conversationkey"
 	"chatgpt-codex-proxy/internal/jsonutil"
 	"chatgpt-codex-proxy/internal/middleware"
+	"chatgpt-codex-proxy/internal/models"
 	"chatgpt-codex-proxy/internal/openai"
 	"chatgpt-codex-proxy/internal/translate"
 )
@@ -26,6 +28,16 @@ type eventStream interface {
 	NextEvent() (*codex.StreamEvent, error)
 	Close() error
 	Headers() http.Header
+}
+
+type sessionResolution struct {
+	Request            translate.NormalizedRequest
+	Original           translate.NormalizedRequest
+	PreferredAccountID string
+	TurnState          string
+	ConversationKey    string
+	ExplicitPrevious   bool
+	ImplicitResume     bool
 }
 
 var errIncompleteResponse = errors.New("upstream stream ended before response.completed")
@@ -38,28 +50,38 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 	}
 	a.logIncomingPayload(c, "chat_completions", body)
 
-	normalized, err := normalizeChatCompletionsBody(body, a.cfg.DefaultModel)
+	normalized, err := normalizeChatCompletionsBody(body, a.cfg.DefaultModel, a.modelCatalog())
 	if err != nil {
-		a.respondOpenAIInvalidRequest(c, err)
+		a.respondOpenAINormalizeError(c, err)
 		return
 	}
 
-	account, stream, quota, err := a.openHTTPStream(c, c.Request.Context(), "chat_completions", normalized, "", "")
+	resolution, err := a.resolveSession(normalized)
+	if err != nil {
+		if a.writeRequestError(c, err) {
+			return
+		}
+		a.respondOpenAINormalizeError(c, err)
+		return
+	}
+
+	account, stream, quota, err := a.openStream(c, c.Request.Context(), "chat_completions", &resolution)
 	if err != nil {
 		a.setRequestAccount(c, account)
-		a.handleOpenStreamError(c, "chat_completions", account.ID, account.ID, err)
+		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, resolution.PreferredAccountID)
+		a.handleOpenStreamError(c, "chat_completions", account.ID, reportedAccountID, err)
 		return
 	}
 	a.setRequestAccount(c, account)
 	defer stream.Close()
 	a.observeQuotaSnapshot(account.ID, quota)
 
-	if normalized.Stream {
-		a.streamChatCompletion(c, account, normalized, stream)
+	if resolution.Request.Stream {
+		a.streamChatCompletion(c, account, resolution.Request, stream)
 		return
 	}
 
-	accumulator, err := a.collectEvents(account, normalized, stream)
+	accumulator, err := a.collectEvents(account, resolution.Request, stream)
 	if err != nil {
 		a.respondOpenAIUpstreamStreamError(c, "chat_completions", account.ID, "", err)
 		return
@@ -85,31 +107,25 @@ func (a *App) handleResponses(c *gin.Context) {
 		return
 	}
 
-	normalized, err := translate.Responses(req, a.cfg.DefaultModel)
+	normalized, err := translate.Responses(req, a.cfg.DefaultModel, a.modelCatalog())
 	if err != nil {
-		a.respondOpenAIInvalidRequest(c, err)
+		a.respondOpenAINormalizeError(c, err)
 		return
 	}
 
-	preferredID := ""
-	turnState := ""
-	if normalized.PreviousResponseID != "" {
-		record, ok := a.continuations.Get(normalized.PreviousResponseID)
-		if !ok {
-			a.writeOpenAIError(c, http.StatusBadRequest, "invalid_previous_response_id", "unknown or expired previous_response_id", "invalid_request_error")
+	resolution, err := a.resolveSession(normalized)
+	if err != nil {
+		if a.writeRequestError(c, err) {
 			return
 		}
-		preferredID = record.AccountID
-		turnState = record.TurnState
-		if history := continuationInputItemsToCodex(record.InputHistory); len(history) > 0 {
-			normalized.Input = append(history, normalized.Input...)
-			normalized.PreviousResponseID = ""
-		}
+		a.respondOpenAINormalizeError(c, err)
+		return
 	}
-	account, stream, quota, err := a.openStream(c, c.Request.Context(), "responses", normalized, preferredID, turnState)
+
+	account, stream, quota, err := a.openStream(c, c.Request.Context(), "responses", &resolution)
 	if err != nil {
 		a.setRequestAccount(c, account)
-		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, preferredID)
+		reportedAccountID := jsonutil.FirstNonEmpty(account.ID, resolution.PreferredAccountID)
 		a.handleOpenStreamError(c, "responses", account.ID, reportedAccountID, err)
 		return
 	}
@@ -117,12 +133,12 @@ func (a *App) handleResponses(c *gin.Context) {
 	defer stream.Close()
 	a.observeQuotaSnapshot(account.ID, quota)
 
-	if normalized.Stream {
-		a.streamResponses(c, account, normalized, stream)
+	if resolution.Request.Stream {
+		a.streamResponses(c, account, resolution.Request, stream)
 		return
 	}
 
-	accumulator, err := a.collectEvents(account, normalized, stream)
+	accumulator, err := a.collectEvents(account, resolution.Request, stream)
 	if err != nil {
 		a.respondOpenAIUpstreamStreamError(c, "responses", account.ID, "", err)
 		return
@@ -134,40 +150,49 @@ func (a *App) handleResponses(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-func (a *App) openStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	if normalized.Endpoint == translate.EndpointResponses && normalized.PreviousResponseID != "" {
-		return a.openWSStream(c, ctx, endpoint, normalized, preferredID, turnState)
+func (a *App) openStream(c *gin.Context, ctx context.Context, endpoint string, resolution *sessionResolution) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+	if resolution.Request.PreviousResponseID != "" {
+		account, stream, quota, err := a.openWSStream(c, ctx, endpoint, resolution)
+		if err == nil || !resolution.ImplicitResume {
+			return account, stream, quota, err
+		}
+		fallback := *resolution
+		fallback.Request = resolution.Original
+		fallback.PreferredAccountID = ""
+		fallback.TurnState = ""
+		fallback.ImplicitResume = false
+		return a.openHTTPStream(c, ctx, endpoint, &fallback)
 	}
-	return a.openHTTPStream(c, ctx, endpoint, normalized, preferredID, turnState)
+	return a.openHTTPStream(c, ctx, endpoint, resolution)
 }
 
-func (a *App) openHTTPStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	account, err := a.acquireReadyAccount(ctx, preferredID)
+func (a *App) openHTTPStream(c *gin.Context, ctx context.Context, endpoint string, resolution *sessionResolution) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+	account, err := a.acquireAccountForResolution(ctx, resolution)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
-	request := normalized.ToCodexRequest()
+	request := resolution.Request.ToCodexRequest()
 	a.logUpstreamPayload(c, endpoint, "http", account.ID, codex.StreamRequestPayload(request))
-	stream, err := a.httpClient.StreamResponse(ctx, account, request, turnState)
+	stream, err := a.httpClient.StreamResponse(ctx, account, request, resolution.TurnState)
 	if err != nil {
 		return account, nil, nil, err
 	}
 	return account, stream, codex.ParseQuotaFromHeaders(stream.Headers()), nil
 }
 
-func (a *App) openWSStream(c *gin.Context, ctx context.Context, endpoint string, normalized translate.NormalizedRequest, preferredID, turnState string) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
-	account, err := a.acquireReadyAccount(ctx, preferredID)
+func (a *App) openWSStream(c *gin.Context, ctx context.Context, endpoint string, resolution *sessionResolution) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {
+	account, err := a.acquireAccountForResolution(ctx, resolution)
 	if err != nil {
 		return accounts.Record{}, nil, nil, err
 	}
 	headers := codex.BuildHeaders(a.cfg, account.Token.AccessToken, codex.HeaderOptions{
 		AccountID:   account.AccountID,
 		Cookies:     account.Cookies,
-		TurnState:   turnState,
+		TurnState:   resolution.TurnState,
 		RequestID:   codex.NewRequestID(),
 		IncludeBeta: true,
 	})
-	body := normalized.ToCodexWSCreatePayload()
+	body := resolution.Request.ToCodexWSCreatePayload()
 	a.logUpstreamPayload(c, endpoint, "websocket", account.ID, body)
 	wsEndpoint := websocketEndpoint(a.cfg.CodexBaseURL)
 	stream, err := a.wsClient.Connect(ctx, wsEndpoint, headers, body)
@@ -499,17 +524,25 @@ func responseStreamPayload(event *codex.StreamEvent, accumulator *translate.Accu
 }
 
 func (a *App) rememberContinuation(accountID string, accumulator *translate.Accumulator, turnState string) {
-	if accumulator == nil || accumulator.ResponseID == "" || accumulator.Normalized.Endpoint != translate.EndpointResponses {
+	if accumulator == nil || accumulator.ResponseID == "" {
 		return
 	}
+	conversationKey := accumulator.Normalized.PromptCacheKey
+	if strings.TrimSpace(conversationKey) == "" {
+		conversationKey = resolutionConversationKey(accumulator.Normalized)
+	}
 	a.continuations.Put(accounts.ContinuationRecord{
-		ResponseID:   accumulator.ResponseID,
-		AccountID:    accountID,
-		UpstreamID:   accumulator.ResponseID,
-		TurnState:    strings.TrimSpace(turnState),
-		Model:        jsonutil.FirstNonEmpty(accumulator.Model, accumulator.Normalized.Model),
-		InputHistory: continuationInputHistory(accumulator),
-		ExpiresAt:    timeNowUTC().Add(a.cfg.ContinuationTTL),
+		ResponseID:      accumulator.ResponseID,
+		AccountID:       accountID,
+		UpstreamID:      accumulator.ResponseID,
+		ConversationKey: conversationKey,
+		TurnState:       strings.TrimSpace(turnState),
+		Instructions:    strings.TrimSpace(accumulator.Normalized.Instructions),
+		Model:           jsonutil.FirstNonEmpty(accumulator.Model, accumulator.Normalized.Model),
+		InputHistory:    continuationInputHistory(accumulator),
+		FunctionCallIDs: functionCallIDs(accumulator),
+		CreatedAt:       timeNowUTC(),
+		ExpiresAt:       timeNowUTC().Add(a.cfg.ContinuationTTL),
 	})
 }
 
@@ -842,14 +875,14 @@ func captureRequestBody(c *gin.Context) ([]byte, error) {
 	return body, nil
 }
 
-func normalizeChatCompletionsBody(body []byte, defaultModel string) (translate.NormalizedRequest, error) {
+func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *models.Catalog) (translate.NormalizedRequest, error) {
 	var chatReq openai.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		return translate.NormalizedRequest{}, err
 	}
 
 	if len(chatReq.Messages) > 0 {
-		return translate.ChatCompletions(chatReq, defaultModel)
+		return translate.ChatCompletions(chatReq, defaultModel, catalog)
 	}
 
 	var envelope struct {
@@ -868,7 +901,7 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string) (translate.N
 		strings.TrimSpace(envelope.PreviousResponseID) == "" &&
 		len(bytes.TrimSpace(envelope.Text)) == 0 &&
 		len(bytes.TrimSpace(envelope.Reasoning)) == 0 {
-		return translate.ChatCompletions(chatReq, defaultModel)
+		return translate.ChatCompletions(chatReq, defaultModel, catalog)
 	}
 
 	var responsesReq openai.ResponsesRequest
@@ -876,7 +909,7 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string) (translate.N
 		return translate.NormalizedRequest{}, err
 	}
 
-	normalized, err := translate.Responses(responsesReq, defaultModel)
+	normalized, err := translate.Responses(responsesReq, defaultModel, catalog)
 	if err != nil {
 		return translate.NormalizedRequest{}, err
 	}
@@ -913,7 +946,25 @@ func (a *App) respondOpenAIInvalidRequest(c *gin.Context, err error) {
 	a.writeOpenAIError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), "invalid_request_error")
 }
 
+func (a *App) respondOpenAINormalizeError(c *gin.Context, err error) {
+	var modelErr *translate.ModelNotFoundError
+	if errors.As(err, &modelErr) {
+		message := "Model '" + strings.TrimSpace(modelErr.Model) + "' not found"
+		a.writeOpenAIError(c, http.StatusNotFound, "model_not_found", message, "invalid_request_error")
+		return
+	}
+	a.respondOpenAIInvalidRequest(c, err)
+}
+
 func (a *App) handleOpenStreamError(c *gin.Context, endpoint, actualAccountID, reportedAccountID string, err error) {
+	if errors.Is(err, errContinuationAccountUnavailable) {
+		a.writeOpenAIError(c, http.StatusServiceUnavailable, "continuation_account_unavailable", "continuation account unavailable", "api_error")
+		return
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "no active accounts") {
+		a.writeOpenAIError(c, http.StatusServiceUnavailable, "no_available_accounts", "no available accounts", "api_error")
+		return
+	}
 	status, code, message := a.classifyUpstreamError(strings.TrimSpace(actualAccountID), err)
 	logAccountID := jsonutil.FirstNonEmpty(actualAccountID, reportedAccountID)
 	a.logUpstreamRequestFailure(c, endpoint, logAccountID, status, code, err)
@@ -939,8 +990,47 @@ func (a *App) respondStreamError(c *gin.Context, endpoint, accountID, responseID
 	c.Writer.Flush()
 }
 
-func (a *App) acquireReadyAccount(ctx context.Context, preferredID string) (accounts.Record, error) {
-	return a.accountMgr.AcquireReady(ctx, preferredID)
+func (a *App) acquireReadyAccount(ctx context.Context, preferredID, modelID string) (accounts.Record, error) {
+	return a.accountMgr.AcquireReadyForModel(ctx, preferredID, modelID)
+}
+
+func (a *App) acquireAccountForResolution(ctx context.Context, resolution *sessionResolution) (accounts.Record, error) {
+	if resolution == nil {
+		return accounts.Record{}, errContinuationAccountUnavailable
+	}
+	if resolution.ExplicitPrevious || resolution.ImplicitResume {
+		preferredID := strings.TrimSpace(resolution.PreferredAccountID)
+		if preferredID == "" {
+			return accounts.Record{}, errContinuationAccountUnavailable
+		}
+		record, err := a.accountMgr.EnsureReady(ctx, preferredID)
+		if err != nil {
+			return accounts.Record{}, errContinuationAccountUnavailable
+		}
+		if !a.modelCatalog().SupportsRecord(record, resolution.Request.Model) {
+			return accounts.Record{}, errContinuationAccountUnavailable
+		}
+		return record, nil
+	}
+	if !resolution.Request.ModelExplicit && strings.TrimSpace(resolution.Request.Model) == "" {
+		record, err := a.accountMgr.AcquireReady(ctx, resolution.PreferredAccountID)
+		if err != nil {
+			return accounts.Record{}, err
+		}
+		modelID := a.modelCatalog().ResolveDefaultForRecord(record, a.cfg.DefaultModel)
+		if strings.TrimSpace(modelID) == "" {
+			return accounts.Record{}, errContinuationAccountUnavailable
+		}
+		resolution.Request.Model = modelID
+		resolution.Original.Model = modelID
+		if key := conversationkey.Derive(resolution.Request.ToCodexRequest()); key != "" {
+			resolution.ConversationKey = key
+			resolution.Request.PromptCacheKey = key
+			resolution.Original.PromptCacheKey = key
+		}
+		return record, nil
+	}
+	return a.acquireReadyAccount(ctx, resolution.PreferredAccountID, resolution.Request.Model)
 }
 
 func (a *App) setRequestAccount(c *gin.Context, account accounts.Record) {

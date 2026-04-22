@@ -315,6 +315,10 @@ func (s *Service) NoteSuccess(id string) {
 }
 
 func (s *Service) Acquire(preferredID string) (Record, error) {
+	return s.AcquireMatching(preferredID, nil)
+}
+
+func (s *Service) AcquireMatching(preferredID string, allow func(Record) bool) (Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -325,14 +329,22 @@ func (s *Service) Acquire(preferredID string) (Record, error) {
 
 	if preferredID != "" {
 		if record, ok := s.records[preferredID]; ok && isEligible(record, now) {
-			return cloneRecord(record), nil
+			candidate := cloneRecord(record)
+			if allow == nil || allow(candidate) {
+				return candidate, nil
+			}
 		}
 	}
 
 	candidates := make([]*Record, 0, len(s.records))
 	for _, record := range s.records {
 		if isEligible(record, now) {
-			candidates = append(candidates, record)
+			candidate := cloneRecord(record)
+			if allow != nil && !allow(candidate) {
+				continue
+			}
+			recordCopy := candidate
+			candidates = append(candidates, &recordCopy)
 		}
 	}
 	if len(candidates) == 0 {

@@ -16,23 +16,42 @@ type AccountManager struct {
 	accounts *accounts.Service
 	oauth    *OAuthService
 	http     *HTTPClient
+	models   ModelSupport
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 }
 
-func NewAccountManager(cfg config.Config, accountsSvc *accounts.Service, oauth *OAuthService, httpClient *HTTPClient) *AccountManager {
+type ModelSupport interface {
+	SupportsRecord(record accounts.Record, modelID string) bool
+}
+
+func NewAccountManager(cfg config.Config, accountsSvc *accounts.Service, oauth *OAuthService, httpClient *HTTPClient, modelSupport ModelSupport) *AccountManager {
 	return &AccountManager{
 		cfg:      cfg,
 		accounts: accountsSvc,
 		oauth:    oauth,
 		http:     httpClient,
+		models:   modelSupport,
 		locks:    make(map[string]*sync.Mutex),
 	}
 }
 
 func (m *AccountManager) AcquireReady(ctx context.Context, preferredID string) (accounts.Record, error) {
 	record, err := m.accounts.Acquire(preferredID)
+	if err != nil {
+		return accounts.Record{}, err
+	}
+	return m.EnsureReady(ctx, record.ID)
+}
+
+func (m *AccountManager) AcquireReadyForModel(ctx context.Context, preferredID, modelID string) (accounts.Record, error) {
+	record, err := m.accounts.AcquireMatching(preferredID, func(record accounts.Record) bool {
+		if m.models == nil {
+			return true
+		}
+		return m.models.SupportsRecord(record, modelID)
+	})
 	if err != nil {
 		return accounts.Record{}, err
 	}

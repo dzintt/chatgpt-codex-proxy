@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,42 @@ func (c *HTTPClient) GetUsage(ctx context.Context, record accounts.Record) (Usag
 		return UsageResponse{}, nil, err
 	}
 	return decoded, QuotaFromUsageResponse(decoded), nil
+}
+
+func (c *HTTPClient) GetModels(ctx context.Context, record accounts.Record) ([]BackendModelEntry, error) {
+	session := c.sessionFor(record.ID)
+	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
+		AccountID:      record.AccountID,
+		Cookies:        record.Cookies,
+		RequestID:      NewRequestID(),
+		Accept:         "application/json",
+		AcceptEncoding: "gzip, deflate",
+	}), c.cfg.HeaderOrder)
+
+	endpoints := []string{
+		c.modelsURL("/codex/models", true),
+		c.modelsURL("/models", false),
+		c.modelsURL("/sentinel/chat-requirements", false),
+	}
+
+	for _, endpoint := range endpoints {
+		resp, err := session.Get(ctx, endpoint, headers)
+		if err != nil {
+			continue
+		}
+		payload, readErr := resp.Text()
+		resp.Close()
+		if readErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			continue
+		}
+		models, parseErr := parseBackendModels(payload)
+		if parseErr != nil || len(models) == 0 {
+			continue
+		}
+		return models, nil
+	}
+
+	return nil, fmt.Errorf("no upstream model endpoints returned a usable catalog")
 }
 
 func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record, req Request, turnState string) (*StreamReader, error) {
@@ -224,4 +261,72 @@ func StreamRequestPayload(req Request) Request {
 	bodyReq.PreviousResponseID = ""
 	bodyReq.ServiceTier = ""
 	return bodyReq
+}
+
+func (c *HTTPClient) modelsURL(path string, includeClientVersion bool) string {
+	base := JoinURL(c.cfg.CodexBaseURL, path)
+	if !includeClientVersion || strings.TrimSpace(c.cfg.ClientVersion) == "" {
+		return base
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	query := parsed.Query()
+	query.Set("client_version", c.cfg.ClientVersion)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func parseBackendModels(payload string) ([]BackendModelEntry, error) {
+	var decoded map[string]any
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+
+	if sentinel, ok := decoded["chat_models"].(map[string]any); ok {
+		if models := flattenBackendModels(sentinel["models"]); len(models) > 0 {
+			return models, nil
+		}
+	}
+	for _, key := range []string{"models", "data", "categories"} {
+		if models := flattenBackendModels(decoded[key]); len(models) > 0 {
+			return models, nil
+		}
+	}
+	return nil, fmt.Errorf("no backend models found")
+}
+
+func flattenBackendModels(value any) []BackendModelEntry {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+
+	out := make([]BackendModelEntry, 0, len(items))
+	for _, item := range items {
+		mapped, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if nested, ok := mapped["models"].([]any); ok {
+			out = append(out, flattenBackendModels(nested)...)
+			continue
+		}
+		raw, err := json.Marshal(mapped)
+		if err != nil {
+			continue
+		}
+		var entry BackendModelEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		if strings.TrimSpace(entry.Slug) == "" && strings.TrimSpace(entry.ID) == "" && strings.TrimSpace(entry.Name) == "" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }

@@ -23,6 +23,7 @@ type CompatibilityWarning struct {
 type NormalizedRequest struct {
 	Endpoint              Endpoint
 	Model                 string
+	ModelExplicit         bool
 	Instructions          string
 	Input                 []codex.InputItem
 	Stream                bool

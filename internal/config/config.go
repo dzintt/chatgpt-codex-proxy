@@ -15,6 +15,7 @@ const (
 	defaultListenPort            = 8080
 	defaultDataDir               = "data"
 	defaultDefaultModel          = "gpt-5.4"
+	defaultClientVersion         = "26.409.61251"
 	defaultOriginator            = "Codex Desktop"
 	defaultOpenAIBeta            = "responses_websockets=2026-02-06"
 	defaultResidency             = "us"
@@ -33,6 +34,7 @@ type Config struct {
 	ProxyAPIKey           string
 	DebugLogPayloads      bool
 	DefaultModel          string
+	ClientVersion         string
 	Originator            string
 	OpenAIBeta            string
 	Residency             string
@@ -86,6 +88,7 @@ func Load() (Config, error) {
 		ProxyAPIKey:           strings.TrimSpace(os.Getenv("PROXY_API_KEY")),
 		DebugLogPayloads:      debugLogPayloads,
 		DefaultModel:          defaultDefaultModel,
+		ClientVersion:         defaultClientVersion,
 		Originator:            defaultOriginator,
 		OpenAIBeta:            defaultOpenAIBeta,
 		Residency:             defaultResidency,

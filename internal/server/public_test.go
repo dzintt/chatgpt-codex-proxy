@@ -129,7 +129,7 @@ func TestNormalizeChatCompletionsBodyAcceptsResponsesShape(t *testing.T) {
 		}]
 	}`)
 
-	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4", nil)
 	if err != nil {
 		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
 	}
@@ -177,7 +177,7 @@ func TestNormalizeChatCompletionsBodyLiftsInstructionRolesFromResponsesShape(t *
 		}]
 	}`)
 
-	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4", nil)
 	if err != nil {
 		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
 	}
@@ -211,7 +211,7 @@ func TestNormalizeChatCompletionsBodyAcceptsArrayToolOutputInResponsesShape(t *t
 		]
 	}`)
 
-	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4", nil)
 	if err != nil {
 		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
 	}
@@ -243,7 +243,7 @@ func TestNormalizeChatCompletionsBodyPrefersMessagesShape(t *testing.T) {
 		"input": {"role": "user", "content": [{"type": "text", "text": "ignored"}]}
 	}`)
 
-	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4")
+	normalized, err := normalizeChatCompletionsBody(body, "gpt-5.4", nil)
 	if err != nil {
 		t.Fatalf("normalizeChatCompletionsBody() error = %v", err)
 	}

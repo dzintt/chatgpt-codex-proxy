@@ -8,13 +8,22 @@ import (
 
 	"chatgpt-codex-proxy/internal/codex"
 	"chatgpt-codex-proxy/internal/jsonutil"
+	"chatgpt-codex-proxy/internal/models"
 	"chatgpt-codex-proxy/internal/openai"
 )
 
 const defaultInstructions = "You are a helpful assistant."
 
-func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (NormalizedRequest, error) {
-	model, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier)
+type ModelNotFoundError struct {
+	Model string
+}
+
+func (e *ModelNotFoundError) Error() string {
+	return fmt.Sprintf("unsupported model %q", e.Model)
+}
+
+func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedRequest, error) {
+	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier, catalog...)
 	if err != nil {
 		return NormalizedRequest{}, err
 	}
@@ -25,7 +34,9 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 	out := NormalizedRequest{
 		Endpoint:              EndpointChat,
 		Model:                 model,
+		ModelExplicit:         modelExplicit,
 		Stream:                req.Stream,
+		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
 		Tools:                 normalizeTools(tools),
 		Reasoning:             reasoning,
 		ServiceTier:           serviceTier,
@@ -189,8 +200,8 @@ func customToolInputFromFunctionArguments(arguments string) string {
 	return arguments
 }
 
-func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequest, error) {
-	model, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, "", req.ServiceTier)
+func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedRequest, error) {
+	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, "", req.ServiceTier, catalog...)
 	if err != nil {
 		return NormalizedRequest{}, err
 	}
@@ -208,6 +219,7 @@ func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequ
 	out := NormalizedRequest{
 		Endpoint:              EndpointResponses,
 		Model:                 model,
+		ModelExplicit:         modelExplicit,
 		Stream:                req.Stream,
 		Tools:                 normalizeTools(req.Tools),
 		ToolChoice:            normalizeToolChoice(req.ToolChoice),
@@ -554,13 +566,18 @@ func flattenContent(content openai.MessageContent) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
-func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string) (string, *codex.Reasoning, string, error) {
+func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string, catalogs ...*models.Catalog) (string, bool, *codex.Reasoning, string, error) {
+	catalog := firstCatalog(catalogs...)
 	model := strings.TrimSpace(rawModel)
-	if model == "" {
-		model = openai.ResolveDefaultModel(defaultModel)
-	}
-	if !openai.IsSupportedModel(model) {
-		return "", nil, "", fmt.Errorf("unsupported model %q", model)
+	modelExplicit := model != ""
+	if modelExplicit {
+		if catalog != nil {
+			if !catalog.Has(model) {
+				return "", false, nil, "", &ModelNotFoundError{Model: model}
+			}
+		} else if !bootstrapModelSupported(model) {
+			return "", false, nil, "", &ModelNotFoundError{Model: model}
+		}
 	}
 
 	effort := strings.TrimSpace(reasoningEffort)
@@ -568,7 +585,29 @@ func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string)
 	if effort != "" {
 		reasoning = &codex.Reasoning{Effort: effort, Summary: "auto"}
 	}
-	return model, reasoning, strings.TrimSpace(serviceTier), nil
+	return model, modelExplicit, reasoning, strings.TrimSpace(serviceTier), nil
+}
+
+func firstCatalog(catalogs ...*models.Catalog) *models.Catalog {
+	for _, catalog := range catalogs {
+		if catalog != nil {
+			return catalog
+		}
+	}
+	return nil
+}
+
+func bootstrapModelSupported(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, entry := range models.BootstrapEntries() {
+		if entry.ID == model {
+			return true
+		}
+	}
+	return false
 }
 
 func collectChatCompatibilityWarnings(req openai.ChatCompletionsRequest) []CompatibilityWarning {

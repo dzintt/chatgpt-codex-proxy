@@ -11,8 +11,9 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	t.Parallel()
 
 	request := openai.ChatCompletionsRequest{
-		Model:           "gpt-5.4",
-		ReasoningEffort: "high",
+		Model:              "gpt-5.4",
+		ReasoningEffort:    "high",
+		PreviousResponseID: "resp_prev_chat",
 		Messages: []openai.ChatMessage{
 			{
 				Role:    "system",
@@ -65,6 +66,9 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	}
 	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning = %#v, want explicit effort override", normalized.Reasoning)
+	}
+	if normalized.PreviousResponseID != "resp_prev_chat" {
+		t.Fatalf("previous_response_id = %q, want resp_prev_chat", normalized.PreviousResponseID)
 	}
 	if len(normalized.Include) != 1 || normalized.Include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("include = %#v, want reasoning.encrypted_content only", normalized.Include)
@@ -741,6 +745,26 @@ func TestUnsupportedModelRejected(t *testing.T) {
 	}, "gpt-5.4")
 	if err == nil {
 		t.Fatal("expected unsupported model error")
+	}
+}
+
+func TestResponsesTranslationLeavesModelEmptyWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := Responses(openai.ResponsesRequest{
+		Input: openai.ResponsesInput{
+			String: "hello",
+		},
+	}, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if normalized.Model != "" {
+		t.Fatalf("model = %q, want empty when omitted", normalized.Model)
+	}
+	if normalized.ModelExplicit {
+		t.Fatal("ModelExplicit = true, want false when model is omitted")
 	}
 }
 

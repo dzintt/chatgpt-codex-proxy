@@ -10,9 +10,10 @@ import (
 )
 
 func (a *App) handleModels(c *gin.Context) {
-	data := make([]gin.H, 0, 8)
-	for _, model := range openai.PublicModelList(a.cfg.DefaultModel) {
-		data = append(data, modelObject(model))
+	entries := a.modelCatalog().List()
+	data := make([]gin.H, 0, len(entries))
+	for _, entry := range entries {
+		data = append(data, modelObject(entry.ID))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
@@ -21,12 +22,12 @@ func (a *App) handleModels(c *gin.Context) {
 }
 
 func (a *App) handleModelByID(c *gin.Context) {
-	modelID, ok := openai.ResolvePublicModel(c.Param("model_id"), a.cfg.DefaultModel)
+	model, ok := a.modelCatalog().Get(c.Param("model_id"))
 	if !ok {
 		middleware.AbortJSON(c, http.StatusNotFound, middleware.OpenAIErrorPayload("Model '"+c.Param("model_id")+"' not found", "invalid_request_error", "model_not_found", "model"))
 		return
 	}
-	c.JSON(http.StatusOK, modelObject(modelID))
+	c.JSON(http.StatusOK, modelObject(model.ID))
 }
 
 func modelObject(model string) gin.H {

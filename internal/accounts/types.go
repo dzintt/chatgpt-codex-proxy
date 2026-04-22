@@ -84,14 +84,17 @@ type ContinuationContentPart = conversation.ContentPart
 type ContinuationSummaryPart = conversation.ReasoningPart
 
 type ContinuationRecord struct {
-	ResponseID   string
-	AccountID    string
-	UpstreamID   string
-	TurnState    string
-	Instructions string
-	Model        string
-	InputHistory []ContinuationInputItem
-	ExpiresAt    time.Time
+	ResponseID      string
+	AccountID       string
+	UpstreamID      string
+	ConversationKey string
+	TurnState       string
+	Instructions    string
+	Model           string
+	InputHistory    []ContinuationInputItem
+	FunctionCallIDs []string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
 }
 
 type DeviceLoginStatus string

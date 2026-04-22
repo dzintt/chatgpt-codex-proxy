@@ -50,7 +50,7 @@ func TestHandleAdminAccountUsageReturnsQuotaOnlyFields(t *testing.T) {
 	app := &App{
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		accounts:   accountsSvc,
-		accountMgr: codex.NewAccountManager(config.Config{}, accountsSvc, nil, nil),
+		accountMgr: codex.NewAccountManager(config.Config{}, accountsSvc, nil, nil, nil),
 	}
 
 	recorder := httptest.NewRecorder()

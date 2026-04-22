@@ -17,20 +17,23 @@ import (
 	"chatgpt-codex-proxy/internal/codex"
 	"chatgpt-codex-proxy/internal/config"
 	"chatgpt-codex-proxy/internal/middleware"
+	"chatgpt-codex-proxy/internal/models"
 	"chatgpt-codex-proxy/internal/store"
 )
 
 type App struct {
-	cfg           config.Config
-	logger        *slog.Logger
-	engine        *gin.Engine
-	accounts      *accounts.Service
-	deviceLogins  *admin.DeviceLoginService
-	accountMgr    *codex.AccountManager
-	httpClient    *codex.HTTPClient
-	wsClient      *codex.WSClient
-	continuations *accounts.ContinuationManager
-	cancel        context.CancelFunc
+	cfg            config.Config
+	logger         *slog.Logger
+	engine         *gin.Engine
+	accounts       *accounts.Service
+	deviceLogins   *admin.DeviceLoginService
+	accountMgr     *codex.AccountManager
+	httpClient     *codex.HTTPClient
+	wsClient       *codex.WSClient
+	continuations  *accounts.ContinuationManager
+	models         *models.Catalog
+	modelRefresher *models.Fetcher
+	cancel         context.CancelFunc
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -40,10 +43,18 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
+	modelCatalog := models.NewCatalog(models.BootstrapEntries())
+	if snapshot, err := models.LoadCache(cfg.DataDir); err == nil {
+		modelCatalog.LoadCache(snapshot)
+	} else if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		logger.Warn("load models cache failed", "error", err.Error())
+	}
+
 	httpClient := codex.NewHTTPClient(cfg)
 	oauthSvc := codex.NewOAuthService(cfg)
-	accountMgr := codex.NewAccountManager(cfg, accountsSvc, oauthSvc, httpClient)
+	accountMgr := codex.NewAccountManager(cfg, accountsSvc, oauthSvc, httpClient, modelCatalog)
 	deviceLogins := admin.NewDeviceLoginService(adminOAuthProvider{oauth: oauthSvc}, accountsSvc, cfg.LoginTimeout)
+	modelRefresher := models.NewFetcher(cfg, logger, accountsSvc, accountMgr, httpClient, modelCatalog)
 
 	engine := gin.New()
 	engine.SetTrustedProxies(nil)
@@ -56,21 +67,24 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	engine.Use(middleware.Recovery(logger))
 
 	app := &App{
-		cfg:           cfg,
-		logger:        logger,
-		engine:        engine,
-		accounts:      accountsSvc,
-		deviceLogins:  deviceLogins,
-		accountMgr:    accountMgr,
-		httpClient:    httpClient,
-		wsClient:      codex.NewWSClient(),
-		continuations: accounts.NewContinuationManager(cfg.ContinuationTTL),
+		cfg:            cfg,
+		logger:         logger,
+		engine:         engine,
+		accounts:       accountsSvc,
+		deviceLogins:   deviceLogins,
+		accountMgr:     accountMgr,
+		httpClient:     httpClient,
+		wsClient:       codex.NewWSClient(),
+		continuations:  accounts.NewContinuationManager(cfg.ContinuationTTL),
+		models:         modelCatalog,
+		modelRefresher: modelRefresher,
 	}
 	app.routes()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app.cancel = cancel
 	go app.housekeeping(ctx)
+	app.modelRefresher.Start(ctx)
 
 	return app, nil
 }
@@ -84,6 +98,13 @@ func (a *App) Close() error {
 		a.cancel()
 	}
 	return a.httpClient.Close()
+}
+
+func (a *App) modelCatalog() *models.Catalog {
+	if a != nil && a.models != nil {
+		return a.models
+	}
+	return models.NewCatalog(models.BootstrapEntries())
 }
 
 func (a *App) housekeeping(ctx context.Context) {
