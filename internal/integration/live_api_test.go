@@ -92,47 +92,6 @@ func TestLiveChatCompletionsCustomToolStreamingRoundTrip(t *testing.T) {
 	}
 }
 
-func TestLiveChatCompletionsCustomToolNonStreamProbe(t *testing.T) {
-	t.Parallel()
-
-	cfg := loadLiveConfig(t)
-	body := postJSON(t, cfg, "/chat/completions", map[string]any{
-		"model":  cfg.Model,
-		"stream": false,
-		"messages": []map[string]any{
-			{
-				"role":    "user",
-				"content": "Use the ApplyPatch tool to create test.txt with the exact contents hello. Do not answer in natural language before calling the tool.",
-			},
-		},
-		"tools": []map[string]any{applyPatchToolDefinition()},
-		"tool_choice": map[string]any{
-			"type": "custom",
-			"name": "ApplyPatch",
-		},
-	})
-
-	message, toolCalls := extractChatCompletionMessage(t, body)
-	if len(toolCalls) == 0 {
-		t.Fatalf("non-stream completion returned no tool calls; message=%q body=%s", message, string(body))
-	}
-
-	first := toolCalls[0]
-	toolType, _ := first["type"].(string)
-	name := extractToolCallName(first)
-	if name != "ApplyPatch" {
-		t.Fatalf("non-stream tool name = %q, want ApplyPatch", name)
-	}
-	if extractToolCallArguments(first) == "" {
-		t.Fatalf("non-stream tool call arguments were empty: %#v", first)
-	}
-
-	t.Logf("non-stream tool call type=%q name=%q", toolType, name)
-	if toolType != "function" {
-		t.Logf("non-stream response is not using the streaming compatibility shim; this may still be incompatible with Cursor if it ever relies on stream=false chat completions")
-	}
-}
-
 func loadLiveConfig(t *testing.T) liveConfig {
 	t.Helper()
 

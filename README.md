@@ -28,7 +28,7 @@ Use it for local or small-scale deployments.
 - Legacy Chat Completions `functions` and top-level `function_call`
 - Hosted web search tool passthrough
 - Structured outputs
-- Text and image inputs on Chat Completions
+- Text, image, and file inputs on Chat Completions
 - Text, image, and file inputs on Responses
 - Chat Completions reasoning summaries via `reasoning_content`
 - Responses reasoning-item replay, including `encrypted_content`
@@ -92,12 +92,14 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
   Structured logging setup.
 - `internal/integration`
   Build-tagged live API tests for end-to-end compatibility checks against a running proxy instance.
+- `docs/`
+  Supplemental notes, including the multi-account rotation design and the architecture diagram source.
 
 ## Requirements
 
 - Go `1.26.x`
 - A valid `PROXY_API_KEY`
-- At least one Codex account added through the admin device-login flow
+- At least one Codex account before the proxy can route public model requests
 - Docker Desktop or Docker Engine if you want to run the provided container setup
 
 ## Quick Start
@@ -125,6 +127,12 @@ You can start from the example file:
 
 ```bash
 cp .env.example .env
+```
+
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 `.env.example` is intentionally minimal. `DATA_DIR` is also supported if you want to override the default local state directory.
@@ -244,7 +252,8 @@ Supported behavior:
 - Structured outputs via `response_format.type = "json_schema"` and `response_format.type = "json_object"`
 - Reasoning effort
 - Reasoning summaries surfaced as `reasoning_content` when the client requested reasoning via `reasoning_effort`
-- Text and image input parts
+- Text, image, and file input parts
+- A compatibility path that accepts a Responses-shaped request body on this endpoint when `messages` is omitted
 
 Compatibility notes:
 
@@ -253,8 +262,10 @@ Compatibility notes:
 - For streaming Chat Completions responses, the proxy currently emits custom tool calls as function-shaped `tool_calls` deltas for broader client compatibility on the chat-completions streaming path.
 - Non-streaming Chat Completions responses currently preserve the native custom tool-call shape. If your client depends on `stream = false` and expects the same compatibility behavior as the streaming path, treat that as a current limitation.
 - Chat usage is returned in OpenAI Chat Completions shape: `prompt_tokens`, `completion_tokens`, `total_tokens`, plus token-detail objects when known.
+- If both `messages` and Responses-style fields are present on this endpoint, `messages` wins.
 - The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
 - Chat Completions fields currently ignored by the proxy: `n`, `temperature`, `top_p`, `max_tokens`, `presence_penalty`, `frequency_penalty`, `stop`, `user`, `parallel_tool_calls`, `stream_options`, and `service_tier`.
+- `system`, `developer`, and `tool` message content are effectively text-only. Non-text content in those roles is rejected with `400`.
 
 ### `POST /v1/responses`
 
@@ -298,6 +309,17 @@ Unauthenticated liveness endpoint.
 ### `GET /health`
 
 Authenticated service health endpoint.
+
+The response includes:
+
+- `status`
+- `accounts`
+- `rotation`
+- `continuations`
+- `default_model`
+- `codex_base_url`
+- `request_timeout`
+- `continuation_ttl`
 
 ## Admin API
 
@@ -392,6 +414,8 @@ The repository includes:
 - `.dockerignore`
   Keeps build context small and avoids copying local state or secrets into the image build context.
 
+The container image also sets `GIN_MODE=release`.
+
 If you prefer plain `docker` instead of Compose:
 
 ```bash
@@ -420,8 +444,9 @@ Key translation rules:
 
 - `system` and `developer` messages are merged into a single `instructions` string
 - `user` and `assistant` messages become upstream input items
-- Assistant tool calls become upstream `function_call` items
-- Tool outputs become upstream `function_call_output` items
+- Assistant function tool calls become upstream `function_call` items
+- Assistant custom tool calls become upstream `custom_tool_call` items
+- Tool outputs become upstream `function_call_output` or `custom_tool_call_output` items, depending on the original tool type
 - Text, image, and file content are mapped to `input_text`, `input_image`, and `input_file`
 - Responses reasoning items are preserved and can be replayed on later turns
 - Responses API assistant replay content such as `output_text` is accepted for stateless continuation reconstruction
@@ -467,10 +492,18 @@ OPENAI_BASE_URL=http://localhost:8080/v1 \
 go test -tags=live ./internal/integration -v -count=1
 ```
 
+PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="change-me-to-a-long-random-string"
+$env:OPENAI_MODEL="gpt-5.2"
+$env:OPENAI_BASE_URL="http://localhost:8080/v1"
+go test -tags=live ./internal/integration -v -count=1
+```
+
 The live suite currently checks:
 
 - Streaming Chat Completions custom-tool round trips, including a replay turn with a tool result
-- The non-stream Chat Completions custom-tool shape, so compatibility drift is visible in test output
 
 ## Limitations
 
