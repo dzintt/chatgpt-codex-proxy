@@ -90,6 +90,8 @@ For continuations, the proxy keeps short-lived in-memory state so a `previous_re
   Local JSON persistence.
 - `internal/observability`
   Structured logging setup.
+- `internal/integration`
+  Build-tagged live API tests for end-to-end compatibility checks against a running proxy instance.
 
 ## Requirements
 
@@ -236,6 +238,7 @@ Supported behavior:
 - Streaming and non-streaming
 - `system` and `developer` instructions
 - Tool calling via `tools`
+- Custom tools, including grammar-based tools such as `ApplyPatch`
 - Legacy `functions` and top-level `function_call` request compatibility
 - Hosted web search passthrough
 - Structured outputs via `response_format.type = "json_schema"` and `response_format.type = "json_object"`
@@ -246,6 +249,9 @@ Supported behavior:
 Compatibility notes:
 
 - Legacy requests are normalized onto the modern tool-calling response shape; responses still use `tool_calls` rather than the older assistant `function_call` field.
+- Native OpenAI custom tools use `type = "custom"`. See the [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model) for the documented custom tool definition shape.
+- For streaming Chat Completions responses, the proxy currently emits custom tool calls as function-shaped `tool_calls` deltas for broader client compatibility on the chat-completions streaming path.
+- Non-streaming Chat Completions responses currently preserve the native custom tool-call shape. If your client depends on `stream = false` and expects the same compatibility behavior as the streaming path, treat that as a current limitation.
 - Chat usage is returned in OpenAI Chat Completions shape: `prompt_tokens`, `completion_tokens`, `total_tokens`, plus token-detail objects when known.
 - The implementation does not try to honor every OpenAI Chat Completions tuning field. Known unsupported fields are accepted for compatibility and ignored by the proxy. They are not currently surfaced to clients, and no compatibility-warning log is emitted.
 - Chat Completions fields currently ignored by the proxy: `n`, `temperature`, `top_p`, `max_tokens`, `presence_penalty`, `frequency_penalty`, `stop`, `user`, `parallel_tool_calls`, `stream_options`, and `service_tier`.
@@ -420,6 +426,8 @@ Key translation rules:
 - Responses reasoning items are preserved and can be replayed on later turns
 - Responses API assistant replay content such as `output_text` is accepted for stateless continuation reconstruction
 - Function tools are accepted in both Chat Completions-style nested form and the modern Responses API top-level form
+- Chat Completions custom tools are accepted in their native `type = "custom"` form.
+- On Chat Completions replay turns, function-shaped assistant tool calls are mapped back to upstream custom tool calls when their name matches a declared custom tool. This preserves compatibility with clients that replay custom tools through function-shaped `tool_calls`.
 - Unsupported content types return `400` instead of being dropped silently
 
 ## Account Rotation
@@ -449,6 +457,20 @@ Run unit tests with:
 ```bash
 go test ./...
 ```
+
+Run the live compatibility tests against a running local proxy with:
+
+```bash
+OPENAI_API_KEY=change-me-to-a-long-random-string \
+OPENAI_MODEL=gpt-5.2 \
+OPENAI_BASE_URL=http://localhost:8080/v1 \
+go test -tags=live ./internal/integration -v -count=1
+```
+
+The live suite currently checks:
+
+- Streaming Chat Completions custom-tool round trips, including a replay turn with a tool result
+- The non-stream Chat Completions custom-tool shape, so compatibility drift is visible in test output
 
 ## Limitations
 

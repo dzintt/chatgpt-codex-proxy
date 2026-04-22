@@ -412,26 +412,17 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 
 	emitted := false
 	if !toolCallInitialized[callID] && strings.TrimSpace(state.Name) != "" {
+		// Chat Completions clients like Cursor reliably understand function-call
+		// deltas but may reject streamed custom-tool deltas. We expose every tool
+		// call as function-shaped here and map custom tools back upstream on replay.
 		chunkToolCall := map[string]any{
 			"index": idx,
 			"id":    callID,
 		}
-		if state.ToolType == "custom" {
-			// Chat Completions streaming currently has broad client compatibility for
-			// function-call deltas, but custom-tool deltas are not consistently
-			// understood. Expose custom tools as function-shaped deltas to Cursor and
-			// translate them back to custom upstream on replay.
-			chunkToolCall["type"] = "function"
-			chunkToolCall["function"] = map[string]any{
-				"name":      state.Name,
-				"arguments": "",
-			}
-		} else {
-			chunkToolCall["type"] = "function"
-			chunkToolCall["function"] = map[string]any{
-				"name":      state.Name,
-				"arguments": "",
-			}
+		chunkToolCall["type"] = "function"
+		chunkToolCall["function"] = map[string]any{
+			"name":      state.Name,
+			"arguments": "",
 		}
 		writeSSE(w, "", translate.MustJSON(translate.ChatChunk(accumulator.ResponseID, jsonutil.FirstNonEmpty(accumulator.Model, normalized.Model), map[string]any{
 			"tool_calls": []map[string]any{chunkToolCall},
