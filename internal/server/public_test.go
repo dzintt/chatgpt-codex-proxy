@@ -1307,33 +1307,33 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 	if toolCalls[0]["id"] != "call_patch" {
 		t.Fatalf("tool_calls[0].id = %#v, want call_patch", toolCalls[0]["id"])
 	}
-	if toolCalls[0]["type"] != "custom" {
-		t.Fatalf("tool_calls[0].type = %#v, want custom", toolCalls[0]["type"])
+	if toolCalls[0]["type"] != "function" {
+		t.Fatalf("tool_calls[0].type = %#v, want function compatibility shim", toolCalls[0]["type"])
 	}
-	custom := nestedMapFromAny(toolCalls[0]["custom"])
-	if custom["name"] != "ApplyPatch" {
-		t.Fatalf("custom.name = %#v, want ApplyPatch", custom["name"])
+	function := nestedMapFromAny(toolCalls[0]["function"])
+	if function["name"] != "ApplyPatch" {
+		t.Fatalf("function.name = %#v, want ApplyPatch", function["name"])
 	}
-	if custom["input"] != "" {
-		t.Fatalf("custom.input = %q, want empty initializer", custom["input"])
+	if function["arguments"] != "" {
+		t.Fatalf("function.arguments = %q, want empty initializer", function["arguments"])
 	}
 
 	inputChunk := events[2].Data
 	choices = sliceOfMapsFromAny(inputChunk["choices"])
 	delta = nestedMapFromAny(choices[0]["delta"])
 	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
-	custom = nestedMapFromAny(toolCalls[0]["custom"])
-	firstDelta, _ := custom["input"].(string)
+	function = nestedMapFromAny(toolCalls[0]["function"])
+	firstDelta, _ := function["arguments"].(string)
 
 	inputDoneChunk := events[3].Data
 	choices = sliceOfMapsFromAny(inputDoneChunk["choices"])
 	delta = nestedMapFromAny(choices[0]["delta"])
 	toolCalls = sliceOfMapsFromAny(delta["tool_calls"])
-	custom = nestedMapFromAny(toolCalls[0]["custom"])
-	secondDelta, _ := custom["input"].(string)
+	function = nestedMapFromAny(toolCalls[0]["function"])
+	secondDelta, _ := function["arguments"].(string)
 
 	if firstDelta+secondDelta != "*** Begin Patch\\n*** End Patch\\n" {
-		t.Fatalf("combined custom.input deltas = %q, want complete streamed input", firstDelta+secondDelta)
+		t.Fatalf("combined function.arguments deltas = %q, want complete streamed input", firstDelta+secondDelta)
 	}
 
 	finalChunk := events[4].Data

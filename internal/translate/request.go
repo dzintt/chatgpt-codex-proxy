@@ -47,6 +47,7 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 	}
 
 	var instructions []string
+	customToolNames := chatCustomToolNames(req.Tools)
 	toolCallTypes := make(map[string]string)
 	for _, message := range req.Messages {
 		switch message.Role {
@@ -71,17 +72,29 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 					if callType == "" {
 						callType = "function"
 					}
+					if callType == "function" && customToolNames[strings.TrimSpace(call.Function.Name)] {
+						callType = "custom"
+					}
 					toolCallTypes[call.ID] = callType
 					switch callType {
 					case "custom":
-						if call.Custom == nil {
-							continue
+						name := ""
+						input := ""
+						if call.Custom != nil {
+							name = call.Custom.Name
+							input = call.Custom.Input
+						}
+						if name == "" {
+							name = call.Function.Name
+						}
+						if input == "" {
+							input = customToolInputFromFunctionArguments(call.Function.Arguments)
 						}
 						out.Input = append(out.Input, codex.InputItem{
 							Type:   "custom_tool_call",
 							CallID: call.ID,
-							Name:   call.Custom.Name,
-							Input:  call.Custom.Input,
+							Name:   name,
+							Input:  input,
 						})
 					default:
 						out.Input = append(out.Input, codex.InputItem{
@@ -140,6 +153,36 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string) (No
 	}
 	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
 	return out, nil
+}
+
+func chatCustomToolNames(tools []openai.ToolDefinition) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make(map[string]bool)
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Type) != "custom" {
+			continue
+		}
+		if name := strings.TrimSpace(tool.Name); name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+func customToolInputFromFunctionArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return ""
+	}
+	var payload struct {
+		Input string `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil && payload.Input != "" {
+		return payload.Input
+	}
+	return arguments
 }
 
 func Responses(req openai.ResponsesRequest, defaultModel string) (NormalizedRequest, error) {

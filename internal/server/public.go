@@ -417,10 +417,14 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 			"id":    callID,
 		}
 		if state.ToolType == "custom" {
-			chunkToolCall["type"] = "custom"
-			chunkToolCall["custom"] = map[string]any{
-				"name":  state.Name,
-				"input": "",
+			// Chat Completions streaming currently has broad client compatibility for
+			// function-call deltas, but custom-tool deltas are not consistently
+			// understood. Expose custom tools as function-shaped deltas to Cursor and
+			// translate them back to custom upstream on replay.
+			chunkToolCall["type"] = "function"
+			chunkToolCall["function"] = map[string]any{
+				"name":      state.Name,
+				"arguments": "",
 			}
 		} else {
 			chunkToolCall["type"] = "function"
@@ -445,8 +449,6 @@ func streamChatToolCallChunk(w io.Writer, accumulator *translate.Accumulator, no
 	parentField := "function"
 	if state.ToolType == "custom" {
 		value = state.Input
-		fieldName = "input"
-		parentField = "custom"
 	}
 	sent := toolCallArgumentsSent[callID]
 	if sent >= len(value) {
