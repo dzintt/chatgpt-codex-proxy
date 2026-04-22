@@ -204,7 +204,12 @@ func (a *App) rateLimitCooldownUntil(accountID string, cause error, now time.Tim
 	if retryAfter := retryAfterFromError(cause); retryAfter > 0 {
 		return fallbackUntil(now, retryAfter)
 	}
-	if record, ok := a.accounts.Get(accountID); ok {
+	record, ok, err := a.accounts.Get(accountID)
+	if err != nil {
+		a.logger.Warn("load account cooldown failed", "account_id", accountID, "error", err.Error())
+		return fallbackUntil(now, accounts.DefaultRateLimitFallback)
+	}
+	if ok {
 		if reset := accounts.PrimaryRateLimitReset(record.CachedQuota, now); reset != nil {
 			return reset
 		}
@@ -213,7 +218,12 @@ func (a *App) rateLimitCooldownUntil(accountID string, cause error, now time.Tim
 }
 
 func (a *App) quotaCooldownUntil(accountID string, now time.Time) *time.Time {
-	if record, ok := a.accounts.Get(accountID); ok {
+	record, ok, err := a.accounts.Get(accountID)
+	if err != nil {
+		a.logger.Warn("load account cooldown failed", "account_id", accountID, "error", err.Error())
+		return fallbackUntil(now, accounts.DefaultQuotaFallback)
+	}
+	if ok {
 		if reset := accounts.QuotaReset(record.CachedQuota, now); reset != nil {
 			return reset
 		}

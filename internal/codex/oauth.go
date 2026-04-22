@@ -237,8 +237,8 @@ func extractAccountID(raw oauthTokenResponse) string {
 }
 
 func parseJWTClaims(token string) oauthClaims {
-	var claims oauthClaims
-	if !jwtutil.DecodePayload(token, &claims) {
+	claims, ok := jwtutil.DecodePayload[oauthClaims](token)
+	if !ok {
 		return oauthClaims{}
 	}
 	return claims

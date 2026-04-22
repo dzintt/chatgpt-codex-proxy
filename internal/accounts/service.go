@@ -62,12 +62,12 @@ func NewService(accountsStore Store, defaultStrategy RotationStrategy) (*Service
 	return svc, nil
 }
 
-func (s *Service) List() []Record {
+func (s *Service) List() ([]Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.refreshAllLocked(time.Now().UTC()) {
-		_ = s.persistLocked()
+	if err := s.refreshAllLocked(time.Now().UTC()); err != nil {
+		return nil, err
 	}
 
 	items := make([]Record, 0, len(s.records))
@@ -80,35 +80,35 @@ func (s *Service) List() []Record {
 		}
 		return items[i].CreatedAt.Before(items[j].CreatedAt)
 	})
-	return items
+	return items, nil
 }
 
-func (s *Service) Get(id string) (Record, bool) {
+func (s *Service) Get(id string) (Record, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.refreshAllLocked(time.Now().UTC()) {
-		_ = s.persistLocked()
+	if err := s.refreshAllLocked(time.Now().UTC()); err != nil {
+		return Record{}, false, err
 	}
 
 	record, ok := s.records[id]
 	if !ok {
-		return Record{}, false
+		return Record{}, false, nil
 	}
-	return cloneRecord(record), true
+	return cloneRecord(record), true, nil
 }
 
-func (s *Service) EligibleNow(id string) bool {
+func (s *Service) EligibleNow(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	if s.refreshAllLocked(now) {
-		_ = s.persistLocked()
+	if err := s.refreshAllLocked(now); err != nil {
+		return false, err
 	}
 
 	record, ok := s.records[id]
-	return ok && isEligible(record, now)
+	return ok && isEligible(record, now), nil
 }
 
 func (s *Service) UpsertFromToken(accountID string, token OAuthToken) (Record, error) {
@@ -323,8 +323,8 @@ func (s *Service) AcquireMatching(preferredID string, allow func(Record) bool) (
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	if s.refreshAllLocked(now) {
-		_ = s.persistLocked()
+	if err := s.refreshAllLocked(now); err != nil {
+		return Record{}, err
 	}
 
 	if preferredID != "" {
@@ -442,7 +442,7 @@ func (s *Service) normalizeLoadedRecord(record *Record, now time.Time) {
 	clearExpiredCooldownLocked(record, now)
 }
 
-func (s *Service) refreshAllLocked(now time.Time) bool {
+func (s *Service) refreshAllLocked(now time.Time) error {
 	changed := false
 	for _, record := range s.records {
 		recordChanged := false
@@ -457,7 +457,10 @@ func (s *Service) refreshAllLocked(now time.Time) bool {
 			changed = true
 		}
 	}
-	return changed
+	if !changed {
+		return nil
+	}
+	return s.persistLocked()
 }
 
 func clearExpiredCooldownLocked(record *Record, now time.Time) bool {

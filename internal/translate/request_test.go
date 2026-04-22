@@ -899,8 +899,8 @@ func TestChatCompletionsTranslationPreparesSchemaAndWarnings(t *testing.T) {
 				},
 			},
 		},
-		Temperature:   ptrFloat(0.2),
-		MaxTokens:     ptrInt(42),
+		Temperature:   ptr(0.2),
+		MaxTokens:     ptr(42),
 		StreamOptions: json.RawMessage(`{"include_usage":true}`),
 	}
 
@@ -963,8 +963,8 @@ func TestResponsesTranslationPreparesSchemaAndWarnings(t *testing.T) {
 				},
 			},
 		},
-		TopP:              ptrFloat(0.9),
-		ParallelToolCalls: ptrBool(true),
+		TopP:              ptr(0.9),
+		ParallelToolCalls: ptr(true),
 		Metadata:          map[string]any{"request_id": "abc"},
 	}
 
@@ -985,14 +985,6 @@ func TestResponsesTranslationPreparesSchemaAndWarnings(t *testing.T) {
 	}
 }
 
-func ptrBool(value bool) *bool {
-	return &value
-}
-
-func ptrFloat(value float64) *float64 {
-	return &value
-}
-
-func ptrInt(value int) *int {
+func ptr[T any](value T) *T {
 	return &value
 }

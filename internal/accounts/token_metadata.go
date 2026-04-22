@@ -64,9 +64,6 @@ func metadataFromToken(token OAuthToken) tokenMetadata {
 }
 
 func parseJWTClaims(token string) (jwtClaims, bool) {
-	var claims jwtClaims
-	if !jwtutil.DecodePayload(token, &claims) {
-		return jwtClaims{}, false
-	}
-	return claims, true
+	claims, ok := jwtutil.DecodePayload[jwtClaims](token)
+	return claims, ok
 }

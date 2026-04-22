@@ -15,6 +15,7 @@ import (
 	"chatgpt-codex-proxy/internal/accounts"
 	"chatgpt-codex-proxy/internal/codex"
 	"chatgpt-codex-proxy/internal/config"
+	"chatgpt-codex-proxy/internal/jsonutil"
 	"chatgpt-codex-proxy/internal/middleware"
 	"chatgpt-codex-proxy/internal/translate"
 )
@@ -96,10 +97,7 @@ func TestObserveQuotaSnapshotUpdatesCachedQuota(t *testing.T) {
 		},
 	})
 
-	record, ok := accountsSvc.Get("acct_headers")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
+	record := mustGetAccount(t, accountsSvc, "acct_headers")
 	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
 		t.Fatal("cached quota missing used percent")
 	}
@@ -256,6 +254,15 @@ func TestNormalizeChatCompletionsBodyPrefersMessagesShape(t *testing.T) {
 	}
 }
 
+func TestNormalizeChatCompletionsBodyRejectsEmptyPayload(t *testing.T) {
+	t.Parallel()
+
+	_, err := normalizeChatCompletionsBody([]byte(`{}`), "gpt-5.4", nil)
+	if err == nil {
+		t.Fatal("normalizeChatCompletionsBody() error = nil, want empty payload error")
+	}
+}
+
 func TestObserveQuotaEventUpdatesCachedQuota(t *testing.T) {
 	t.Parallel()
 
@@ -293,10 +300,7 @@ func TestObserveQuotaEventUpdatesCachedQuota(t *testing.T) {
 		t.Fatal("observeQuotaEvent() = false, want true")
 	}
 
-	record, ok := accountsSvc.Get("acct_event")
-	if !ok {
-		t.Fatal("Get() returned false")
-	}
+	record := mustGetAccount(t, accountsSvc, "acct_event")
 	if record.CachedQuota == nil || record.CachedQuota.RateLimit.UsedPercent == nil {
 		t.Fatal("cached quota missing after event")
 	}
@@ -336,7 +340,7 @@ func TestStreamChatCompletionClassifiesStructuredRateLimitFailureAndSetsCooldown
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_rate_limit")
+	record := mustGetAccount(t, accountsSvc, "acct_rate_limit")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{{
 			Type: "error",
@@ -356,15 +360,17 @@ func TestStreamChatCompletionClassifiesStructuredRateLimitFailureAndSetsCooldown
 
 	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	if !strings.Contains(recorder.Body.String(), "upstream account rate limited") {
 		t.Fatalf("stream body = %s, want rate limited message", recorder.Body.String())
 	}
 
-	updated, _ := accountsSvc.Get("acct_rate_limit")
+	updated := mustGetAccount(t, accountsSvc, "acct_rate_limit")
 	if updated.CooldownUntil == nil {
 		t.Fatal("cooldown_until = nil, want cooldown")
 	}
@@ -412,7 +418,7 @@ func TestStreamResponsesClassifiesStructuredQuotaFailureAndSetsCooldown(t *testi
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_quota")
+	record := mustGetAccount(t, accountsSvc, "acct_quota")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{{
 			Type: "response.failed",
@@ -434,15 +440,17 @@ func TestStreamResponsesClassifiesStructuredQuotaFailureAndSetsCooldown(t *testi
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	if !strings.Contains(recorder.Body.String(), "upstream account quota exhausted") {
 		t.Fatalf("stream body = %s, want quota exhausted message", recorder.Body.String())
 	}
 
-	updated, _ := accountsSvc.Get("acct_quota")
+	updated := mustGetAccount(t, accountsSvc, "acct_quota")
 	if updated.CooldownUntil == nil {
 		t.Fatal("cooldown_until = nil, want cooldown")
 	}
@@ -482,7 +490,7 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_unauthorized")
+	record := mustGetAccount(t, accountsSvc, "acct_unauthorized")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{{
 			Type: "response.failed",
@@ -500,11 +508,13 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
-	updated, _ := accountsSvc.Get("acct_unauthorized")
+	updated := mustGetAccount(t, accountsSvc, "acct_unauthorized")
 	if updated.Status != accounts.StatusExpired {
 		t.Fatalf("status = %q, want expired", updated.Status)
 	}
@@ -539,7 +549,7 @@ func TestStreamResponsesSynthesizesFunctionCallLifecycle(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_stream_tools")
+	record := mustGetAccount(t, accountsSvc, "acct_stream_tools")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -592,8 +602,10 @@ func TestStreamResponsesSynthesizesFunctionCallLifecycle(t *testing.T) {
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -667,7 +679,7 @@ func TestStreamResponsesSynthesizesFunctionCallLifecycleWithoutDeltas(t *testing
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_stream_done_only")
+	record := mustGetAccount(t, accountsSvc, "acct_stream_done_only")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -695,8 +707,10 @@ func TestStreamResponsesSynthesizesFunctionCallLifecycleWithoutDeltas(t *testing
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -738,7 +752,7 @@ func TestStreamResponsesTextOnlyPassthroughRemainsUnchanged(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_stream_text")
+	record := mustGetAccount(t, accountsSvc, "acct_stream_text")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -764,8 +778,10 @@ func TestStreamResponsesTextOnlyPassthroughRemainsUnchanged(t *testing.T) {
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -841,7 +857,7 @@ func TestStreamChatCompletionEmitsReasoningContentAndStrictUsage(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_chat_reasoning")
+	record := mustGetAccount(t, accountsSvc, "acct_chat_reasoning")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -883,10 +899,12 @@ func TestStreamChatCompletionEmitsReasoningContentAndStrictUsage(t *testing.T) {
 	}
 
 	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
-		Endpoint:  translate.EndpointChat,
-		Model:     "gpt-5.4",
-		Stream:    true,
-		Reasoning: &codex.Reasoning{Effort: "high"},
+		Endpoint: translate.EndpointChat,
+		Request: codex.Request{
+			Model:     "gpt-5.4",
+			Stream:    true,
+			Reasoning: &codex.Reasoning{Effort: "high"},
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -946,7 +964,7 @@ func TestStreamChatCompletionDoesNotSynthesizeReasoningContentFromCompletedOutpu
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_chat_reasoning_fallback")
+	record := mustGetAccount(t, accountsSvc, "acct_chat_reasoning_fallback")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -995,10 +1013,12 @@ func TestStreamChatCompletionDoesNotSynthesizeReasoningContentFromCompletedOutpu
 	}
 
 	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
-		Endpoint:  translate.EndpointChat,
-		Model:     "gpt-5.4",
-		Stream:    true,
-		Reasoning: &codex.Reasoning{Effort: "high"},
+		Endpoint: translate.EndpointChat,
+		Request: codex.Request{
+			Model:     "gpt-5.4",
+			Stream:    true,
+			Reasoning: &codex.Reasoning{Effort: "high"},
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -1042,7 +1062,7 @@ func TestStreamChatCompletionUsesToolNameFromOutputItemWhenArgumentEventsOmitIt(
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_chat_tool_name")
+	record := mustGetAccount(t, accountsSvc, "acct_chat_tool_name")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -1093,8 +1113,10 @@ func TestStreamChatCompletionUsesToolNameFromOutputItemWhenArgumentEventsOmitIt(
 
 	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -1165,7 +1187,7 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_chat_custom_tool")
+	record := mustGetAccount(t, accountsSvc, "acct_chat_custom_tool")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -1216,8 +1238,10 @@ func TestStreamChatCompletionSupportsCustomToolCalls(t *testing.T) {
 
 	app.streamChatCompletion(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointChat,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -1300,7 +1324,7 @@ func TestStreamResponsesPreservesReasoningItemsAndEvents(t *testing.T) {
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_responses_reasoning")
+	record := mustGetAccount(t, accountsSvc, "acct_responses_reasoning")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -1358,8 +1382,10 @@ func TestStreamResponsesPreservesReasoningItemsAndEvents(t *testing.T) {
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -1416,7 +1442,7 @@ func TestStreamResponsesDoesNotSynthesizeReasoningSummaryEventFromCompletedOutpu
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 
-	record, _ := accountsSvc.Get("acct_responses_reasoning_fallback")
+	record := mustGetAccount(t, accountsSvc, "acct_responses_reasoning_fallback")
 	stream := &fakeEventStream{
 		events: []*codex.StreamEvent{
 			{
@@ -1459,8 +1485,10 @@ func TestStreamResponsesDoesNotSynthesizeReasoningSummaryEventFromCompletedOutpu
 
 	app.streamResponses(ctx, record, translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Model:    "gpt-5.4",
-		Stream:   true,
+		Request: codex.Request{
+			Model:  "gpt-5.4",
+			Stream: true,
+		},
 	}, stream)
 
 	events := parseSSEEvents(t, recorder.Body.String())
@@ -1475,13 +1503,15 @@ func TestContinuationInputHistoryIncludesReasoningReplay(t *testing.T) {
 
 	accumulator := translate.NewAccumulator(translate.NormalizedRequest{
 		Endpoint: translate.EndpointResponses,
-		Input: []codex.InputItem{{
-			Role: "user",
-			Content: []codex.ContentPart{{
-				Type: "input_text",
-				Text: "hello",
+		Request: codex.Request{
+			Input: []codex.InputItem{{
+				Role: "user",
+				Content: []codex.ContentPart{{
+					Type: "input_text",
+					Text: "hello",
+				}},
 			}},
-		}},
+		},
 	})
 	accumulator.Apply(&codex.StreamEvent{
 		Type: "response.completed",
@@ -1599,11 +1629,11 @@ func TestClassifyUpstreamErrorBansGeneric403ButNotCloudflare403(t *testing.T) {
 		t.Fatalf("cloudflare 403 = (%d, %q), want (403, upstream_error)", status, code)
 	}
 
-	generic, _ := accountsSvc.Get("acct_generic_403")
+	generic := mustGetAccount(t, accountsSvc, "acct_generic_403")
 	if generic.Status != accounts.StatusBanned {
 		t.Fatalf("generic status = %q, want banned", generic.Status)
 	}
-	cloudflare, _ := accountsSvc.Get("acct_cloudflare_403")
+	cloudflare := mustGetAccount(t, accountsSvc, "acct_cloudflare_403")
 	if cloudflare.Status != accounts.StatusActive {
 		t.Fatalf("cloudflare status = %q, want active", cloudflare.Status)
 	}
@@ -1619,6 +1649,19 @@ func newServerAccounts(t *testing.T, records ...*accounts.Record) *accounts.Serv
 		t.Fatalf("NewService() error = %v", err)
 	}
 	return svc
+}
+
+func mustGetAccount(t *testing.T, svc *accounts.Service, id string) accounts.Record {
+	t.Helper()
+
+	record, ok, err := svc.Get(id)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v", id, err)
+	}
+	if !ok {
+		t.Fatalf("Get(%q) = false, want true", id)
+	}
+	return record
 }
 
 type sseEvent struct {
@@ -1683,5 +1726,5 @@ func nestedMapFromAny(value any) map[string]any {
 }
 
 func sliceOfMapsFromAny(value any) []map[string]any {
-	return translate.SliceOfMaps(value)
+	return jsonutil.SliceOfMaps(value)
 }

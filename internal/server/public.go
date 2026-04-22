@@ -41,6 +41,7 @@ type sessionResolution struct {
 }
 
 var errIncompleteResponse = errors.New("upstream stream ended before response.completed")
+var errEmptyChatCompletionsBody = errors.New("request body must include chat messages or responses input")
 
 func (a *App) handleChatCompletions(c *gin.Context) {
 	body, err := captureRequestBody(c)
@@ -737,9 +738,9 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 		jsonutil.StringValue(item["status"]),
 		jsonutil.StringValue(item["encrypted_content"]),
 	)
-	out.Summary = continuationSummaryPartsFromMaps(translate.SliceOfMaps(item["summary"]))
-	out.Content = continuationContentPartsFromMaps(translate.SliceOfMaps(item["content"]))
-	out.OutputContent = continuationContentPartsFromMaps(translate.SliceOfMaps(item["output"]))
+	out.Summary = continuationSummaryPartsFromMaps(jsonutil.SliceOfMaps(item["summary"]))
+	out.Content = continuationContentPartsFromMaps(jsonutil.SliceOfMaps(item["content"]))
+	out.OutputContent = continuationContentPartsFromMaps(jsonutil.SliceOfMaps(item["output"]))
 	if out.Role == "" && out.Type == "message" {
 		out.Role = "assistant"
 	}
@@ -814,34 +815,25 @@ func continuationInputItemBase(role, itemType, callID, name, input, arguments, o
 }
 
 func continuationSummaryPartsFromMaps(parts []map[string]any) []accounts.ContinuationSummaryPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]accounts.ContinuationSummaryPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, accounts.ContinuationSummaryPart{
+	return mapParts(parts, func(part map[string]any) accounts.ContinuationSummaryPart {
+		return accounts.ContinuationSummaryPart{
 			Type: jsonutil.StringValue(part["type"]),
 			Text: jsonutil.StringValue(part["text"]),
-		})
-	}
-	return out
+		}
+	})
 }
 
 func continuationSummaryPartsFromReasoning(parts []openai.ReasoningPart) []accounts.ContinuationSummaryPart {
-	return append([]accounts.ContinuationSummaryPart(nil), parts...)
+	return cloneParts(parts)
 }
 
 func reasoningPartsFromContinuation(parts []accounts.ContinuationSummaryPart) []openai.ReasoningPart {
-	return append([]openai.ReasoningPart(nil), parts...)
+	return cloneParts(parts)
 }
 
 func continuationContentPartsFromMaps(parts []map[string]any) []accounts.ContinuationContentPart {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]accounts.ContinuationContentPart, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, accounts.ContinuationContentPart{
+	return mapParts(parts, func(part map[string]any) accounts.ContinuationContentPart {
+		return accounts.ContinuationContentPart{
 			Type:     jsonutil.StringValue(part["type"]),
 			Text:     jsonutil.StringValue(part["text"]),
 			ImageURL: jsonutil.StringValue(part["image_url"]),
@@ -850,22 +842,39 @@ func continuationContentPartsFromMaps(parts []map[string]any) []accounts.Continu
 			FileData: jsonutil.StringValue(part["file_data"]),
 			FileID:   jsonutil.StringValue(part["file_id"]),
 			Filename: jsonutil.StringValue(part["filename"]),
-		})
+		}
+	})
+}
+
+func continuationContentPartsFromCodex(parts []codex.ContentPart) []accounts.ContinuationContentPart {
+	return cloneParts(parts)
+}
+
+func codexContentPartsFromContinuation(parts []accounts.ContinuationContentPart) []codex.ContentPart {
+	return cloneParts(parts)
+}
+
+func mapParts[T any](parts []map[string]any, fn func(map[string]any) T) []T {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]T, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, fn(part))
 	}
 	return out
 }
 
-func continuationContentPartsFromCodex(parts []codex.ContentPart) []accounts.ContinuationContentPart {
-	return append([]accounts.ContinuationContentPart(nil), parts...)
-}
-
-func codexContentPartsFromContinuation(parts []accounts.ContinuationContentPart) []codex.ContentPart {
-	return append([]codex.ContentPart(nil), parts...)
+func cloneParts[T any](parts []T) []T {
+	if len(parts) == 0 {
+		return nil
+	}
+	return append([]T(nil), parts...)
 }
 
 func captureRequestBody(c *gin.Context) ([]byte, error) {
 	if c == nil || c.Request == nil || c.Request.Body == nil {
-		return nil, nil
+		return nil, fmt.Errorf("request body is unavailable")
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -901,7 +910,7 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *mod
 		strings.TrimSpace(envelope.PreviousResponseID) == "" &&
 		len(bytes.TrimSpace(envelope.Text)) == 0 &&
 		len(bytes.TrimSpace(envelope.Reasoning)) == 0 {
-		return translate.ChatCompletions(chatReq, defaultModel, catalog)
+		return translate.NormalizedRequest{}, errEmptyChatCompletionsBody
 	}
 
 	var responsesReq openai.ResponsesRequest

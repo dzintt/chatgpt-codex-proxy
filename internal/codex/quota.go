@@ -151,25 +151,34 @@ func parseEventRateWindow(raw map[string]any) *accounts.RateLimitWindow {
 	if raw == nil {
 		return nil
 	}
-	usedPercent, ok := parseFloat(raw["used_percent"])
-	if !ok {
+	payload, ok := decodeMapValue[eventRateWindowPayload](raw)
+	if !ok || payload.UsedPercent == nil {
 		return nil
 	}
 	window := &accounts.RateLimitWindow{
 		Allowed:      true,
-		LimitReached: usedPercent >= 100,
-		UsedPercent:  &usedPercent,
+		LimitReached: *payload.UsedPercent >= 100,
+		UsedPercent:  payload.UsedPercent,
 	}
-	if resetAt, ok := parseUnixTime(raw["reset_at"]); ok {
+	if payload.ResetAt != nil {
+		resetAt := time.Unix(*payload.ResetAt, 0).UTC()
 		window.ResetAt = &resetAt
 	}
-	if minutes, ok := parseInt(raw["window_minutes"]); ok {
-		seconds := minutes * 60
+	if payload.WindowMinutes != nil {
+		seconds := *payload.WindowMinutes * 60
 		window.LimitWindowSeconds = &seconds
-	} else if seconds, ok := parseInt(raw["limit_window_seconds"]); ok {
+	} else if payload.LimitWindowSeconds != nil {
+		seconds := *payload.LimitWindowSeconds
 		window.LimitWindowSeconds = &seconds
 	}
 	return window
+}
+
+type eventRateWindowPayload struct {
+	UsedPercent        *float64 `json:"used_percent,omitempty"`
+	ResetAt            *int64   `json:"reset_at,omitempty"`
+	WindowMinutes      *int     `json:"window_minutes,omitempty"`
+	LimitWindowSeconds *int     `json:"limit_window_seconds,omitempty"`
 }
 
 func firstMapValue(values map[string]any, keys ...string) map[string]any {
@@ -257,59 +266,20 @@ func parseFloatHeader(raw string) (float64, bool) {
 	return value, true
 }
 
-func parseFloat(value any) (float64, bool) {
-	switch typed := value.(type) {
-	case float64:
-		return typed, true
-	case int:
-		return float64(typed), true
-	case int64:
-		return float64(typed), true
-	case json.Number:
-		number, err := typed.Float64()
-		return number, err == nil
-	default:
-		return 0, false
+func decodeMapValue[T any](raw map[string]any) (T, bool) {
+	var zero T
+	if raw == nil {
+		return zero, false
 	}
-}
-
-func parseInt(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	case json.Number:
-		number, err := typed.Int64()
-		return int(number), err == nil
-	default:
-		return 0, false
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return zero, false
 	}
-}
-
-func parseUnixTime(value any) (time.Time, bool) {
-	switch typed := value.(type) {
-	case int64:
-		return time.Unix(typed, 0).UTC(), true
-	case int:
-		return time.Unix(int64(typed), 0).UTC(), true
-	case float64:
-		return time.Unix(int64(typed), 0).UTC(), true
-	case json.Number:
-		number, err := typed.Int64()
-		if err == nil {
-			return time.Unix(number, 0).UTC(), true
-		}
-		floatValue, floatErr := typed.Float64()
-		if floatErr == nil {
-			return time.Unix(int64(floatValue), 0).UTC(), true
-		}
-		return time.Time{}, false
-	default:
-		return time.Time{}, false
+	var decoded T
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return zero, false
 	}
+	return decoded, true
 }
 
 func floatPtr[T any](value *T, getter func(*T) float64) *float64 {

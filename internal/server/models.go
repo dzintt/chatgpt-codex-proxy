@@ -6,19 +6,29 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"chatgpt-codex-proxy/internal/middleware"
-	"chatgpt-codex-proxy/internal/openai"
 )
+
+const modelCreatedTimestamp int64 = 1700000000
+
+type modelListResponse struct {
+	Object string          `json:"object"`
+	Data   []modelResponse `json:"data"`
+}
+
+type modelResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
 
 func (a *App) handleModels(c *gin.Context) {
 	entries := a.modelCatalog().List()
-	data := make([]gin.H, 0, len(entries))
+	data := make([]modelResponse, 0, len(entries))
 	for _, entry := range entries {
 		data = append(data, modelObject(entry.ID))
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   data,
-	})
+	c.JSON(http.StatusOK, modelListResponse{Object: "list", Data: data})
 }
 
 func (a *App) handleModelByID(c *gin.Context) {
@@ -30,11 +40,11 @@ func (a *App) handleModelByID(c *gin.Context) {
 	c.JSON(http.StatusOK, modelObject(model.ID))
 }
 
-func modelObject(model string) gin.H {
-	return gin.H{
-		"id":       model,
-		"object":   "model",
-		"created":  openai.ModelCreatedTimestamp,
-		"owned_by": "openai",
+func modelObject(model string) modelResponse {
+	return modelResponse{
+		ID:      model,
+		Object:  "model",
+		Created: modelCreatedTimestamp,
+		OwnedBy: "openai",
 	}
 }

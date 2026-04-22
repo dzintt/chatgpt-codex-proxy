@@ -59,3 +59,23 @@ func CloneMap(src map[string]any) map[string]any {
 	}
 	return dst
 }
+
+// SliceOfMaps coerces a JSON-decoded value into []map[string]any, copying the
+// outer slice.
+func SliceOfMaps(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return append([]map[string]any(nil), items...)
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			mapped, ok := item.(map[string]any)
+			if ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

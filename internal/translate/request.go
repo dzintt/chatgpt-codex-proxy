@@ -33,16 +33,16 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, cat
 	}
 	out := NormalizedRequest{
 		Endpoint:              EndpointChat,
-		Model:                 model,
 		ModelExplicit:         modelExplicit,
-		Stream:                req.Stream,
-		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
-		Tools:                 normalizeTools(tools),
-		Reasoning:             reasoning,
-		ServiceTier:           serviceTier,
-		Include:               reasoningInclude(reasoning),
 		CompatibilityWarnings: collectChatCompatibilityWarnings(req),
 	}
+	out.Model = model
+	out.Stream = req.Stream
+	out.Tools = normalizeTools(tools)
+	out.Reasoning = reasoning
+	out.ServiceTier = serviceTier
+	out.PreviousResponseID = strings.TrimSpace(req.PreviousResponseID)
+	out.Include = reasoningInclude(reasoning)
 	if len(req.Tools) > 0 {
 		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
 	} else if choice := normalizeLegacyFunctionChoice(req.FunctionCall); choice != nil {
@@ -218,17 +218,17 @@ func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*mod
 
 	out := NormalizedRequest{
 		Endpoint:              EndpointResponses,
-		Model:                 model,
 		ModelExplicit:         modelExplicit,
-		Stream:                req.Stream,
-		Tools:                 normalizeTools(req.Tools),
-		ToolChoice:            normalizeToolChoice(req.ToolChoice),
-		Reasoning:             reasoning,
-		ServiceTier:           serviceTier,
-		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
-		Include:               reasoningInclude(reasoning),
 		CompatibilityWarnings: collectResponsesCompatibilityWarnings(req),
 	}
+	out.Model = model
+	out.Stream = req.Stream
+	out.Tools = normalizeTools(req.Tools)
+	out.ToolChoice = normalizeToolChoice(req.ToolChoice)
+	out.Reasoning = reasoning
+	out.ServiceTier = serviceTier
+	out.PreviousResponseID = strings.TrimSpace(req.PreviousResponseID)
+	out.Include = reasoningInclude(reasoning)
 	var instructions []string
 	if text := strings.TrimSpace(req.Instructions); text != "" {
 		instructions = append(instructions, text)

@@ -47,3 +47,21 @@ func TestCloneMapDeepClonesNestedMaps(t *testing.T) {
 		t.Fatal("CloneMap() did not isolate nested map mutations")
 	}
 }
+
+func TestSliceOfMaps(t *testing.T) {
+	t.Parallel()
+
+	raw := []any{
+		map[string]any{"id": "a"},
+		"skip",
+		map[string]any{"id": "b"},
+	}
+
+	got := SliceOfMaps(raw)
+	if len(got) != 2 {
+		t.Fatalf("SliceOfMaps() len = %d, want 2", len(got))
+	}
+	if got[0]["id"] != "a" || got[1]["id"] != "b" {
+		t.Fatalf("SliceOfMaps() = %#v, want maps in order", got)
+	}
+}

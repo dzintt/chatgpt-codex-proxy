@@ -59,7 +59,9 @@ type Config struct {
 type slogLevel string
 
 func Load() (Config, error) {
-	_ = godotenv.Load()
+	if err := loadDotEnv(); err != nil {
+		return Config{}, err
+	}
 
 	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
 	if dataDir == "" {
@@ -163,4 +165,26 @@ func loadBoolEnv(key string, defaultValue bool) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean", key)
 	}
 	return value, nil
+}
+
+func loadDotEnv() error {
+	if _, err := os.Stat(".env"); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat .env: %w", err)
+	}
+	envMap, err := godotenv.Read(".env")
+	if err != nil {
+		return fmt.Errorf("load .env: %w", err)
+	}
+	for key, value := range envMap {
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set %s from .env: %w", key, err)
+		}
+	}
+	return nil
 }

@@ -4,12 +4,18 @@ import (
 	"testing"
 
 	"chatgpt-codex-proxy/internal/codex"
+	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
 func TestResponsesObjectIncludesFunctionCalls(t *testing.T) {
 	t.Parallel()
 
-	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
+	})
 	accumulator.ResponseID = "resp_test"
 	accumulator.ToolCalls = []*ToolCallState{{
 		ItemID:      "fc_123",
@@ -78,7 +84,7 @@ func TestPatchChatCompletionObjectForTuple(t *testing.T) {
 		t.Fatalf("PatchChatCompletionObjectForTuple() error = %v", err)
 	}
 
-	choice := sliceOfMaps(object["choices"])[0]
+	choice := jsonutil.SliceOfMaps(object["choices"])[0]
 	message, _ := choice["message"].(map[string]any)
 	if message["content"] != `{"pair":["left",2]}` {
 		t.Fatalf("message.content = %#v, want reconverted tuple JSON", message["content"])
@@ -122,7 +128,7 @@ func TestPatchResponsesObjectForTuple(t *testing.T) {
 	if object["output_text"] != `{"pair":["left",2]}` {
 		t.Fatalf("output_text = %#v, want reconverted tuple JSON", object["output_text"])
 	}
-	content := sliceOfMaps(sliceOfMaps(object["output"])[0]["content"])
+	content := jsonutil.SliceOfMaps(jsonutil.SliceOfMaps(object["output"])[0]["content"])
 	if content[0]["text"] != `{"pair":["left",2]}` {
 		t.Fatalf("content[0].text = %#v, want reconverted tuple JSON", content[0]["text"])
 	}
@@ -131,7 +137,12 @@ func TestPatchResponsesObjectForTuple(t *testing.T) {
 func TestEnsureResponseToolCallCompletedIncludesCallID(t *testing.T) {
 	t.Parallel()
 
-	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
+	})
 	state := &ToolCallState{
 		ItemID:      "fc_123",
 		CallID:      "call_123",
@@ -158,7 +169,12 @@ func TestEnsureResponseToolCallCompletedIncludesCallID(t *testing.T) {
 func TestApplyUpgradesPlaceholderToolCallIDWhenOutputItemProvidesCallID(t *testing.T) {
 	t.Parallel()
 
-	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
+	})
 	accumulator.Apply(&codex.StreamEvent{
 		Type: "response.custom_tool_call_input.delta",
 		Raw: map[string]any{
@@ -192,9 +208,9 @@ func TestApplyUpgradesPlaceholderToolCallIDWhenOutputItemProvidesCallID(t *testi
 	}
 
 	chatObject := accumulator.ChatCompletionObject()
-	choices := sliceOfMaps(chatObject["choices"])
+	choices := jsonutil.SliceOfMaps(chatObject["choices"])
 	message, _ := choices[0]["message"].(map[string]any)
-	toolCalls := sliceOfMaps(message["tool_calls"])
+	toolCalls := jsonutil.SliceOfMaps(message["tool_calls"])
 	if toolCalls[0]["id"] != "call_patch" {
 		t.Fatalf("tool_calls[0].id = %#v, want call_patch", toolCalls[0]["id"])
 	}
@@ -209,7 +225,12 @@ func TestApplyUpgradesPlaceholderToolCallIDWhenOutputItemProvidesCallID(t *testi
 func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.T) {
 	t.Parallel()
 
-	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
+	})
 	accumulator.ResponseID = "resp_merge"
 	accumulator.ToolCalls = []*ToolCallState{{
 		ItemID:      "fc_123",
@@ -250,7 +271,12 @@ func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.
 func TestResponsesObjectPreservesToolCallOrderByOutputIndex(t *testing.T) {
 	t.Parallel()
 
-	accumulator := NewAccumulator(NormalizedRequest{Endpoint: EndpointResponses, Model: "gpt-5.4"})
+	accumulator := NewAccumulator(NormalizedRequest{
+		Endpoint: EndpointResponses,
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
+	})
 	accumulator.ToolCalls = []*ToolCallState{
 		{
 			ItemID:      "fc_late",
@@ -284,9 +310,11 @@ func TestChatCompletionObjectIncludesReasoningContentAndStrictUsage(t *testing.T
 	t.Parallel()
 
 	accumulator := NewAccumulator(NormalizedRequest{
-		Endpoint:  EndpointChat,
-		Model:     "gpt-5.4",
-		Reasoning: &codex.Reasoning{Effort: "high"},
+		Endpoint: EndpointChat,
+		Request: codex.Request{
+			Model:     "gpt-5.4",
+			Reasoning: &codex.Reasoning{Effort: "high"},
+		},
 	})
 	accumulator.Apply(&codex.StreamEvent{
 		Type: "response.reasoning_summary_text.delta",
@@ -346,9 +374,11 @@ func TestAccumulatorReasoningSummaryDoesNotUseCompletedOutputFallback(t *testing
 	t.Parallel()
 
 	accumulator := NewAccumulator(NormalizedRequest{
-		Endpoint:  EndpointChat,
-		Model:     "gpt-5.4",
-		Reasoning: &codex.Reasoning{Effort: "high"},
+		Endpoint: EndpointChat,
+		Request: codex.Request{
+			Model:     "gpt-5.4",
+			Reasoning: &codex.Reasoning{Effort: "high"},
+		},
 	})
 	accumulator.Apply(&codex.StreamEvent{
 		Type: "response.completed",
@@ -396,7 +426,9 @@ func TestResponsesObjectUsageIncludesDetailFields(t *testing.T) {
 
 	accumulator := NewAccumulator(NormalizedRequest{
 		Endpoint: EndpointResponses,
-		Model:    "gpt-5.4",
+		Request: codex.Request{
+			Model: "gpt-5.4",
+		},
 	})
 	accumulator.Apply(&codex.StreamEvent{
 		Type: "response.completed",

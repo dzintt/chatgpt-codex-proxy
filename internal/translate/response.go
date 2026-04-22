@@ -80,7 +80,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 		if usage := usageFromRaw(response["usage"]); usage != nil {
 			a.Usage = usage
 		}
-		if output := sliceOfMaps(response["output"]); len(output) > 0 {
+		if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
 			a.replaceOutputItems(output)
 		}
 	}
@@ -131,7 +131,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	if item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item")); item != nil {
 		a.captureOutputItem(item, outputIndexFromMap(event.Raw))
 	}
-	if output := sliceOfMaps(event.Raw["output"]); len(output) > 0 {
+	if output := jsonutil.SliceOfMaps(event.Raw["output"]); len(output) > 0 {
 		a.replaceOutputItems(output)
 	}
 	if usage := usageFromRaw(event.Raw["usage"]); usage != nil {
@@ -143,7 +143,7 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 			if usage := usageFromRaw(response["usage"]); usage != nil {
 				a.Usage = usage
 			}
-			if output := sliceOfMaps(response["output"]); len(output) > 0 {
+			if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
 				a.replaceOutputItems(output)
 			}
 		}
@@ -156,7 +156,7 @@ func (a *Accumulator) Text() string {
 	}
 	for _, item := range a.sortedOutputItems() {
 		if itemType := jsonutil.StringValue(item["type"]); itemType == "message" {
-			for _, content := range sliceOfMaps(item["content"]) {
+			for _, content := range jsonutil.SliceOfMaps(item["content"]) {
 				if text := jsonutil.StringValue(content["text"]); text != "" {
 					return text
 				}
@@ -357,7 +357,7 @@ func (a *Accumulator) responsesOutput(text string) []map[string]any {
 	for order, state := range a.OutputItems {
 		cloned := jsonutil.CloneMap(state.Item)
 		if jsonutil.StringValue(cloned["type"]) == "message" {
-			content := sliceOfMaps(cloned["content"])
+			content := jsonutil.SliceOfMaps(cloned["content"])
 			if len(content) == 0 && strings.TrimSpace(text) != "" {
 				cloned["content"] = responseTextContent(text)
 			}
@@ -773,29 +773,6 @@ func outputItemKey(item map[string]any, outputIndex int) string {
 	return fmt.Sprintf("anon:%p", item)
 }
 
-// SliceOfMaps coerces a JSON-decoded value into []map[string]any, copying the
-// outer slice. Returns nil when value is neither []map[string]any nor []any.
-func SliceOfMaps(value any) []map[string]any {
-	switch items := value.(type) {
-	case []map[string]any:
-		return append([]map[string]any(nil), items...)
-	case []any:
-		out := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			mapped, ok := item.(map[string]any)
-			if ok {
-				out = append(out, mapped)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-// sliceOfMaps is the internal alias used by this package.
-func sliceOfMaps(value any) []map[string]any { return SliceOfMaps(value) }
-
 func usageFromRaw(value any) *codex.Usage {
 	if value == nil {
 		return nil
@@ -948,7 +925,7 @@ func PatchChatCompletionObjectForTuple(object map[string]any, schema map[string]
 		return nil
 	}
 
-	choices := sliceOfMaps(object["choices"])
+	choices := jsonutil.SliceOfMaps(object["choices"])
 	if len(choices) == 0 {
 		return nil
 	}
@@ -983,7 +960,7 @@ func patchTupleResponseBody(response map[string]any, schema map[string]any) erro
 	if err := patchTupleTextField(response, "output_text", schema); err != nil {
 		return err
 	}
-	return patchTupleOutputMessages(sliceOfMaps(response["output"]), schema)
+	return patchTupleOutputMessages(jsonutil.SliceOfMaps(response["output"]), schema)
 }
 
 func patchTupleOutputMessages(items []map[string]any, schema map[string]any) error {
@@ -991,7 +968,7 @@ func patchTupleOutputMessages(items []map[string]any, schema map[string]any) err
 		if jsonutil.StringValue(item["type"]) != "message" {
 			continue
 		}
-		for _, content := range sliceOfMaps(item["content"]) {
+		for _, content := range jsonutil.SliceOfMaps(item["content"]) {
 			if jsonutil.StringValue(content["type"]) != "output_text" {
 				continue
 			}

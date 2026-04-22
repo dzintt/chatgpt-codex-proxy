@@ -10,28 +10,81 @@ import (
 	"chatgpt-codex-proxy/internal/accounts"
 )
 
+type adminAccountsResponse struct {
+	Accounts []adminAccountResponse `json:"accounts"`
+}
+
+type adminAccountResponse struct {
+	ID            string                  `json:"id"`
+	UpstreamID    string                  `json:"upstream_account_id"`
+	UserID        string                  `json:"user_id,omitempty"`
+	Email         string                  `json:"email,omitempty"`
+	PlanType      string                  `json:"plan_type,omitempty"`
+	Label         string                  `json:"label,omitempty"`
+	Status        accounts.Status         `json:"status"`
+	EligibleNow   bool                    `json:"eligible_now"`
+	CooldownUntil *time.Time              `json:"cooldown_until,omitempty"`
+	LastError     string                  `json:"last_error,omitempty"`
+	CachedQuota   *accounts.QuotaSnapshot `json:"cached_quota,omitempty"`
+	OauthExpires  time.Time               `json:"oauth_expires"`
+	CreatedAt     time.Time               `json:"created_at"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+}
+
+type adminAccountUsageResponse struct {
+	AccountID      string                  `json:"account_id"`
+	UpstreamID     string                  `json:"upstream_account_id"`
+	UserID         string                  `json:"user_id,omitempty"`
+	Status         accounts.Status         `json:"status"`
+	EligibleNow    bool                    `json:"eligible_now"`
+	CooldownUntil  *time.Time              `json:"cooldown_until,omitempty"`
+	LastError      string                  `json:"last_error,omitempty"`
+	CachedQuota    *accounts.QuotaSnapshot `json:"cached_quota,omitempty"`
+	QuotaRuntime   *accounts.QuotaSnapshot `json:"quota_runtime,omitempty"`
+	QuotaSource    string                  `json:"quota_source,omitempty"`
+	QuotaFetchedAt *time.Time              `json:"quota_fetched_at,omitempty"`
+	OauthExpires   time.Time               `json:"oauth_expires"`
+}
+
+type adminAccountRefreshResponse struct {
+	Account accounts.Record `json:"account"`
+}
+
+type rotationResponse struct {
+	Strategy accounts.RotationStrategy `json:"strategy"`
+}
+
 func (a *App) handleAdminAccounts(c *gin.Context) {
-	records := a.accounts.List()
-	items := make([]gin.H, 0, len(records))
+	records, err := a.accounts.List()
+	if err != nil {
+		a.writeAdminError(c, http.StatusInternalServerError, "accounts_list_failed", err.Error())
+		return
+	}
+	items := make([]adminAccountResponse, 0, len(records))
 	for _, record := range records {
-		items = append(items, gin.H{
-			"id":                  record.ID,
-			"upstream_account_id": record.AccountID,
-			"user_id":             record.UserID,
-			"email":               record.Email,
-			"plan_type":           record.PlanType,
-			"label":               record.Label,
-			"status":              record.Status,
-			"eligible_now":        a.accounts.EligibleNow(record.ID),
-			"cooldown_until":      record.CooldownUntil,
-			"last_error":          record.LastError,
-			"cached_quota":        record.CachedQuota,
-			"oauth_expires":       record.Token.ExpiresAt,
-			"created_at":          record.CreatedAt,
-			"updated_at":          record.UpdatedAt,
+		eligibleNow, err := a.accounts.EligibleNow(record.ID)
+		if err != nil {
+			a.writeAdminError(c, http.StatusInternalServerError, "accounts_list_failed", err.Error())
+			return
+		}
+		items = append(items, adminAccountResponse{
+			ID:            record.ID,
+			UpstreamID:    record.AccountID,
+			UserID:        record.UserID,
+			Email:         record.Email,
+			PlanType:      record.PlanType,
+			Label:         record.Label,
+			Status:        record.Status,
+			EligibleNow:   eligibleNow,
+			CooldownUntil: record.CooldownUntil,
+			LastError:     record.LastError,
+			CachedQuota:   record.CachedQuota,
+			OauthExpires:  record.Token.ExpiresAt,
+			CreatedAt:     record.CreatedAt,
+			UpdatedAt:     record.UpdatedAt,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"accounts": items})
+	c.JSON(http.StatusOK, adminAccountsResponse{Accounts: items})
 }
 
 func (a *App) handleAdminDeviceLoginStart(c *gin.Context) {
@@ -96,20 +149,25 @@ func (a *App) handleAdminAccountUsage(c *gin.Context) {
 		a.writeAdminError(c, http.StatusBadGateway, "usage_lookup_failed", err.Error())
 		return
 	}
+	eligibleNow, err := a.accounts.EligibleNow(record.ID)
+	if err != nil {
+		a.writeAdminError(c, http.StatusInternalServerError, "usage_lookup_failed", err.Error())
+		return
+	}
 	effectiveQuota := firstQuota(quota, record.CachedQuota)
-	c.JSON(http.StatusOK, gin.H{
-		"account_id":          record.ID,
-		"upstream_account_id": record.AccountID,
-		"user_id":             record.UserID,
-		"status":              record.Status,
-		"eligible_now":        a.accounts.EligibleNow(record.ID),
-		"cooldown_until":      record.CooldownUntil,
-		"last_error":          record.LastError,
-		"cached_quota":        record.CachedQuota,
-		"quota_runtime":       quota,
-		"quota_source":        quotaSource(effectiveQuota),
-		"quota_fetched_at":    quotaFetchedAt(effectiveQuota),
-		"oauth_expires":       record.Token.ExpiresAt,
+	c.JSON(http.StatusOK, adminAccountUsageResponse{
+		AccountID:      record.ID,
+		UpstreamID:     record.AccountID,
+		UserID:         record.UserID,
+		Status:         record.Status,
+		EligibleNow:    eligibleNow,
+		CooldownUntil:  record.CooldownUntil,
+		LastError:      record.LastError,
+		CachedQuota:    record.CachedQuota,
+		QuotaRuntime:   quota,
+		QuotaSource:    quotaSource(effectiveQuota),
+		QuotaFetchedAt: quotaFetchedAt(effectiveQuota),
+		OauthExpires:   record.Token.ExpiresAt,
 	})
 }
 
@@ -119,11 +177,11 @@ func (a *App) handleAdminAccountRefresh(c *gin.Context) {
 		a.writeAdminError(c, http.StatusBadGateway, "refresh_failed", err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"account": record})
+	c.JSON(http.StatusOK, adminAccountRefreshResponse{Account: record})
 }
 
 func (a *App) handleAdminRotationGet(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"strategy": a.accounts.RotationStrategy()})
+	c.JSON(http.StatusOK, rotationResponse{Strategy: a.accounts.RotationStrategy()})
 }
 
 func (a *App) handleAdminRotationPut(c *gin.Context) {
@@ -145,7 +203,7 @@ func (a *App) handleAdminRotationPut(c *gin.Context) {
 		a.writeAdminError(c, http.StatusInternalServerError, "rotation_update_failed", err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"strategy": strategy})
+	c.JSON(http.StatusOK, rotationResponse{Strategy: strategy})
 }
 
 func quotaSource(snapshot *accounts.QuotaSnapshot) string {

@@ -59,7 +59,10 @@ func (m *AccountManager) AcquireReadyForModel(ctx context.Context, preferredID, 
 }
 
 func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.Record, error) {
-	record, ok := m.accounts.Get(id)
+	record, ok, err := m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
 	if !ok {
 		return accounts.Record{}, fmt.Errorf("account not found")
 	}
@@ -77,7 +80,10 @@ func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.R
 	lock.Lock()
 	defer lock.Unlock()
 
-	record, ok = m.accounts.Get(id)
+	record, ok, err = m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
 	if !ok {
 		return accounts.Record{}, fmt.Errorf("account not found")
 	}
@@ -93,7 +99,10 @@ func (m *AccountManager) EnsureReady(ctx context.Context, id string) (accounts.R
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
 		return accounts.Record{}, err
 	}
-	updated, ok := m.accounts.Get(id)
+	updated, ok, err := m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
 	if !ok {
 		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
 	}
@@ -105,7 +114,10 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 	lock.Lock()
 	defer lock.Unlock()
 
-	record, ok := m.accounts.Get(id)
+	record, ok, err := m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
 	if !ok {
 		return accounts.Record{}, fmt.Errorf("account not found")
 	}
@@ -117,7 +129,10 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 	if err := m.accounts.UpdateAuth(id, nextAccountID, nextToken); err != nil {
 		return accounts.Record{}, err
 	}
-	updated, ok := m.accounts.Get(id)
+	updated, ok, err := m.accounts.Get(id)
+	if err != nil {
+		return accounts.Record{}, err
+	}
 	if !ok {
 		return accounts.Record{}, fmt.Errorf("account %q disappeared after auth update", id)
 	}
@@ -126,7 +141,10 @@ func (m *AccountManager) Refresh(ctx context.Context, id string) (accounts.Recor
 
 func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (accounts.Record, *accounts.QuotaSnapshot, error) {
 	if cached {
-		record, ok := m.accounts.Get(id)
+		record, ok, err := m.accounts.Get(id)
+		if err != nil {
+			return accounts.Record{}, nil, err
+		}
 		if !ok {
 			return accounts.Record{}, nil, fmt.Errorf("account not found")
 		}
@@ -145,7 +163,10 @@ func (m *AccountManager) GetUsage(ctx context.Context, id string, cached bool) (
 	if err := m.accounts.ObserveQuota(record.ID, quota); err != nil {
 		return record, nil, err
 	}
-	updated, ok := m.accounts.Get(record.ID)
+	updated, ok, err := m.accounts.Get(record.ID)
+	if err != nil {
+		return accounts.Record{}, nil, err
+	}
 	if !ok {
 		return accounts.Record{}, nil, fmt.Errorf("account %q disappeared after quota update", record.ID)
 	}

@@ -19,15 +19,17 @@ func TestResolveSessionImplicitResumeTrimsHistoryAndSetsContinuationState(t *tes
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 	normalized := translate.NormalizedRequest{
-		Endpoint:     translate.EndpointResponses,
-		Model:        "gpt-5.4",
-		Instructions: "Be concise.",
-		Input: []codex.InputItem{
-			userText("hello"),
-			assistantText("I will call a tool."),
-			{Type: "function_call", CallID: "call_1", Name: "Search", Arguments: `{"q":"hello"}`},
-			{Type: "function_call_output", CallID: "call_1", OutputText: "tool result"},
-			userText("summarize it"),
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:        "gpt-5.4",
+			Instructions: "Be concise.",
+			Input: []codex.InputItem{
+				userText("hello"),
+				assistantText("I will call a tool."),
+				{Type: "function_call", CallID: "call_1", Name: "Search", Arguments: `{"q":"hello"}`},
+				{Type: "function_call_output", CallID: "call_1", OutputText: "tool result"},
+				userText("summarize it"),
+			},
 		},
 	}
 	app.continuations.Put(accounts.ContinuationRecord{
@@ -78,14 +80,16 @@ func TestResolveSessionSkipsImplicitResumeForUnknownToolOutputCallID(t *testing.
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 	normalized := translate.NormalizedRequest{
-		Endpoint:     translate.EndpointResponses,
-		Model:        "gpt-5.4",
-		Instructions: "Be concise.",
-		Input: []codex.InputItem{
-			userText("hello"),
-			{Type: "function_call", CallID: "call_1", Name: "Search", Arguments: `{"q":"hello"}`},
-			{Type: "function_call_output", CallID: "call_other", OutputText: "tool result"},
-			userText("summarize it"),
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:        "gpt-5.4",
+			Instructions: "Be concise.",
+			Input: []codex.InputItem{
+				userText("hello"),
+				{Type: "function_call", CallID: "call_1", Name: "Search", Arguments: `{"q":"hello"}`},
+				{Type: "function_call_output", CallID: "call_other", OutputText: "tool result"},
+				userText("summarize it"),
+			},
 		},
 	}
 	app.continuations.Put(accounts.ContinuationRecord{
@@ -121,13 +125,15 @@ func TestResolveSessionChoosesMatchingHistoryWithinConversationBucket(t *testing
 		continuations: accounts.NewContinuationManager(time.Minute),
 	}
 	normalized := translate.NormalizedRequest{
-		Endpoint:     translate.EndpointResponses,
-		Model:        "gpt-5.4",
-		Instructions: "Be concise.",
-		Input: []codex.InputItem{
-			userText("hello"),
-			assistantText("assistant one"),
-			userText("follow up"),
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:        "gpt-5.4",
+			Instructions: "Be concise.",
+			Input: []codex.InputItem{
+				userText("hello"),
+				assistantText("assistant one"),
+				userText("follow up"),
+			},
 		},
 	}
 	conversationKey := resolutionConversationKey(normalized)
@@ -207,16 +213,20 @@ func TestAcquireAccountForResolutionOmittedModelUsesRouteScopedDefault(t *testin
 	}
 	resolution := sessionResolution{
 		Request: translate.NormalizedRequest{
-			Endpoint:      translate.EndpointResponses,
+			Endpoint: translate.EndpointResponses,
+			Request: codex.Request{
+				Instructions: "Be concise.",
+				Input:        []codex.InputItem{userText("hello")},
+			},
 			ModelExplicit: false,
-			Instructions:  "Be concise.",
-			Input:         []codex.InputItem{userText("hello")},
 		},
 		Original: translate.NormalizedRequest{
-			Endpoint:      translate.EndpointResponses,
+			Endpoint: translate.EndpointResponses,
+			Request: codex.Request{
+				Instructions: "Be concise.",
+				Input:        []codex.InputItem{userText("hello")},
+			},
 			ModelExplicit: false,
-			Instructions:  "Be concise.",
-			Input:         []codex.InputItem{userText("hello")},
 		},
 	}
 

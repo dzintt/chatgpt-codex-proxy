@@ -3,12 +3,14 @@ package accounts
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
 
 type memoryStore struct {
-	state State
+	state   State
+	saveErr error
 }
 
 func (m *memoryStore) Load() (State, error) {
@@ -17,6 +19,9 @@ func (m *memoryStore) Load() (State, error) {
 
 func (m *memoryStore) Save(state State) error {
 	m.state = state
+	if m.saveErr != nil {
+		return m.saveErr
+	}
 	return nil
 }
 
@@ -124,7 +129,7 @@ func TestStickyFallsBackWhenLastSuccessfulBecomesIneligible(t *testing.T) {
 			ID:        "acct_b",
 			AccountID: "upstream_acct_b",
 			Status:    StatusActive,
-			Token:     makeTestOAuthToken(t, nil),
+			Token:     makeTestOAuthToken(t, testJWTClaims{}),
 			CachedQuota: &QuotaSnapshot{
 				RateLimit: RateLimitWindow{
 					Allowed:      false,
@@ -159,7 +164,7 @@ func TestRoundRobinRotatesOverEligibleAccountsOnly(t *testing.T) {
 			ID:            "acct_cooldown",
 			AccountID:     "upstream_cooldown",
 			Status:        StatusActive,
-			Token:         makeTestOAuthToken(t, nil),
+			Token:         makeTestOAuthToken(t, testJWTClaims{}),
 			CooldownUntil: &cooldown,
 			CreatedAt:     now,
 			UpdatedAt:     now,
@@ -185,7 +190,7 @@ func TestCooldownExcludesUntilExpiry(t *testing.T) {
 			ID:            "acct_cooldown",
 			AccountID:     "upstream_cooldown",
 			Status:        StatusActive,
-			Token:         makeTestOAuthToken(t, nil),
+			Token:         makeTestOAuthToken(t, testJWTClaims{}),
 			CooldownUntil: &cooldown,
 			CreatedAt:     now,
 			UpdatedAt:     now,
@@ -211,7 +216,7 @@ func TestRecoveredQuotaClearsCooldown(t *testing.T) {
 		ID:            "acct_recover",
 		AccountID:     "upstream_recover",
 		Status:        StatusActive,
-		Token:         makeTestOAuthToken(t, nil),
+		Token:         makeTestOAuthToken(t, testJWTClaims{}),
 		CooldownUntil: &cooldown,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -231,12 +236,50 @@ func TestRecoveredQuotaClearsCooldown(t *testing.T) {
 		t.Fatalf("ObserveQuota() error = %v", err)
 	}
 
-	record, ok := svc.Get("acct_recover")
+	record, ok, err := svc.Get("acct_recover")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 	if !ok {
 		t.Fatal("Get() returned false")
 	}
 	if record.CooldownUntil != nil {
 		t.Fatalf("cooldown_until = %v, want nil", record.CooldownUntil)
+	}
+}
+
+func TestListReturnsPersistErrorAfterRefreshingExpiredCooldown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	cooldown := now.Add(10 * time.Millisecond)
+	store := &memoryStore{
+		saveErr: errors.New("persist failed"),
+		state: State{
+			Records: []*Record{
+				{
+					ID:            "acct_refresh_error",
+					AccountID:     "upstream_refresh_error",
+					Status:        StatusActive,
+					Token:         makeTestOAuthToken(t, testJWTClaims{}),
+					CooldownUntil: &cooldown,
+					CreatedAt:     now,
+					UpdatedAt:     now,
+				},
+			},
+			RotationStrategy: RotationLeastUsed,
+		},
+	}
+	svc, err := NewService(store, RotationLeastUsed)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = svc.List()
+	if err == nil {
+		t.Fatal("List() error = nil, want persist failure")
 	}
 }
 
@@ -249,7 +292,7 @@ func TestPrimaryAllowedFalseBlocksRouting(t *testing.T) {
 			ID:        "acct_blocked",
 			AccountID: "upstream_blocked",
 			Status:    StatusActive,
-			Token:     makeTestOAuthToken(t, nil),
+			Token:     makeTestOAuthToken(t, testJWTClaims{}),
 			CachedQuota: &QuotaSnapshot{
 				Source: "usage_endpoint",
 				RateLimit: RateLimitWindow{
@@ -281,7 +324,7 @@ func TestPrimaryAndSecondaryExhaustionBlockRouting(t *testing.T) {
 			ID:        "acct_primary",
 			AccountID: "upstream_primary",
 			Status:    StatusActive,
-			Token:     makeTestOAuthToken(t, nil),
+			Token:     makeTestOAuthToken(t, testJWTClaims{}),
 			CachedQuota: &QuotaSnapshot{
 				RateLimit: RateLimitWindow{
 					Allowed:      true,
@@ -296,7 +339,7 @@ func TestPrimaryAndSecondaryExhaustionBlockRouting(t *testing.T) {
 			ID:        "acct_secondary",
 			AccountID: "upstream_secondary",
 			Status:    StatusActive,
-			Token:     makeTestOAuthToken(t, nil),
+			Token:     makeTestOAuthToken(t, testJWTClaims{}),
 			CachedQuota: &QuotaSnapshot{
 				RateLimit: RateLimitWindow{Allowed: true},
 				SecondaryRateLimit: &RateLimitWindow{
@@ -329,7 +372,7 @@ func TestCodeReviewRateLimitDoesNotBlockRouting(t *testing.T) {
 		ID:        "acct_code_review",
 		AccountID: "upstream_code_review",
 		Status:    StatusActive,
-		Token:     makeTestOAuthToken(t, nil),
+		Token:     makeTestOAuthToken(t, testJWTClaims{}),
 		CachedQuota: &QuotaSnapshot{
 			RateLimit: RateLimitWindow{
 				Allowed: true,
@@ -362,7 +405,7 @@ func TestPatchActiveClearsCooldownLastErrorAndQuota(t *testing.T) {
 		ID:            "acct_patch",
 		AccountID:     "upstream_patch",
 		Status:        StatusActive,
-		Token:         makeTestOAuthToken(t, nil),
+		Token:         makeTestOAuthToken(t, testJWTClaims{}),
 		CooldownUntil: &cooldown,
 		LastError:     "rate limited",
 		CachedQuota:   &QuotaSnapshot{RateLimit: RateLimitWindow{Allowed: true}},
@@ -394,14 +437,14 @@ func TestUpsertFromTokenReusesAccountWhenUserIDMissing(t *testing.T) {
 		ID:        "acct_existing",
 		AccountID: "upstream_same",
 		Status:    StatusActive,
-		Token:     makeTestOAuthToken(t, map[string]any{"email": "old@example.com"}),
+		Token:     makeTestOAuthToken(t, testJWTClaims{Email: "old@example.com"}),
 		Cookies:   map[string]string{},
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 
-	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, map[string]any{
-		"email": "new@example.com",
+	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, testJWTClaims{
+		Email: "new@example.com",
 	}))
 	if err != nil {
 		t.Fatalf("UpsertFromToken() error = %v", err)
@@ -410,7 +453,10 @@ func TestUpsertFromTokenReusesAccountWhenUserIDMissing(t *testing.T) {
 		t.Fatalf("UpsertFromToken() returned %q, want acct_existing", record.ID)
 	}
 
-	records := svc.List()
+	records, err := svc.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(records))
 	}
@@ -427,16 +473,16 @@ func TestUpsertFromTokenFillsMissingStoredUserID(t *testing.T) {
 		ID:        "acct_existing",
 		AccountID: "upstream_same",
 		Status:    StatusActive,
-		Token:     makeTestOAuthToken(t, map[string]any{"email": "old@example.com"}),
+		Token:     makeTestOAuthToken(t, testJWTClaims{Email: "old@example.com"}),
 		Cookies:   map[string]string{},
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 
-	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, map[string]any{
-		"email":             "new@example.com",
-		"chatgpt_user_id":   "user_123",
-		"chatgpt_plan_type": "plus",
+	record, err := svc.UpsertFromToken("upstream_same", makeTestOAuthToken(t, testJWTClaims{
+		Email:    "new@example.com",
+		UserID:   "user_123",
+		PlanType: "plus",
 	}))
 	if err != nil {
 		t.Fatalf("UpsertFromToken() error = %v", err)
@@ -448,7 +494,10 @@ func TestUpsertFromTokenFillsMissingStoredUserID(t *testing.T) {
 		t.Fatalf("user_id = %q, want user_123", record.UserID)
 	}
 
-	records := svc.List()
+	records, err := svc.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(records))
 	}
@@ -460,14 +509,14 @@ func TestUpsertFromTokenFillsMissingStoredUserID(t *testing.T) {
 func TestMetadataFromTokenUsesNestedProfileAndAuthClaims(t *testing.T) {
 	t.Parallel()
 
-	metadata := metadataFromToken(makeTestOAuthToken(t, map[string]any{
-		"https://api.openai.com/profile": map[string]any{
-			"email":           "profile@example.com",
-			"chatgpt_user_id": "user_profile",
+	metadata := metadataFromToken(makeTestOAuthToken(t, testJWTClaims{
+		Profile: &testJWTProfileClaims{
+			Email:  "profile@example.com",
+			UserID: "user_profile",
 		},
-		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_plan_type": "team",
-			"chatgpt_user_id":   "user_auth",
+		Auth: &testJWTAuthClaims{
+			PlanType: "team",
+			UserID:   "user_auth",
 		},
 	}))
 
@@ -517,7 +566,7 @@ func recordWithQuota(id string, primary float64, secondary *float64, primaryRese
 	record.CachedQuota = &QuotaSnapshot{
 		RateLimit: RateLimitWindow{
 			Allowed:     true,
-			UsedPercent: floatPtr(primary),
+			UsedPercent: ptr(primary),
 			ResetAt:     primaryReset,
 		},
 	}
@@ -530,17 +579,37 @@ func recordWithQuota(id string, primary float64, secondary *float64, primaryRese
 	return record
 }
 
-func floatPtr(value float64) *float64 {
+func ptr[T any](value T) *T {
 	return &value
 }
 
-func makeTestOAuthToken(t *testing.T, claims map[string]any) OAuthToken {
+type testJWTClaims struct {
+	Email    string                `json:"email,omitempty"`
+	PlanType string                `json:"chatgpt_plan_type,omitempty"`
+	UserID   string                `json:"chatgpt_user_id,omitempty"`
+	Profile  *testJWTProfileClaims `json:"https://api.openai.com/profile,omitempty"`
+	Auth     *testJWTAuthClaims    `json:"https://api.openai.com/auth,omitempty"`
+}
+
+type testJWTProfileClaims struct {
+	Email  string `json:"email,omitempty"`
+	UserID string `json:"chatgpt_user_id,omitempty"`
+}
+
+type testJWTAuthClaims struct {
+	PlanType string `json:"chatgpt_plan_type,omitempty"`
+	UserID   string `json:"chatgpt_user_id,omitempty"`
+}
+
+type testJWTHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
+}
+
+func makeTestOAuthToken(t *testing.T, claims testJWTClaims) OAuthToken {
 	t.Helper()
 
-	if claims == nil {
-		claims = map[string]any{}
-	}
-	header, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	header, err := json.Marshal(testJWTHeader{Alg: "none", Typ: "JWT"})
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
 	}

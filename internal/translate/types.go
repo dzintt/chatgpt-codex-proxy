@@ -1,10 +1,6 @@
 package translate
 
-import (
-	"encoding/json"
-
-	"chatgpt-codex-proxy/internal/codex"
-)
+import "chatgpt-codex-proxy/internal/codex"
 
 type Endpoint string
 
@@ -20,41 +16,18 @@ type CompatibilityWarning struct {
 	Detail   string
 }
 
+// NormalizedRequest extends the canonical codex request with translation-only
+// metadata that the proxy needs while mapping OpenAI payloads.
 type NormalizedRequest struct {
-	Endpoint              Endpoint
-	Model                 string
+	Endpoint Endpoint
+	codex.Request
 	ModelExplicit         bool
-	Instructions          string
-	Input                 []codex.InputItem
-	Stream                bool
-	Tools                 []codex.Tool
-	ToolChoice            json.RawMessage
-	Text                  *codex.TextConfig
-	Reasoning             *codex.Reasoning
-	ServiceTier           string
-	PreviousResponseID    string
-	PromptCacheKey        string
-	Include               []string
 	TupleSchema           map[string]any
 	CompatibilityWarnings []CompatibilityWarning
 }
 
 func (n NormalizedRequest) ToCodexRequest() codex.Request {
-	return codex.Request{
-		Model:              n.Model,
-		Instructions:       n.Instructions,
-		Input:              n.Input,
-		Stream:             n.Stream,
-		Store:              false,
-		Tools:              n.Tools,
-		ToolChoice:         n.ToolChoice,
-		Text:               n.Text,
-		Reasoning:          n.Reasoning,
-		ServiceTier:        n.ServiceTier,
-		PreviousResponseID: n.PreviousResponseID,
-		PromptCacheKey:     n.PromptCacheKey,
-		Include:            append([]string(nil), n.Include...),
-	}
+	return n.Request
 }
 
 func (n NormalizedRequest) ToCodexWSCreatePayload() map[string]any {

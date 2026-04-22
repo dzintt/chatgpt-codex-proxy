@@ -306,31 +306,3 @@ func extractMessageContent(raw any) string {
 		return fmt.Sprint(raw)
 	}
 }
-
-func extractToolCallName(toolCall map[string]any) string {
-	if function, _ := toolCall["function"].(map[string]any); function != nil {
-		if name, _ := function["name"].(string); name != "" {
-			return name
-		}
-	}
-	if custom, _ := toolCall["custom"].(map[string]any); custom != nil {
-		if name, _ := custom["name"].(string); name != "" {
-			return name
-		}
-	}
-	return ""
-}
-
-func extractToolCallArguments(toolCall map[string]any) string {
-	if function, _ := toolCall["function"].(map[string]any); function != nil {
-		if arguments, _ := function["arguments"].(string); arguments != "" {
-			return arguments
-		}
-	}
-	if custom, _ := toolCall["custom"].(map[string]any); custom != nil {
-		if input, _ := custom["input"].(string); input != "" {
-			return input
-		}
-	}
-	return ""
-}

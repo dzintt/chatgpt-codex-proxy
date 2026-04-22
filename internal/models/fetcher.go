@@ -81,7 +81,11 @@ func (f *Fetcher) run(ctx context.Context) {
 }
 
 func (f *Fetcher) refreshOnce(ctx context.Context) bool {
-	routes := f.routeAccounts()
+	routes, err := f.routeAccounts()
+	if err != nil {
+		f.logger.Warn("route account discovery failed", "error", err.Error())
+		return false
+	}
 	if len(routes) == 0 {
 		return false
 	}
@@ -123,8 +127,11 @@ func (f *Fetcher) refreshOnce(ctx context.Context) bool {
 	return anySuccess
 }
 
-func (f *Fetcher) routeAccounts() map[string]accounts.Record {
-	items := f.accounts.List()
+func (f *Fetcher) routeAccounts() (map[string]accounts.Record, error) {
+	items, err := f.accounts.List()
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[string]accounts.Record)
 	for _, record := range items {
 		if record.Status != accounts.StatusActive {
@@ -133,7 +140,11 @@ func (f *Fetcher) routeAccounts() map[string]accounts.Record {
 		if strings.TrimSpace(record.Token.AccessToken) == "" {
 			continue
 		}
-		if !f.accounts.EligibleNow(record.ID) {
+		eligible, err := f.accounts.EligibleNow(record.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !eligible {
 			continue
 		}
 		key := RoutingKeyForRecord(record)
@@ -142,5 +153,5 @@ func (f *Fetcher) routeAccounts() map[string]accounts.Record {
 		}
 		out[key] = record
 	}
-	return out
+	return out, nil
 }

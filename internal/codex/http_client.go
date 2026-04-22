@@ -279,50 +279,66 @@ func (c *HTTPClient) modelsURL(path string, includeClientVersion bool) string {
 }
 
 func parseBackendModels(payload string) ([]BackendModelEntry, error) {
-	var decoded map[string]any
+	var decoded backendModelCatalogPayload
 	decoder := json.NewDecoder(strings.NewReader(payload))
 	decoder.UseNumber()
 	if err := decoder.Decode(&decoded); err != nil {
-		return nil, err
+		var array []backendModelNode
+		if err := json.Unmarshal([]byte(payload), &array); err != nil {
+			return nil, err
+		}
+		models := flattenBackendModelNodes(array)
+		if len(models) == 0 {
+			return nil, fmt.Errorf("no backend models found")
+		}
+		return models, nil
 	}
 
-	if sentinel, ok := decoded["chat_models"].(map[string]any); ok {
-		if models := flattenBackendModels(sentinel["models"]); len(models) > 0 {
-			return models, nil
-		}
-	}
-	for _, key := range []string{"models", "data", "categories"} {
-		if models := flattenBackendModels(decoded[key]); len(models) > 0 {
-			return models, nil
-		}
+	if models := decoded.flatten(); len(models) > 0 {
+		return models, nil
 	}
 	return nil, fmt.Errorf("no backend models found")
 }
 
-func flattenBackendModels(value any) []BackendModelEntry {
-	items, ok := value.([]any)
-	if !ok || len(items) == 0 {
+type backendModelCatalogPayload struct {
+	ChatModels *backendModelGroup `json:"chat_models,omitempty"`
+	Models     []backendModelNode `json:"models,omitempty"`
+	Data       []backendModelNode `json:"data,omitempty"`
+	Categories []backendModelNode `json:"categories,omitempty"`
+}
+
+type backendModelGroup struct {
+	Models []backendModelNode `json:"models,omitempty"`
+}
+
+type backendModelNode struct {
+	BackendModelEntry
+	Models []backendModelNode `json:"models,omitempty"`
+}
+
+func (p backendModelCatalogPayload) flatten() []BackendModelEntry {
+	var out []BackendModelEntry
+	if p.ChatModels != nil {
+		out = append(out, flattenBackendModelNodes(p.ChatModels.Models)...)
+	}
+	out = append(out, flattenBackendModelNodes(p.Models)...)
+	out = append(out, flattenBackendModelNodes(p.Data)...)
+	out = append(out, flattenBackendModelNodes(p.Categories)...)
+	return out
+}
+
+func flattenBackendModelNodes(nodes []backendModelNode) []BackendModelEntry {
+	if len(nodes) == 0 {
 		return nil
 	}
 
-	out := make([]BackendModelEntry, 0, len(items))
-	for _, item := range items {
-		mapped, ok := item.(map[string]any)
-		if !ok {
+	out := make([]BackendModelEntry, 0, len(nodes))
+	for _, node := range nodes {
+		if len(node.Models) > 0 {
+			out = append(out, flattenBackendModelNodes(node.Models)...)
 			continue
 		}
-		if nested, ok := mapped["models"].([]any); ok {
-			out = append(out, flattenBackendModels(nested)...)
-			continue
-		}
-		raw, err := json.Marshal(mapped)
-		if err != nil {
-			continue
-		}
-		var entry BackendModelEntry
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			continue
-		}
+		entry := node.BackendModelEntry
 		if strings.TrimSpace(entry.Slug) == "" && strings.TrimSpace(entry.ID) == "" && strings.TrimSpace(entry.Name) == "" {
 			continue
 		}

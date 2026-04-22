@@ -6,21 +6,36 @@ func AbortJSON(c *gin.Context, status int, payload any) {
 	c.AbortWithStatusJSON(status, payload)
 }
 
-func OpenAIErrorPayload(message, typ, code, param string) gin.H {
-	errorBody := gin.H{
-		"message": message,
-		"type":    typ,
-		"code":    code,
-	}
-	if param != "" {
-		errorBody["param"] = param
-	}
-	return gin.H{"error": errorBody}
+type OpenAIErrorResponse struct {
+	Error OpenAIErrorBody `json:"error"`
 }
 
-func AdminErrorPayload(code, message string) gin.H {
-	return gin.H{
-		"error":   code,
-		"message": message,
+type OpenAIErrorBody struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Param   string `json:"param,omitempty"`
+}
+
+func OpenAIErrorPayload(message, typ, code, param string) OpenAIErrorResponse {
+	return OpenAIErrorResponse{
+		Error: OpenAIErrorBody{
+			Message: message,
+			Type:    typ,
+			Code:    code,
+			Param:   param,
+		},
+	}
+}
+
+type AdminErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+func AdminErrorPayload(code, message string) AdminErrorResponse {
+	return AdminErrorResponse{
+		Error:   code,
+		Message: message,
 	}
 }

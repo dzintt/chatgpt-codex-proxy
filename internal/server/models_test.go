@@ -11,7 +11,6 @@ import (
 
 	"chatgpt-codex-proxy/internal/config"
 	"chatgpt-codex-proxy/internal/models"
-	"chatgpt-codex-proxy/internal/openai"
 )
 
 func TestHandleModelsIncludesCreatedTimestamp(t *testing.T) {
@@ -22,7 +21,7 @@ func TestHandleModelsIncludesCreatedTimestamp(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 
-	app := &App{cfg: config.Config{DefaultModel: openai.CanonicalDefaultModel}}
+	app := &App{cfg: config.Config{DefaultModel: "gpt-5.4"}}
 	app.handleModels(ctx)
 
 	if recorder.Code != http.StatusOK {
@@ -38,8 +37,8 @@ func TestHandleModelsIncludesCreatedTimestamp(t *testing.T) {
 	if len(body.Data) == 0 {
 		t.Fatal("expected model list")
 	}
-	if body.Data[0]["created"] != float64(openai.ModelCreatedTimestamp) {
-		t.Fatalf("created = %#v, want %d", body.Data[0]["created"], openai.ModelCreatedTimestamp)
+	if body.Data[0]["created"] != float64(modelCreatedTimestamp) {
+		t.Fatalf("created = %#v, want %d", body.Data[0]["created"], modelCreatedTimestamp)
 	}
 }
 
@@ -66,8 +65,8 @@ func TestHandleModelByID(t *testing.T) {
 				if body["id"] != "gpt-5.4" {
 					t.Fatalf("id = %#v, want gpt-5.4", body["id"])
 				}
-				if body["created"] != float64(openai.ModelCreatedTimestamp) {
-					t.Fatalf("created = %#v, want %d", body["created"], openai.ModelCreatedTimestamp)
+				if body["created"] != float64(modelCreatedTimestamp) {
+					t.Fatalf("created = %#v, want %d", body["created"], modelCreatedTimestamp)
 				}
 			},
 		},
@@ -100,7 +99,7 @@ func TestHandleModelByID(t *testing.T) {
 			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models/"+tc.modelID, nil)
 			ctx.Params = gin.Params{{Key: "model_id", Value: tc.modelID}}
 
-			app := &App{cfg: config.Config{DefaultModel: openai.CanonicalDefaultModel}}
+			app := &App{cfg: config.Config{DefaultModel: "gpt-5.4"}}
 			app.handleModelByID(ctx)
 
 			if recorder.Code != tc.wantStatus {
@@ -127,7 +126,7 @@ func TestHandleModelsUsesRuntimeCatalog(t *testing.T) {
 	}}, time.Now().UTC())
 
 	app := &App{
-		cfg:    config.Config{DefaultModel: openai.CanonicalDefaultModel},
+		cfg:    config.Config{DefaultModel: "gpt-5.4"},
 		models: catalog,
 	}
 	app.handleModels(ctx)
