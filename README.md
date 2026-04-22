@@ -51,12 +51,6 @@ Start from the example file:
 cp .env.example .env
 ```
 
-PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
 Required:
 
 ```env
@@ -81,6 +75,13 @@ PROXY_API_KEY=change-me-to-a-long-random-string
 ```
 
 `docker compose` reads `.env` automatically for variable substitution.
+
+All examples below assume a POSIX-compatible shell with these variables set:
+
+```bash
+export PROXY_URL=http://localhost:8080
+export PROXY_API_KEY=change-me
+```
 
 ### 2. Start the proxy
 
@@ -117,17 +118,8 @@ By default the server listens on `:8080` and stores local state in `./data` loca
 Start a device login:
 
 ```bash
-curl -X POST http://localhost:8080/admin/accounts/device-login/start \
-  -H "Authorization: Bearer change-me"
-```
-
-PowerShell:
-
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8080/admin/accounts/device-login/start" `
-  -Headers @{ Authorization = "Bearer change-me" }
+curl -sS -X POST "${PROXY_URL}/admin/accounts/device-login/start" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
 ```
 
 The response includes:
@@ -140,17 +132,8 @@ The response includes:
 Open `auth_url`, complete the login flow, then poll for completion:
 
 ```bash
-curl http://localhost:8080/admin/accounts/device-login/<login_id> \
-  -H "Authorization: Bearer change-me"
-```
-
-PowerShell:
-
-```powershell
-Invoke-RestMethod `
-  -Method Get `
-  -Uri "http://localhost:8080/admin/accounts/device-login/<login_id>" `
-  -Headers @{ Authorization = "Bearer change-me" }
+curl -sS "${PROXY_URL}/admin/accounts/device-login/<login_id>" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
 ```
 
 When the login status becomes `ready`, the account has been saved locally and can be used for proxy requests.
@@ -160,8 +143,8 @@ When the login status becomes `ready`, the account has been saved locally and ca
 Example Chat Completions request:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer change-me" \
+curl -sS "${PROXY_URL}/v1/chat/completions" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.4",
@@ -172,34 +155,11 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-PowerShell:
-
-```powershell
-$headers = @{
-  Authorization = "Bearer change-me"
-  "Content-Type" = "application/json"
-}
-
-$body = @{
-  model = "gpt-5.4"
-  messages = @(
-    @{ role = "system"; content = "Be concise." }
-    @{ role = "user"; content = "Explain what this repository does." }
-  )
-} | ConvertTo-Json -Depth 6
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8080/v1/chat/completions" `
-  -Headers $headers `
-  -Body $body
-```
-
 Example Responses request:
 
 ```bash
-curl http://localhost:8080/v1/responses \
-  -H "Authorization: Bearer change-me" \
+curl -sS "${PROXY_URL}/v1/responses" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.4",
@@ -257,6 +217,19 @@ Summary:
 
 Accepts OpenAI Chat Completions requests and translates them into the upstream Codex request shape.
 
+```bash
+curl -sS "${PROXY_URL}/v1/chat/completions" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "messages": [
+      { "role": "system", "content": "Be concise." },
+      { "role": "user", "content": "Explain what this repository does." }
+    ]
+  }'
+```
+
 Supported behavior:
 
 - Streaming and non-streaming
@@ -292,6 +265,16 @@ Compatibility notes:
 
 Accepts OpenAI Responses requests and translates them into the upstream Codex request shape.
 
+```bash
+curl -sS "${PROXY_URL}/v1/responses" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "input": "Summarize this project in three bullet points."
+  }'
+```
+
 Supported behavior:
 
 - Streaming and non-streaming
@@ -316,23 +299,42 @@ Compatibility notes:
 
 Returns the current upstream-backed model catalog in the standard OpenAI model-list shape.
 
+```bash
+curl -sS "${PROXY_URL}/v1/models" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
 Notes:
 
 - Model IDs mirror upstream exactly. The proxy does not add local aliases such as `codex`.
-- A fresh startup begins with a small bootstrap fallback list, then refreshes the catalog asynchronously from the upstream Codex backend.
+- A fresh startup begins with the latest cached catalog in `${DATA_DIR}/models-cache.json` when present, otherwise with a small bootstrap fallback list, then refreshes the catalog asynchronously from `GET /codex/models`.
 - The latest successful catalog snapshot is cached locally in `${DATA_DIR}/models-cache.json` so `/v1/models` stays populated across restarts.
 
 ### `GET /v1/models/<model_id>`
 
 Returns one model object in the OpenAI model shape for one known runtime model ID. Unknown IDs return an OpenAI-style `model_not_found` error.
 
+```bash
+curl -sS "${PROXY_URL}/v1/models/gpt-5.4" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
 ### `GET /health/live`
 
 Unauthenticated liveness endpoint.
 
+```bash
+curl -sS "${PROXY_URL}/health/live"
+```
+
 ### `GET /health`
 
 Authenticated service health endpoint.
+
+```bash
+curl -sS "${PROXY_URL}/health" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
 
 The response includes:
 
@@ -346,6 +348,13 @@ The response includes:
 - `continuation_ttl`
 
 ## Admin API
+
+The examples below assume you set an account ID and, when polling device login, a login ID:
+
+```bash
+export ACCOUNT_ID=acct_example
+export LOGIN_ID=login_example
+```
 
 ### Accounts
 
@@ -362,6 +371,41 @@ The response includes:
 - `GET /admin/accounts/:account_id/usage?cached=true`
   Return the cached-only quota view without calling the upstream `/codex/usage` endpoint. The response includes `cached_quota`, `quota_runtime`, `quota_source`, and `quota_fetched_at`.
 
+```bash
+curl -sS "${PROXY_URL}/admin/accounts" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS -X DELETE "${PROXY_URL}/admin/accounts/${ACCOUNT_ID}" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS -X PATCH "${PROXY_URL}/admin/accounts/${ACCOUNT_ID}" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "label": "primary",
+    "status": "active"
+  }'
+```
+
+```bash
+curl -sS -X POST "${PROXY_URL}/admin/accounts/${ACCOUNT_ID}/refresh" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS "${PROXY_URL}/admin/accounts/${ACCOUNT_ID}/usage" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS "${PROXY_URL}/admin/accounts/${ACCOUNT_ID}/usage?cached=true" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
 ### Device login
 
 - `POST /admin/accounts/device-login/start`
@@ -369,12 +413,36 @@ The response includes:
 - `GET /admin/accounts/device-login/:login_id`
   Poll a device login flow.
 
+```bash
+curl -sS -X POST "${PROXY_URL}/admin/accounts/device-login/start" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS "${PROXY_URL}/admin/accounts/device-login/${LOGIN_ID}" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
 ### Rotation
 
 - `GET /admin/rotation`
   Show the current rotation strategy.
 - `PUT /admin/rotation`
   Change the rotation strategy.
+
+```bash
+curl -sS "${PROXY_URL}/admin/rotation" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}"
+```
+
+```bash
+curl -sS -X PUT "${PROXY_URL}/admin/rotation" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy": "least_used"
+  }'
+```
 
 Valid strategies:
 
@@ -484,7 +552,7 @@ The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
 - `GET https://chatgpt.com/backend-api/codex/usage`
-- `GET https://chatgpt.com/backend-api/codex/models`, with fallback probes to other upstream model-list endpoints
+- `GET https://chatgpt.com/backend-api/codex/models`
 - `WSS https://chatgpt.com/backend-api/codex/responses` for continuation requests
 - `https://auth.openai.com/api/accounts/deviceauth/*` and `https://auth.openai.com/oauth/token` for device login and token refresh
 
@@ -572,16 +640,7 @@ Run the live compatibility tests against a running local proxy with:
 ```bash
 OPENAI_API_KEY=change-me-to-a-long-random-string \
 OPENAI_MODEL=gpt-5.2 \
-OPENAI_BASE_URL=http://localhost:8080/v1 \
-go test -tags=live ./internal/integration -v -count=1
-```
-
-PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY="change-me-to-a-long-random-string"
-$env:OPENAI_MODEL="gpt-5.2"
-$env:OPENAI_BASE_URL="http://localhost:8080/v1"
+OPENAI_BASE_URL="${PROXY_URL}/v1" \
 go test -tags=live ./internal/integration -v -count=1
 ```
 
