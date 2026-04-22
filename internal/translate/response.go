@@ -67,29 +67,48 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 	if event == nil {
 		return
 	}
-	if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
-		if id := jsonutil.StringValue(response["id"]); id != "" {
-			a.ResponseID = id
-		}
-		if model := jsonutil.StringValue(response["model"]); model != "" {
-			a.Model = model
-		}
-		if status := jsonutil.StringValue(response["status"]); status != "" {
-			a.Status = status
-		}
-		if usage := usageFromRaw(response["usage"]); usage != nil {
-			a.Usage = usage
-		}
-		if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
-			a.replaceOutputItems(output)
-		}
+	response := jsonutil.MapValue(event.Raw, "response")
+	a.applyResponseMetadata(response)
+	a.applyRootMetadata(event.Raw)
+	a.applyTextEvent(event, response)
+	a.applyFallbackText(event)
+	a.applyToolEvent(event)
+	a.applyOutputEvent(event)
+	a.applyUsageMetadata(event.Raw)
+	a.applyCompletedEvent(event, response)
+}
+
+func (a *Accumulator) applyResponseMetadata(response map[string]any) {
+	if response == nil {
+		return
 	}
-	if id := jsonutil.StringValue(event.Raw["response_id"]); id != "" && a.ResponseID == "" {
+	if id := jsonutil.StringValue(response["id"]); id != "" {
 		a.ResponseID = id
 	}
-	if model := jsonutil.StringValue(event.Raw["model"]); model != "" && a.Model == "" {
+	if model := jsonutil.StringValue(response["model"]); model != "" {
 		a.Model = model
 	}
+	if status := jsonutil.StringValue(response["status"]); status != "" {
+		a.Status = status
+	}
+	if usage := usageFromRaw(response["usage"]); usage != nil {
+		a.Usage = usage
+	}
+	if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
+		a.replaceOutputItems(output)
+	}
+}
+
+func (a *Accumulator) applyRootMetadata(raw map[string]any) {
+	if id := jsonutil.StringValue(raw["response_id"]); id != "" && a.ResponseID == "" {
+		a.ResponseID = id
+	}
+	if model := jsonutil.StringValue(raw["model"]); model != "" && a.Model == "" {
+		a.Model = model
+	}
+}
+
+func (a *Accumulator) applyTextEvent(event *codex.StreamEvent, response map[string]any) {
 	switch event.Type {
 	case "response.output_text.delta":
 		if delta := jsonutil.StringValue(event.Raw["delta"]); delta != "" {
@@ -111,42 +130,60 @@ func (a *Accumulator) Apply(event *codex.StreamEvent) {
 			}
 		}
 	case "response.completed":
-		if a.TextBuilder.Len() == 0 {
-			if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
-				if text := jsonutil.StringValue(response["output_text"]); text != "" {
-					a.TextBuilder.WriteString(text)
-				}
+		if a.TextBuilder.Len() == 0 && response != nil {
+			if text := jsonutil.StringValue(response["output_text"]); text != "" {
+				a.TextBuilder.WriteString(text)
 			}
 		}
+	}
+}
+
+func (a *Accumulator) applyFallbackText(event *codex.StreamEvent) {
+	if a.TextBuilder.Len() != 0 || !strings.Contains(event.Type, "text") {
+		return
 	}
 	if delta := jsonutil.FirstNonEmpty(
 		jsonutil.StringValue(event.Raw["output_text"]),
 		jsonutil.StringValue(jsonutil.MapValue(event.Raw, "item")["text"]),
-	); delta != "" && a.TextBuilder.Len() == 0 && strings.Contains(event.Type, "text") {
+	); delta != "" {
 		a.TextBuilder.WriteString(delta)
 	}
+}
+
+func (a *Accumulator) applyToolEvent(event *codex.StreamEvent) {
 	if strings.HasPrefix(event.Type, "response.function_call_arguments.") || strings.HasPrefix(event.Type, "response.custom_tool_call_input.") {
 		a.applyToolArgumentEvent(event)
 	}
+}
+
+func (a *Accumulator) applyOutputEvent(event *codex.StreamEvent) {
 	if item := firstMap(jsonutil.MapValue(event.Raw, "item"), jsonutil.MapValue(event.Raw, "output_item")); item != nil {
 		a.captureOutputItem(item, outputIndexFromMap(event.Raw))
 	}
 	if output := jsonutil.SliceOfMaps(event.Raw["output"]); len(output) > 0 {
 		a.replaceOutputItems(output)
 	}
-	if usage := usageFromRaw(event.Raw["usage"]); usage != nil {
+}
+
+func (a *Accumulator) applyUsageMetadata(raw map[string]any) {
+	if usage := usageFromRaw(raw["usage"]); usage != nil {
 		a.Usage = usage
 	}
-	if event.Type == "response.completed" {
-		a.RawFinal = event.Raw
-		if response := jsonutil.MapValue(event.Raw, "response"); response != nil {
-			if usage := usageFromRaw(response["usage"]); usage != nil {
-				a.Usage = usage
-			}
-			if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
-				a.replaceOutputItems(output)
-			}
-		}
+}
+
+func (a *Accumulator) applyCompletedEvent(event *codex.StreamEvent, response map[string]any) {
+	if event.Type != "response.completed" {
+		return
+	}
+	a.RawFinal = event.Raw
+	if response == nil {
+		return
+	}
+	if usage := usageFromRaw(response["usage"]); usage != nil {
+		a.Usage = usage
+	}
+	if output := jsonutil.SliceOfMaps(response["output"]); len(output) > 0 {
+		a.replaceOutputItems(output)
 	}
 }
 

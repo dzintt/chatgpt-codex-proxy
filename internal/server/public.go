@@ -206,19 +206,12 @@ func (a *App) openWSStream(c *gin.Context, ctx context.Context, endpoint string,
 func (a *App) collectEvents(account accounts.Record, normalized translate.NormalizedRequest, stream eventStream) (*translate.Accumulator, error) {
 	accumulator := translate.NewAccumulator(normalized)
 	for {
-		event, err := stream.NextEvent()
+		event, _, err := a.nextStreamEvent(account, accumulator, stream)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			return nil, err
-		}
-		if a.observeQuotaEvent(account, event) {
-			continue
-		}
-		accumulator.Apply(event)
-		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			return nil, upstreamErr
 		}
 		if event.Type == "response.completed" {
 			break
@@ -229,8 +222,7 @@ func (a *App) collectEvents(account accounts.Record, normalized translate.Normal
 		return nil, errIncompleteResponse
 	}
 
-	a.accounts.NoteSuccess(account.ID)
-	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
+	a.finalizeSuccessfulStream(account.ID, accumulator, stream)
 	return accumulator, nil
 }
 
@@ -247,7 +239,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 	c.Writer.Flush()
 
 	for {
-		event, err := stream.NextEvent()
+		event, upstreamErr, err := a.nextStreamEvent(account, accumulator, stream)
 		if err != nil {
 			if err == io.EOF {
 				if !accumulator.IsCompleted() {
@@ -256,15 +248,11 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 				}
 				break
 			}
-			a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
-			return
-		}
-		if a.observeQuotaEvent(account, event) {
-			continue
-		}
-		accumulator.Apply(event)
-		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", upstreamErr)
+			if upstreamErr {
+				a.respondClassifiedStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
+			} else {
+				a.respondStreamError(c, "chat_completions", account.ID, accumulator.ResponseID, "", err)
+			}
 			return
 		}
 		if state := accumulator.ToolCallStateForEvent(event); state != nil && (state.ToolType == "custom" || strings.HasPrefix(event.Type, "response.custom_tool_call_input.")) {
@@ -321,8 +309,7 @@ func (a *App) streamChatCompletion(c *gin.Context, account accounts.Record, norm
 		}
 	}
 
-	a.accounts.NoteSuccess(account.ID)
-	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
+	a.finalizeSuccessfulStream(account.ID, accumulator, stream)
 
 	finalResponse := accumulator.ChatCompletionObject()
 	finalUsage, _ := finalResponse["usage"].(map[string]any)
@@ -337,7 +324,7 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 	accumulator := translate.NewAccumulator(normalized)
 	var tupleTextBuffer strings.Builder
 	for {
-		event, err := stream.NextEvent()
+		event, upstreamErr, err := a.nextStreamEvent(account, accumulator, stream)
 		if err != nil {
 			if err == io.EOF {
 				if !accumulator.IsCompleted() {
@@ -346,15 +333,11 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 				}
 				break
 			}
-			a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
-			return
-		}
-		if a.observeQuotaEvent(account, event) {
-			continue
-		}
-		accumulator.Apply(event)
-		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
-			a.respondClassifiedStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", upstreamErr)
+			if upstreamErr {
+				a.respondClassifiedStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
+			} else {
+				a.respondStreamError(c, "responses", account.ID, accumulator.ResponseID, "error", err)
+			}
 			return
 		}
 		if normalized.TupleSchema != nil {
@@ -405,10 +388,31 @@ func (a *App) streamResponses(c *gin.Context, account accounts.Record, normalize
 		}
 	}
 
-	a.accounts.NoteSuccess(account.ID)
-	a.rememberContinuation(account.ID, accumulator, stream.Headers().Get("x-codex-turn-state"))
+	a.finalizeSuccessfulStream(account.ID, accumulator, stream)
 	writeSSE(c.Writer, "done", []byte("[DONE]"))
 	c.Writer.Flush()
+}
+
+func (a *App) nextStreamEvent(account accounts.Record, accumulator *translate.Accumulator, stream eventStream) (*codex.StreamEvent, bool, error) {
+	for {
+		event, err := stream.NextEvent()
+		if err != nil {
+			return nil, false, err
+		}
+		if a.observeQuotaEvent(account, event) {
+			continue
+		}
+		accumulator.Apply(event)
+		if upstreamErr := upstreamEventError(event); upstreamErr != nil {
+			return nil, true, upstreamErr
+		}
+		return event, false, nil
+	}
+}
+
+func (a *App) finalizeSuccessfulStream(accountID string, accumulator *translate.Accumulator, stream eventStream) {
+	a.accounts.NoteSuccess(accountID)
+	a.rememberContinuation(accountID, accumulator, stream.Headers().Get("x-codex-turn-state"))
 }
 
 func writeResponseStreamEvents(w io.Writer, responseID string, events []translate.ResponseStreamEvent) {

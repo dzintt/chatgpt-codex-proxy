@@ -31,23 +31,24 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, cat
 	if len(tools) == 0 && len(req.Functions) > 0 {
 		tools = legacyFunctionsAsTools(req.Functions)
 	}
-	out := NormalizedRequest{
-		Endpoint:              EndpointChat,
-		ModelExplicit:         modelExplicit,
-		CompatibilityWarnings: collectChatCompatibilityWarnings(req),
-	}
-	out.Model = model
-	out.Stream = req.Stream
-	out.Tools = normalizeTools(tools)
-	out.Reasoning = reasoning
-	out.ServiceTier = serviceTier
-	out.PreviousResponseID = strings.TrimSpace(req.PreviousResponseID)
-	out.Include = reasoningInclude(reasoning)
+	toolChoice := json.RawMessage(nil)
 	if len(req.Tools) > 0 {
-		out.ToolChoice = normalizeToolChoice(req.ToolChoice)
+		toolChoice = normalizeToolChoice(req.ToolChoice)
 	} else if choice := normalizeLegacyFunctionChoice(req.FunctionCall); choice != nil {
-		out.ToolChoice = choice
+		toolChoice = choice
 	}
+	out := newNormalizedRequest(
+		EndpointChat,
+		model,
+		modelExplicit,
+		collectChatCompatibilityWarnings(req),
+		req.Stream,
+		normalizeTools(tools),
+		toolChoice,
+		reasoning,
+		serviceTier,
+		req.PreviousResponseID,
+	)
 	if req.ResponseFormat != nil {
 		text, tupleSchema, err := normalizeChatResponseFormat(req.ResponseFormat)
 		if err != nil {
@@ -61,99 +62,8 @@ func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, cat
 	customToolNames := chatCustomToolNames(req.Tools)
 	toolCallTypes := make(map[string]string)
 	for _, message := range req.Messages {
-		switch message.Role {
-		case "system", "developer":
-			text, err := flattenContent(message.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			if strings.TrimSpace(text) != "" {
-				instructions = append(instructions, text)
-			}
-		case "user", "assistant":
-			if len(message.ToolCalls) > 0 {
-				parts, err := normalizeContentPartsChecked(message.Content)
-				if err != nil {
-					return NormalizedRequest{}, err
-				}
-				if len(parts) > 0 {
-					out.Input = append(out.Input, codex.InputItem{
-						Role:    message.Role,
-						Content: parts,
-					})
-				}
-				for _, call := range message.ToolCalls {
-					callType := strings.TrimSpace(call.Type)
-					if callType == "" {
-						callType = "function"
-					}
-					if callType == "function" && customToolNames[strings.TrimSpace(call.Function.Name)] {
-						callType = "custom"
-					}
-					toolCallTypes[call.ID] = callType
-					switch callType {
-					case "custom":
-						name := ""
-						input := ""
-						if call.Custom != nil {
-							name = call.Custom.Name
-							input = call.Custom.Input
-						}
-						if name == "" {
-							name = call.Function.Name
-						}
-						if input == "" {
-							input = customToolInputFromFunctionArguments(call.Function.Arguments)
-						}
-						out.Input = append(out.Input, codex.InputItem{
-							Type:   "custom_tool_call",
-							CallID: call.ID,
-							Name:   name,
-							Input:  input,
-						})
-					default:
-						out.Input = append(out.Input, codex.InputItem{
-							Type:      "function_call",
-							CallID:    call.ID,
-							Name:      call.Function.Name,
-							Arguments: call.Function.Arguments,
-						})
-					}
-				}
-				continue
-			}
-			if message.FunctionCall != nil {
-				out.Input = append(out.Input, codex.InputItem{
-					Type:      "function_call",
-					Name:      message.FunctionCall.Name,
-					Arguments: message.FunctionCall.Arguments,
-				})
-				continue
-			}
-			parts, err := normalizeContentPartsChecked(message.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Role:    message.Role,
-				Content: parts,
-			})
-		case "tool":
-			text, err := flattenContent(message.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			itemType := "function_call_output"
-			if toolCallTypes[message.ToolCallID] == "custom" {
-				itemType = "custom_tool_call_output"
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Type:       itemType,
-				CallID:     message.ToolCallID,
-				OutputText: text,
-			})
-		default:
-			return NormalizedRequest{}, fmt.Errorf("unsupported role %q", message.Role)
+		if err := normalizeChatMessage(&out, &instructions, toolCallTypes, customToolNames, message); err != nil {
+			return NormalizedRequest{}, err
 		}
 	}
 
@@ -216,44 +126,24 @@ func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*mod
 		reasoning = explicit
 	}
 
-	out := NormalizedRequest{
-		Endpoint:              EndpointResponses,
-		ModelExplicit:         modelExplicit,
-		CompatibilityWarnings: collectResponsesCompatibilityWarnings(req),
-	}
-	out.Model = model
-	out.Stream = req.Stream
-	out.Tools = normalizeTools(req.Tools)
-	out.ToolChoice = normalizeToolChoice(req.ToolChoice)
-	out.Reasoning = reasoning
-	out.ServiceTier = serviceTier
-	out.PreviousResponseID = strings.TrimSpace(req.PreviousResponseID)
-	out.Include = reasoningInclude(reasoning)
+	out := newNormalizedRequest(
+		EndpointResponses,
+		model,
+		modelExplicit,
+		collectResponsesCompatibilityWarnings(req),
+		req.Stream,
+		normalizeTools(req.Tools),
+		normalizeToolChoice(req.ToolChoice),
+		reasoning,
+		serviceTier,
+		req.PreviousResponseID,
+	)
 	var instructions []string
 	if text := strings.TrimSpace(req.Instructions); text != "" {
 		instructions = append(instructions, text)
 	}
 
-	if req.Text != nil && req.Text.Format != nil {
-		var tupleSchema map[string]any
-		format := codex.TextFormat{
-			Type: req.Text.Format.Type,
-			Name: req.Text.Format.Name,
-		}
-		if req.Text.Format.Type == "json_schema" {
-			prepared, original := PrepareSchema(req.Text.Format.Schema)
-			format.Schema = prepared
-			format.Strict = req.Text.Format.Strict
-			tupleSchema = original
-		} else {
-			format.Schema = req.Text.Format.Schema
-			format.Strict = req.Text.Format.Strict
-		}
-		out.Text = &codex.TextConfig{
-			Format: format,
-		}
-		out.TupleSchema = tupleSchema
-	}
+	out.Text, out.TupleSchema = normalizeResponsesText(req.Text)
 
 	if req.Input.String != "" {
 		out.Input = append(out.Input, codex.InputItem{
@@ -266,84 +156,239 @@ func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*mod
 	}
 
 	for _, item := range req.Input.Items {
-		if item.Type == "" && (item.Role == "system" || item.Role == "developer") {
-			text, err := flattenContent(item.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			if strings.TrimSpace(text) != "" {
-				instructions = append(instructions, text)
-			}
-			continue
-		}
-		switch {
-		case item.Type == "function_call":
-			out.Input = append(out.Input, codex.InputItem{
-				Type:      "function_call",
-				CallID:    item.CallID,
-				Name:      item.Name,
-				Arguments: item.Arguments,
-			})
-		case item.Type == "custom_tool_call":
-			out.Input = append(out.Input, codex.InputItem{
-				Type:   "custom_tool_call",
-				CallID: item.CallID,
-				Name:   item.Name,
-				Input:  item.Input,
-			})
-		case item.Type == "function_call_output":
-			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Type:          "function_call_output",
-				CallID:        item.CallID,
-				OutputText:    item.OutputText,
-				OutputContent: outputContent,
-			})
-		case item.Type == "custom_tool_call_output":
-			outputContent, err := normalizeContentPartsChecked(item.OutputContent)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Type:          "custom_tool_call_output",
-				CallID:        item.CallID,
-				OutputText:    item.OutputText,
-				OutputContent: outputContent,
-			})
-		case item.Type == "reasoning":
-			parts, err := normalizeContentPartsChecked(item.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Type:             "reasoning",
-				ID:               strings.TrimSpace(item.ID),
-				Status:           strings.TrimSpace(item.Status),
-				Content:          parts,
-				Summary:          append([]openai.ReasoningPart(nil), item.Summary...),
-				EncryptedContent: strings.TrimSpace(item.EncryptedContent),
-			})
-		default:
-			parts, err := normalizeContentPartsChecked(item.Content)
-			if err != nil {
-				return NormalizedRequest{}, err
-			}
-			role := item.Role
-			if role == "" {
-				role = "user"
-			}
-			out.Input = append(out.Input, codex.InputItem{
-				Role:    role,
-				Content: parts,
-			})
+		if err := normalizeResponsesInputItem(&out, &instructions, item); err != nil {
+			return NormalizedRequest{}, err
 		}
 	}
 
 	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
 	return out, nil
+}
+
+func newNormalizedRequest(endpoint Endpoint, model string, modelExplicit bool, warnings []CompatibilityWarning, stream bool, tools []codex.Tool, toolChoice json.RawMessage, reasoning *codex.Reasoning, serviceTier, previousResponseID string) NormalizedRequest {
+	return NormalizedRequest{
+		Endpoint:              endpoint,
+		ModelExplicit:         modelExplicit,
+		CompatibilityWarnings: warnings,
+		Request: codex.Request{
+			Model:              model,
+			Stream:             stream,
+			Tools:              tools,
+			ToolChoice:         toolChoice,
+			Reasoning:          reasoning,
+			ServiceTier:        serviceTier,
+			PreviousResponseID: strings.TrimSpace(previousResponseID),
+			Include:            reasoningInclude(reasoning),
+		},
+	}
+}
+
+func normalizeChatMessage(out *NormalizedRequest, instructions *[]string, toolCallTypes map[string]string, customToolNames map[string]bool, message openai.ChatMessage) error {
+	switch message.Role {
+	case "system", "developer":
+		return appendInstructionText(instructions, message.Content)
+	case "user", "assistant":
+		if len(message.ToolCalls) > 0 {
+			if err := appendRoleContentInputIfPresent(out, message.Role, message.Content); err != nil {
+				return err
+			}
+			for _, call := range message.ToolCalls {
+				callType := normalizeChatToolCallType(call, customToolNames)
+				toolCallTypes[call.ID] = callType
+				out.Input = append(out.Input, chatToolCallInputItem(call, callType))
+			}
+			return nil
+		}
+		if message.FunctionCall != nil {
+			out.Input = append(out.Input, codex.InputItem{
+				Type:      "function_call",
+				Name:      message.FunctionCall.Name,
+				Arguments: message.FunctionCall.Arguments,
+			})
+			return nil
+		}
+		return appendRoleContentInput(out, message.Role, message.Content)
+	case "tool":
+		text, err := flattenContent(message.Content)
+		if err != nil {
+			return err
+		}
+		itemType := "function_call_output"
+		if toolCallTypes[message.ToolCallID] == "custom" {
+			itemType = "custom_tool_call_output"
+		}
+		out.Input = append(out.Input, codex.InputItem{
+			Type:       itemType,
+			CallID:     message.ToolCallID,
+			OutputText: text,
+		})
+		return nil
+	default:
+		return fmt.Errorf("unsupported role %q", message.Role)
+	}
+}
+
+func normalizeChatToolCallType(call openai.ToolCall, customToolNames map[string]bool) string {
+	callType := strings.TrimSpace(call.Type)
+	if callType == "" {
+		callType = "function"
+	}
+	if callType == "function" && customToolNames[strings.TrimSpace(call.Function.Name)] {
+		return "custom"
+	}
+	return callType
+}
+
+func chatToolCallInputItem(call openai.ToolCall, callType string) codex.InputItem {
+	if callType != "custom" {
+		return codex.InputItem{
+			Type:      "function_call",
+			CallID:    call.ID,
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
+		}
+	}
+
+	name := ""
+	input := ""
+	if call.Custom != nil {
+		name = call.Custom.Name
+		input = call.Custom.Input
+	}
+	if name == "" {
+		name = call.Function.Name
+	}
+	if input == "" {
+		input = customToolInputFromFunctionArguments(call.Function.Arguments)
+	}
+	return codex.InputItem{
+		Type:   "custom_tool_call",
+		CallID: call.ID,
+		Name:   name,
+		Input:  input,
+	}
+}
+
+func normalizeResponsesText(text *openai.ResponsesText) (*codex.TextConfig, map[string]any) {
+	if text == nil || text.Format == nil {
+		return nil, nil
+	}
+
+	var tupleSchema map[string]any
+	format := codex.TextFormat{
+		Type: text.Format.Type,
+		Name: text.Format.Name,
+	}
+	if text.Format.Type == "json_schema" {
+		prepared, original := PrepareSchema(text.Format.Schema)
+		format.Schema = prepared
+		format.Strict = text.Format.Strict
+		tupleSchema = original
+	} else {
+		format.Schema = text.Format.Schema
+		format.Strict = text.Format.Strict
+	}
+	return &codex.TextConfig{Format: format}, tupleSchema
+}
+
+func normalizeResponsesInputItem(out *NormalizedRequest, instructions *[]string, item openai.ResponsesInputItem) error {
+	if item.Type == "" && (item.Role == "system" || item.Role == "developer") {
+		return appendInstructionText(instructions, item.Content)
+	}
+
+	switch item.Type {
+	case "function_call":
+		out.Input = append(out.Input, codex.InputItem{
+			Type:      "function_call",
+			CallID:    item.CallID,
+			Name:      item.Name,
+			Arguments: item.Arguments,
+		})
+	case "custom_tool_call":
+		out.Input = append(out.Input, codex.InputItem{
+			Type:   "custom_tool_call",
+			CallID: item.CallID,
+			Name:   item.Name,
+			Input:  item.Input,
+		})
+	case "function_call_output", "custom_tool_call_output":
+		output, err := normalizeOutputItem(item.Type, item.CallID, item.OutputText, item.OutputContent)
+		if err != nil {
+			return err
+		}
+		out.Input = append(out.Input, output)
+	case "reasoning":
+		parts, err := normalizeContentPartsChecked(item.Content)
+		if err != nil {
+			return err
+		}
+		out.Input = append(out.Input, codex.InputItem{
+			Type:             "reasoning",
+			ID:               strings.TrimSpace(item.ID),
+			Status:           strings.TrimSpace(item.Status),
+			Content:          parts,
+			Summary:          append([]openai.ReasoningPart(nil), item.Summary...),
+			EncryptedContent: strings.TrimSpace(item.EncryptedContent),
+		})
+	default:
+		role := item.Role
+		if role == "" {
+			role = "user"
+		}
+		return appendRoleContentInput(out, role, item.Content)
+	}
+	return nil
+}
+
+func appendInstructionText(instructions *[]string, content openai.MessageContent) error {
+	text, err := flattenContent(content)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) != "" {
+		*instructions = append(*instructions, text)
+	}
+	return nil
+}
+
+func appendRoleContentInput(out *NormalizedRequest, role string, content openai.MessageContent) error {
+	parts, err := normalizeContentPartsChecked(content)
+	if err != nil {
+		return err
+	}
+	out.Input = append(out.Input, codex.InputItem{
+		Role:    role,
+		Content: parts,
+	})
+	return nil
+}
+
+func appendRoleContentInputIfPresent(out *NormalizedRequest, role string, content openai.MessageContent) error {
+	parts, err := normalizeContentPartsChecked(content)
+	if err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	out.Input = append(out.Input, codex.InputItem{
+		Role:    role,
+		Content: parts,
+	})
+	return nil
+}
+
+func normalizeOutputItem(itemType, callID, outputText string, outputContent openai.MessageContent) (codex.InputItem, error) {
+	parts, err := normalizeContentPartsChecked(outputContent)
+	if err != nil {
+		return codex.InputItem{}, err
+	}
+	return codex.InputItem{
+		Type:          itemType,
+		CallID:        callID,
+		OutputText:    outputText,
+		OutputContent: parts,
+	}, nil
 }
 
 func legacyFunctionsAsTools(functions []openai.LegacyFunctionDefinition) []openai.ToolDefinition {
