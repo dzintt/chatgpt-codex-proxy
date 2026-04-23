@@ -2,6 +2,7 @@ package translate
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"chatgpt-codex-proxy/internal/openai"
@@ -181,6 +182,93 @@ func TestResponsesTranslationUsesReasoningObject(t *testing.T) {
 	}
 	if len(normalized.Include) != 1 || normalized.Include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("include = %#v, want reasoning.encrypted_content only", normalized.Include)
+	}
+}
+
+func TestCompactTranslation(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesCompactRequest{
+		PreviousResponseID: "resp_prev_compact",
+		Reasoning: &openai.Reasoning{
+			Effort: "high",
+		},
+		Text: &openai.ResponsesText{
+			Format: &openai.ResponsesTextFormat{
+				Type:   "json_schema",
+				Name:   "compact_summary",
+				Schema: map[string]any{"type": "object"},
+				Strict: true,
+			},
+		},
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{
+				{
+					Type:  "message",
+					Role:  "assistant",
+					Phase: "output",
+					Content: openai.MessageContent{{
+						Type: "output_text",
+						Text: "Existing assistant output",
+					}},
+				},
+				{
+					Type:             "compaction",
+					ID:               "cmp_existing",
+					EncryptedContent: "enc_existing",
+				},
+			},
+		},
+	}
+
+	normalized, err := Compact(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+
+	if normalized.PreviousResponseID != "resp_prev_compact" {
+		t.Fatalf("previous_response_id = %q, want resp_prev_compact", normalized.PreviousResponseID)
+	}
+	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" || normalized.Reasoning.Summary != "auto" {
+		t.Fatalf("reasoning = %#v, want explicit effort with auto summary", normalized.Reasoning)
+	}
+	if normalized.Text == nil || normalized.Text.Format.Type != "json_schema" {
+		t.Fatalf("text = %#v, want json_schema text config", normalized.Text)
+	}
+	if len(normalized.Input) != 2 {
+		t.Fatalf("len(input) = %d, want 2", len(normalized.Input))
+	}
+	if normalized.Input[0].Role != "assistant" || normalized.Input[0].Phase != "output" {
+		t.Fatalf("input[0] = %#v, want assistant output-phase message", normalized.Input[0])
+	}
+	if normalized.Input[1].Type != "compaction" || normalized.Input[1].EncryptedContent != "enc_existing" {
+		t.Fatalf("input[1] = %#v, want compaction passthrough", normalized.Input[1])
+	}
+}
+
+func TestCompactTranslationRejectsUnsupportedContentPart(t *testing.T) {
+	t.Parallel()
+
+	_, err := Compact(openai.ResponsesCompactRequest{
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{{
+				Role: "user",
+				Content: openai.MessageContent{{
+					Type: "input_audio",
+				}},
+			}},
+		},
+	}, "gpt-5.4")
+	if err == nil {
+		t.Fatal("Compact() error = nil, want unsupported content part error")
+	}
+
+	var contentErr *UnsupportedContentPartError
+	if !errors.As(err, &contentErr) {
+		t.Fatalf("Compact() error = %T, want UnsupportedContentPartError", err)
+	}
+	if contentErr.PartType != "input_audio" {
+		t.Fatalf("PartType = %q, want input_audio", contentErr.PartType)
 	}
 }
 

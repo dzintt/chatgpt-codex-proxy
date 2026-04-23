@@ -22,6 +22,7 @@ This proxy currently uses two upstream systems:
 The Codex backend endpoints in active use are:
 
 - `POST /codex/responses`
+- `POST /codex/responses/compact`
 - `WSS /codex/responses`
 - `GET /codex/usage`
 - `GET /codex/models`
@@ -100,7 +101,7 @@ Accept: text/event-stream
 
 ### Notes
 
-- `OpenAI-Beta: responses_websockets=2026-02-06` is sent for response creation requests and websocket continuations.
+- `OpenAI-Beta: responses_websockets=2026-02-06` is sent for response creation requests, compact requests, and websocket continuations.
 - `x-codex-turn-state` is reused on continuation requests.
 - The proxy preserves a specific header ordering when talking to upstream.
 
@@ -161,6 +162,96 @@ Implementation notes:
 - The HTTP path clears `previous_response_id` before sending.
 - The websocket continuation path does not use this exact object; it wraps the request in a `response.create` envelope.
 
+## Compact Request Object
+
+This is the canonical request shape the proxy sends to the JSON compact endpoint.
+
+```json
+{
+  "model": "gpt-5.4",
+  "instructions": "Summarize the thread state.",
+  "input": [
+    {
+      "role": "assistant",
+      "phase": "output",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Long prior answer"
+        }
+      ]
+    },
+    {
+      "type": "compaction",
+      "id": "cmp_existing",
+      "encrypted_content": "enc_existing"
+    }
+  ],
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "compact_summary",
+      "schema": {},
+      "strict": true
+    }
+  },
+  "reasoning": {
+    "effort": "high",
+    "summary": "auto"
+  }
+}
+```
+
+Observed fields:
+
+- `model: string`
+- `instructions: string`
+- `input: []InputItem`
+- `text: { format: TextFormat }`
+- `reasoning: { effort?: string, summary?: string }`
+
+Implementation notes:
+
+- The compact path is plain JSON, not SSE.
+- The compact path does not send `stream`, `store`, or `previous_response_id`.
+- If a client supplies `previous_response_id` to the proxy's public compact endpoint, the proxy expands saved history locally before calling upstream.
+
+## Compact Response Object
+
+Observed top-level response shape accepted by the proxy:
+
+```json
+{
+  "id": "cmp_resp_123",
+  "object": "response.compaction",
+  "created_at": 1730000000,
+  "output": [
+    {
+      "type": "compaction",
+      "id": "cmp_123",
+      "encrypted_content": "enc"
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 4
+  }
+}
+```
+
+Observed fields:
+
+- `id: string`
+- `object: string`
+- `created_at: unix timestamp`
+- `output: []object`
+- `usage: object`
+
+Implementation notes:
+
+- The proxy treats `output` items as opaque JSON objects.
+- An observed compact output item type is `compaction`.
+
 ## InputItem
 
 Observed item shape sent to upstream:
@@ -169,6 +260,7 @@ Observed item shape sent to upstream:
 {
   "role": "user",
   "type": "function_call",
+  "phase": "output",
   "content": "hello",
   "call_id": "call_123",
   "name": "Search",
@@ -185,7 +277,8 @@ Observed item shape sent to upstream:
 Observed fields:
 
 - `role: "user" | "assistant" | ...`
-- `type: "function_call" | "custom_tool_call" | "function_call_output" | "custom_tool_call_output" | "reasoning"`
+- `type: "function_call" | "custom_tool_call" | "function_call_output" | "custom_tool_call_output" | "reasoning" | "compaction"`
+- `phase: string`
 - `content: string | []ContentPart`
 - `call_id: string`
 - `name: string`
@@ -201,6 +294,7 @@ Content serialization rules implemented by the proxy:
 
 - Plain text role messages are serialized as a string `content`
 - Structured user content is serialized as an array `content`
+- Replayed assistant output messages may include `phase: "output"`
 - Tool output may be serialized as:
   - `output: ""`
   - `output: "<text>"`
@@ -784,6 +878,121 @@ Fields used by the proxy:
 - same for `secondary`
 - same for `code_review` or `code_review_rate_limit`
 
+## POST /codex/responses/compact
+
+Create a compacted response object over plain JSON HTTP.
+
+### URL
+
+```http
+POST https://chatgpt.com/backend-api/codex/responses/compact
+```
+
+### Headers
+
+Typical request headers:
+
+```http
+Authorization: Bearer <access_token>
+ChatGPT-Account-Id: <account_id>
+originator: Codex Desktop
+x-openai-internal-codex-residency: us
+x-client-request-id: req_<...>
+OpenAI-Beta: responses_websockets=2026-02-06
+User-Agent: Codex Desktop/26.409.61251 (win32; x64)
+Content-Type: application/json
+Accept: application/json
+```
+
+### Request body
+
+The proxy sends the `CompactRequest` object described above.
+
+Example:
+
+```json
+{
+  "model": "gpt-5.4",
+  "input": [
+    {
+      "role": "assistant",
+      "phase": "output",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Long prior answer"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Compact this thread for the next turn."
+    }
+  ]
+}
+```
+
+Example with an existing compaction artifact:
+
+```json
+{
+  "model": "gpt-5.4",
+  "input": [
+    {
+      "type": "compaction",
+      "id": "cmp_existing",
+      "encrypted_content": "enc_existing"
+    },
+    {
+      "role": "user",
+      "content": "Refresh the summary with the latest turn."
+    }
+  ]
+}
+```
+
+```bash
+curl -sS "${CODEX_BASE_URL}/codex/responses/compact" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "ChatGPT-Account-Id: ${ACCOUNT_ID}" \
+  -H "OpenAI-Beta: responses_websockets=2026-02-06" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "input": [
+      {
+        "role": "assistant",
+        "phase": "output",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Long prior answer"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "Compact this thread for the next turn."
+      }
+    ]
+  }'
+```
+
+### Response body
+
+The proxy expects a single JSON object and decodes it as the `CompactResponse` object described above.
+
+Observed output item shape:
+
+```json
+{
+  "type": "compaction",
+  "id": "cmp_123",
+  "encrypted_content": "enc"
+}
+```
+
 ## WSS /codex/responses
 
 Create or continue a response stream over websocket.
@@ -1315,6 +1524,7 @@ These claims are read from tokens by the proxy:
 ### Upstream write paths
 
 - `POST /codex/responses`
+- `POST /codex/responses/compact`
 - `WSS /codex/responses`
 - `POST /api/accounts/deviceauth/usercode`
 - `POST /api/accounts/deviceauth/token`

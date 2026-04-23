@@ -733,6 +733,7 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 	out := continuationInputItemBase(
 		jsonutil.StringValue(item["role"]),
 		jsonutil.StringValue(item["type"]),
+		jsonutil.StringValue(item["phase"]),
 		jsonutil.StringValue(item["call_id"]),
 		jsonutil.StringValue(item["name"]),
 		jsonutil.StringValue(item["input"]),
@@ -769,6 +770,7 @@ func continuationInputItemFromCodex(item codex.InputItem) accounts.ContinuationI
 	out := continuationInputItemBase(
 		item.Role,
 		item.Type,
+		item.Phase,
 		item.CallID,
 		item.Name,
 		item.Input,
@@ -788,6 +790,7 @@ func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.Inp
 	out := codex.InputItem{
 		Role:             item.Role,
 		Type:             item.Type,
+		Phase:            item.Phase,
 		CallID:           item.CallID,
 		Name:             item.Name,
 		Input:            item.Input,
@@ -803,10 +806,11 @@ func continuationInputItemToCodex(item accounts.ContinuationInputItem) codex.Inp
 	return out
 }
 
-func continuationInputItemBase(role, itemType, callID, name, input, arguments, outputText, id, status, encryptedContent string) accounts.ContinuationInputItem {
+func continuationInputItemBase(role, itemType, phase, callID, name, input, arguments, outputText, id, status, encryptedContent string) accounts.ContinuationInputItem {
 	return accounts.ContinuationInputItem{
 		Role:             role,
 		Type:             itemType,
+		Phase:            phase,
 		CallID:           callID,
 		Name:             name,
 		Input:            input,
@@ -972,6 +976,11 @@ func (a *App) respondOpenAINormalizeError(c *gin.Context, err error) {
 	if errors.As(err, &modelErr) {
 		message := "Model '" + strings.TrimSpace(modelErr.Model) + "' not found"
 		a.writeOpenAIError(c, http.StatusNotFound, "model_not_found", message, "invalid_request_error")
+		return
+	}
+	var contentErr *translate.UnsupportedContentPartError
+	if errors.As(err, &contentErr) {
+		a.writeOpenAIError(c, http.StatusBadRequest, "unsupported_content_part", contentErr.Error(), "invalid_request_error")
 		return
 	}
 	a.respondOpenAIInvalidRequest(c, err)

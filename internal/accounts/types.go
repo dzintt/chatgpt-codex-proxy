@@ -66,6 +66,7 @@ type Record struct {
 type ContinuationInputItem struct {
 	Role             string                    `json:"role,omitempty"`
 	Type             string                    `json:"type,omitempty"`
+	Phase            string                    `json:"phase,omitempty"`
 	Content          []ContinuationContentPart `json:"content,omitempty"`
 	CallID           string                    `json:"call_id,omitempty"`
 	Name             string                    `json:"name,omitempty"`

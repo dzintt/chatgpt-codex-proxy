@@ -137,3 +137,34 @@ func TestToolDefinitionRoundTripPreservesCustomFields(t *testing.T) {
 		t.Fatalf("payload[metadata][origin] = %#v, want cursor", got)
 	}
 }
+
+func TestResponsesCompactRequestUnmarshalPreservesPhase(t *testing.T) {
+	t.Parallel()
+
+	var req ResponsesCompactRequest
+	err := json.Unmarshal([]byte(`{
+		"previous_response_id": "resp_prev",
+		"input": {
+			"type": "message",
+			"role": "assistant",
+			"phase": "output",
+			"content": [{"type": "output_text", "text": "compacted"}]
+		}
+	}`), &req)
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if req.PreviousResponseID != "resp_prev" {
+		t.Fatalf("PreviousResponseID = %q, want resp_prev", req.PreviousResponseID)
+	}
+	if len(req.Input.Items) != 1 {
+		t.Fatalf("len(Input.Items) = %d, want 1", len(req.Input.Items))
+	}
+	if req.Input.Items[0].Phase != "output" {
+		t.Fatalf("Phase = %q, want output", req.Input.Items[0].Phase)
+	}
+	if req.Input.Items[0].Role != "assistant" {
+		t.Fatalf("Role = %q, want assistant", req.Input.Items[0].Role)
+	}
+}

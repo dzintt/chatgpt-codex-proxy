@@ -5,8 +5,9 @@ import "chatgpt-codex-proxy/internal/codex"
 type Endpoint string
 
 const (
-	EndpointChat      Endpoint = "chat_completions"
-	EndpointResponses Endpoint = "responses"
+	EndpointChat             Endpoint = "chat_completions"
+	EndpointResponses        Endpoint = "responses"
+	EndpointResponsesCompact Endpoint = "responses_compact"
 )
 
 type CompatibilityWarning struct {
@@ -59,4 +60,16 @@ func (n NormalizedRequest) ToCodexWSCreatePayload() map[string]any {
 		payload["include"] = append([]string(nil), n.Include...)
 	}
 	return payload
+}
+
+type NormalizedCompactRequest struct {
+	codex.CompactRequest
+	ModelExplicit         bool
+	PreviousResponseID    string
+	TupleSchema           map[string]any
+	CompatibilityWarnings []CompatibilityWarning
+}
+
+func (n NormalizedCompactRequest) ToCodexCompactRequest() codex.CompactRequest {
+	return n.CompactRequest
 }

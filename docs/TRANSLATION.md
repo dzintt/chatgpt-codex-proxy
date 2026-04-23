@@ -5,6 +5,7 @@ This document describes how `chatgpt-codex-proxy` translates between its OpenAI-
 It is based on the current implementation, not an external specification. The code paths that define this behavior live primarily in:
 
 - `internal/server/public.go`
+- `internal/server/compact.go`
 - `internal/server/session.go`
 - `internal/translate/request.go`
 - `internal/translate/response.go`
@@ -17,9 +18,9 @@ It is based on the current implementation, not an external specification. The co
 
 ## Overview
 
-The proxy does not maintain separate translation stacks for Chat Completions and Responses after parsing. Both public endpoints are normalized into one internal `translate.NormalizedRequest`, which embeds one canonical `codex.Request`.
+The proxy keeps one shared streaming translation stack for Chat Completions and Responses, plus a dedicated compact path for `/v1/responses/compact`.
 
-The high-level pipeline is:
+The high-level streaming pipeline is:
 
 1. Accept OpenAI-compatible JSON on `/v1/chat/completions` or `/v1/responses`.
 2. Normalize that payload into one internal Codex-style request model.
@@ -27,9 +28,17 @@ The high-level pipeline is:
 4. Send the normalized request to the Codex backend over HTTP SSE or WebSocket.
 5. Rebuild either OpenAI Chat Completions output or OpenAI Responses output from the upstream event stream.
 
+The compact pipeline is:
+
+1. Accept OpenAI-compatible JSON on `/v1/responses/compact`.
+2. Normalize that payload into `translate.NormalizedCompactRequest`, which embeds `codex.CompactRequest`.
+3. If `previous_response_id` is present, expand saved continuation history locally.
+4. Call the private compact backend over JSON HTTP.
+5. Rebuild an OpenAI-style `response.compaction` object.
+
 ## Canonical Internal Request
 
-The canonical internal request is `codex.Request` plus translation metadata in `translate.NormalizedRequest`.
+The canonical streaming request is `codex.Request` plus translation metadata in `translate.NormalizedRequest`.
 
 The Codex request fields used by the proxy are:
 
@@ -56,6 +65,23 @@ The translation-only fields are:
 
 `CompatibilityWarnings` are collected during normalization but are not surfaced to clients today.
 
+The canonical compact request is `codex.CompactRequest` plus translation metadata in `translate.NormalizedCompactRequest`.
+
+The Codex compact fields used by the proxy are:
+
+- `model`
+- `instructions`
+- `input`
+- `text`
+- `reasoning`
+
+The compact translation-only fields are:
+
+- `ModelExplicit`
+- `PreviousResponseID`
+- `TupleSchema`
+- `CompatibilityWarnings`
+
 ## Endpoint Entry Behavior
 
 ### `/v1/chat/completions`
@@ -73,6 +99,12 @@ If both `messages` and Responses-style fields are present, `messages` wins.
 ### `/v1/responses`
 
 `POST /v1/responses` binds directly to `openai.ResponsesRequest` and normalizes with `translate.Responses(...)`.
+
+### `/v1/responses/compact`
+
+`POST /v1/responses/compact` binds directly to `openai.ResponsesCompactRequest` and normalizes with `translate.Compact(...)`.
+
+Unlike `/v1/responses`, this endpoint does not use the SSE streaming path. It sends a dedicated JSON request to `/codex/responses/compact` and always returns non-streaming JSON.
 
 ## Model Resolution
 
@@ -158,6 +190,10 @@ Responses input is converted like this:
   - `content`
   - `summary`
   - `encrypted_content`
+- `compaction` items preserve:
+  - `id`
+  - `encrypted_content`
+- Generic role/content items preserve `phase` when present so assistant output messages can be replayed through compaction.
 
 ### Tool Definitions
 
@@ -250,6 +286,20 @@ If `previous_response_id` is supplied:
 - The saved conversation key becomes `prompt_cache_key`.
 - The saved account ID becomes the preferred account.
 - The saved upstream turn state becomes `x-codex-turn-state`.
+
+### Explicit continuation for compaction
+
+`/v1/responses/compact` handles `previous_response_id` differently because the private compact backend does not accept continuation state directly.
+
+If `previous_response_id` is supplied on the compact endpoint:
+
+- The proxy looks it up in the same in-memory continuation store.
+- If the ID is unknown or expired, it returns `400` with code `invalid_previous_response_id`.
+- If the compact request did not specify a model, the model is filled from the saved continuation record.
+- Saved continuation history is converted back into Codex input items and prepended to the current compact request input.
+- `previous_response_id` is not sent upstream to `/codex/responses/compact`.
+
+The compact endpoint does not perform implicit continuation detection.
 
 ### Implicit continuation
 
@@ -408,6 +458,24 @@ If a tuple schema was rewritten on the way upstream:
 - non-streaming Responses patches both `output_text` and the structured `output`
 
 The reconversion rewrites object-shaped `"0"`, `"1"` tuple placeholders back into arrays using the original schema captured at request time.
+
+### Compact response shaping
+
+The private compact backend may return only partial JSON such as:
+
+- `output`
+
+The proxy reshapes that into an OpenAI-style compaction object with:
+
+- `id`
+- `object = "response.compaction"`
+- `created_at`
+- `output`
+- `usage` when present upstream
+
+If the upstream body omits `id` or `created_at`, the proxy synthesizes them locally. `usage` is omitted when it is not present upstream.
+
+If tuple-schema reconversion is active, the proxy applies the same output-message reconversion used by `/v1/responses` before returning the compacted object.
 
 ## Streaming Response Translation
 

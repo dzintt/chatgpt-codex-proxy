@@ -22,6 +22,14 @@ func (e *ModelNotFoundError) Error() string {
 	return fmt.Sprintf("unsupported model %q", e.Model)
 }
 
+type UnsupportedContentPartError struct {
+	PartType string
+}
+
+func (e *UnsupportedContentPartError) Error() string {
+	return fmt.Sprintf("unsupported_content_part: %s", e.PartType)
+}
+
 func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedRequest, error) {
 	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier, catalog...)
 	if err != nil {
@@ -165,6 +173,58 @@ func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*mod
 	return out, nil
 }
 
+func Compact(req openai.ResponsesCompactRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedCompactRequest, error) {
+	model, modelExplicit, reasoning, _, err := normalizeModel(req.Model, defaultModel, "", "", catalog...)
+	if err != nil {
+		return NormalizedCompactRequest{}, err
+	}
+	if req.Reasoning != nil {
+		explicit := &codex.Reasoning{
+			Effort:  req.Reasoning.Effort,
+			Summary: req.Reasoning.Summary,
+		}
+		if explicit.Effort != "" && explicit.Summary == "" {
+			explicit.Summary = "auto"
+		}
+		reasoning = explicit
+	}
+
+	out := NormalizedCompactRequest{
+		ModelExplicit:         modelExplicit,
+		PreviousResponseID:    strings.TrimSpace(req.PreviousResponseID),
+		CompatibilityWarnings: collectCompactCompatibilityWarnings(req),
+		CompactRequest: codex.CompactRequest{
+			Model:     model,
+			Reasoning: reasoning,
+		},
+	}
+	var instructions []string
+	if text := strings.TrimSpace(req.Instructions); text != "" {
+		instructions = append(instructions, text)
+	}
+
+	out.Text, out.TupleSchema = normalizeResponsesText(req.Text)
+
+	if req.Input.String != "" {
+		out.Input = append(out.Input, codex.InputItem{
+			Role: "user",
+			Content: []codex.ContentPart{{
+				Type: "input_text",
+				Text: req.Input.String,
+			}},
+		})
+	}
+
+	for _, item := range req.Input.Items {
+		if err := appendResponsesInputItem(&out.Input, &instructions, item); err != nil {
+			return NormalizedCompactRequest{}, err
+		}
+	}
+
+	out.Instructions = jsonutil.FirstNonEmpty(strings.TrimSpace(strings.Join(instructions, "\n\n")), defaultInstructions)
+	return out, nil
+}
+
 func newNormalizedRequest(endpoint Endpoint, model string, modelExplicit bool, warnings []CompatibilityWarning, stream bool, tools []codex.Tool, toolChoice json.RawMessage, reasoning *codex.Reasoning, serviceTier, previousResponseID string) NormalizedRequest {
 	return NormalizedRequest{
 		Endpoint:              endpoint,
@@ -207,7 +267,7 @@ func normalizeChatMessage(out *NormalizedRequest, instructions *[]string, toolCa
 			})
 			return nil
 		}
-		return appendRoleContentInput(out, message.Role, message.Content)
+		return appendRoleContentInput(&out.Input, message.Role, "", message.Content)
 	case "tool":
 		text, err := flattenContent(message.Content)
 		if err != nil {
@@ -292,20 +352,24 @@ func normalizeResponsesText(text *openai.ResponsesText) (*codex.TextConfig, map[
 }
 
 func normalizeResponsesInputItem(out *NormalizedRequest, instructions *[]string, item openai.ResponsesInputItem) error {
+	return appendResponsesInputItem(&out.Input, instructions, item)
+}
+
+func appendResponsesInputItem(out *[]codex.InputItem, instructions *[]string, item openai.ResponsesInputItem) error {
 	if item.Type == "" && (item.Role == "system" || item.Role == "developer") {
 		return appendInstructionText(instructions, item.Content)
 	}
 
 	switch item.Type {
 	case "function_call":
-		out.Input = append(out.Input, codex.InputItem{
+		*out = append(*out, codex.InputItem{
 			Type:      "function_call",
 			CallID:    item.CallID,
 			Name:      item.Name,
 			Arguments: item.Arguments,
 		})
 	case "custom_tool_call":
-		out.Input = append(out.Input, codex.InputItem{
+		*out = append(*out, codex.InputItem{
 			Type:   "custom_tool_call",
 			CallID: item.CallID,
 			Name:   item.Name,
@@ -316,13 +380,13 @@ func normalizeResponsesInputItem(out *NormalizedRequest, instructions *[]string,
 		if err != nil {
 			return err
 		}
-		out.Input = append(out.Input, output)
+		*out = append(*out, output)
 	case "reasoning":
 		parts, err := normalizeContentPartsChecked(item.Content)
 		if err != nil {
 			return err
 		}
-		out.Input = append(out.Input, codex.InputItem{
+		*out = append(*out, codex.InputItem{
 			Type:             "reasoning",
 			ID:               strings.TrimSpace(item.ID),
 			Status:           strings.TrimSpace(item.Status),
@@ -330,12 +394,18 @@ func normalizeResponsesInputItem(out *NormalizedRequest, instructions *[]string,
 			Summary:          append([]openai.ReasoningPart(nil), item.Summary...),
 			EncryptedContent: strings.TrimSpace(item.EncryptedContent),
 		})
+	case "compaction":
+		*out = append(*out, codex.InputItem{
+			Type:             "compaction",
+			ID:               strings.TrimSpace(item.ID),
+			EncryptedContent: strings.TrimSpace(item.EncryptedContent),
+		})
 	default:
 		role := item.Role
 		if role == "" {
 			role = "user"
 		}
-		return appendRoleContentInput(out, role, item.Content)
+		return appendRoleContentInput(out, role, item.Phase, item.Content)
 	}
 	return nil
 }
@@ -351,13 +421,14 @@ func appendInstructionText(instructions *[]string, content openai.MessageContent
 	return nil
 }
 
-func appendRoleContentInput(out *NormalizedRequest, role string, content openai.MessageContent) error {
+func appendRoleContentInput(out *[]codex.InputItem, role, phase string, content openai.MessageContent) error {
 	parts, err := normalizeContentPartsChecked(content)
 	if err != nil {
 		return err
 	}
-	out.Input = append(out.Input, codex.InputItem{
+	*out = append(*out, codex.InputItem{
 		Role:    role,
+		Phase:   strings.TrimSpace(phase),
 		Content: parts,
 	})
 	return nil
@@ -630,7 +701,7 @@ func classifyContentPartType(partType string) (string, contentPartKind, bool) {
 }
 
 func unsupportedContentPartError(partType string) error {
-	return fmt.Errorf("unsupported_content_part: %s", partType)
+	return &UnsupportedContentPartError{PartType: partType}
 }
 
 func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string, catalogs ...*models.Catalog) (string, bool, *codex.Reasoning, string, error) {
@@ -742,6 +813,11 @@ func collectResponsesCompatibilityWarnings(req openai.ResponsesRequest) []Compat
 		warnings = append(warnings, unsupportedFieldWarning(EndpointResponses, "stream_options"))
 	}
 	return warnings
+}
+
+func collectCompactCompatibilityWarnings(req openai.ResponsesCompactRequest) []CompatibilityWarning {
+	_ = req
+	return nil
 }
 
 func unsupportedFieldWarning(endpoint Endpoint, field string) CompatibilityWarning {

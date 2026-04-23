@@ -30,6 +30,22 @@ type Request struct {
 	Include            []string        `json:"include,omitempty"`
 }
 
+type CompactRequest struct {
+	Model        string      `json:"model"`
+	Instructions string      `json:"instructions,omitempty"`
+	Input        []InputItem `json:"input"`
+	Text         *TextConfig `json:"text,omitempty"`
+	Reasoning    *Reasoning  `json:"reasoning,omitempty"`
+}
+
+type CompactResponse struct {
+	ID        string           `json:"id,omitempty"`
+	Object    string           `json:"object,omitempty"`
+	CreatedAt int64            `json:"created_at,omitempty"`
+	Output    []map[string]any `json:"output,omitempty"`
+	Usage     map[string]any   `json:"usage,omitempty"`
+}
+
 type TextConfig struct {
 	Format TextFormat `json:"format"`
 }
@@ -37,6 +53,7 @@ type TextConfig struct {
 type InputItem struct {
 	Role             string                 `json:"role,omitempty"`
 	Type             string                 `json:"type,omitempty"`
+	Phase            string                 `json:"phase,omitempty"`
 	Content          []ContentPart          `json:"content,omitempty"`
 	CallID           string                 `json:"call_id,omitempty"`
 	Name             string                 `json:"name,omitempty"`
@@ -57,6 +74,9 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	}
 	if i.Type != "" {
 		payload["type"] = i.Type
+	}
+	if i.Phase != "" {
+		payload["phase"] = i.Phase
 	}
 	appendInputItemContent(payload, i)
 	if i.CallID != "" {

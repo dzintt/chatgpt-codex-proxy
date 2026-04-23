@@ -259,6 +259,15 @@ type ResponsesRequest struct {
 	StreamOptions      json.RawMessage  `json:"stream_options,omitempty"`
 }
 
+type ResponsesCompactRequest struct {
+	Model              string         `json:"model"`
+	Input              ResponsesInput `json:"input"`
+	Instructions       string         `json:"instructions,omitempty"`
+	PreviousResponseID string         `json:"previous_response_id,omitempty"`
+	Text               *ResponsesText `json:"text,omitempty"`
+	Reasoning          *Reasoning     `json:"reasoning,omitempty"`
+}
+
 type Reasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
@@ -301,6 +310,7 @@ func (r *ResponsesInput) UnmarshalJSON(data []byte) error {
 type ResponsesInputItem struct {
 	Type             string          `json:"type,omitempty"`
 	Role             string          `json:"role,omitempty"`
+	Phase            string          `json:"phase,omitempty"`
 	Content          MessageContent  `json:"content,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	OutputText       string          `json:"-"`

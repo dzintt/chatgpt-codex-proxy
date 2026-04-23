@@ -109,6 +109,49 @@ func (c *HTTPClient) GetCodexModels(ctx context.Context, record accounts.Record)
 	return models, nil
 }
 
+func (c *HTTPClient) CompactResponse(ctx context.Context, record accounts.Record, req CompactRequest) (CompactResponse, *accounts.QuotaSnapshot, error) {
+	session := c.sessionFor(record.ID)
+	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
+		AccountID:      record.AccountID,
+		Cookies:        record.Cookies,
+		ContentType:    "application/json",
+		RequestID:      NewRequestID(),
+		IncludeBeta:    true,
+		Accept:         "application/json",
+		AcceptEncoding: "gzip, deflate",
+	}), c.cfg.HeaderOrder)
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return CompactResponse{}, nil, err
+	}
+
+	resp, err := session.Do(ctx, &httpcloak.Request{
+		Method:  http.MethodPost,
+		URL:     JoinURL(c.cfg.CodexBaseURL, "/codex/responses/compact"),
+		Headers: headers,
+		Body:    bytes.NewReader(payload),
+	})
+	if err != nil {
+		return CompactResponse{}, nil, err
+	}
+	defer resp.Close()
+
+	body, err := resp.Text()
+	if err != nil {
+		return CompactResponse{}, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return CompactResponse{}, nil, NewUpstreamError("codex compact response", resp.StatusCode, body, toHTTPHeader(resp.Headers))
+	}
+
+	decoded, err := parseCompactResponse(body)
+	if err != nil {
+		return CompactResponse{}, nil, err
+	}
+	return decoded, ParseQuotaFromHeaders(toHTTPHeader(resp.Headers)), nil
+}
+
 func (c *HTTPClient) StreamResponse(ctx context.Context, record accounts.Record, req Request, turnState string) (*StreamReader, error) {
 	session := c.sessionFor(record.ID)
 	headers := OrderedHeaders(BuildHeaders(c.cfg, record.Token.AccessToken, HeaderOptions{
@@ -256,6 +299,14 @@ func StreamRequestPayload(req Request) Request {
 	bodyReq.PreviousResponseID = ""
 	bodyReq.ServiceTier = ""
 	return bodyReq
+}
+
+func parseCompactResponse(payload string) (CompactResponse, error) {
+	var decoded CompactResponse
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return CompactResponse{}, err
+	}
+	return decoded, nil
 }
 
 func (c *HTTPClient) codexModelsURL() string {

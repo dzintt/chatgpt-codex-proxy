@@ -30,6 +30,7 @@ type App struct {
 	accountMgr     *codex.AccountManager
 	httpClient     *codex.HTTPClient
 	wsClient       *codex.WSClient
+	compactCaller  func(context.Context, accounts.Record, codex.CompactRequest) (codex.CompactResponse, *accounts.QuotaSnapshot, error)
 	continuations  *accounts.ContinuationManager
 	models         *models.Catalog
 	modelRefresher *models.Fetcher
@@ -132,6 +133,7 @@ func (a *App) routes() {
 	protected.GET("/v1/models/:model_id", a.handleModelByID)
 	protected.POST("/v1/chat/completions", a.handleChatCompletions)
 	protected.POST("/v1/responses", a.handleResponses)
+	protected.POST("/v1/responses/compact", a.handleResponsesCompact)
 
 	adminGroup := protected.Group("/admin")
 	adminGroup.GET("/accounts", a.handleAdminAccounts)

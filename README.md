@@ -112,6 +112,28 @@ curl -sS "${PROXY_URL}/v1/responses" \
   }'
 ```
 
+Responses compact:
+
+```bash
+curl -sS "${PROXY_URL}/v1/responses/compact" \
+  -H "Authorization: Bearer ${PROXY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "input": [
+      {
+        "role": "assistant",
+        "phase": "output",
+        "content": [{"type": "output_text", "text": "Long prior answer"}]
+      },
+      {
+        "role": "user",
+        "content": "Compact this thread for the next turn."
+      }
+    ]
+  }'
+```
+
 ### 5. Point an OpenAI client at it
 
 - Base URL: `http://localhost:8080/v1`
@@ -134,6 +156,7 @@ Routes:
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `POST /v1/responses/compact`
 - `GET /v1/models`
 - `GET /v1/models/:model_id`
 - `GET /health/live`
@@ -149,12 +172,16 @@ Supported behavior:
 - Text, image, and file inputs
 - Reasoning support
 - Explicit `previous_response_id` continuation
+- Explicit OpenAI-style `response.compaction` support on `/v1/responses/compact`
 - Guarded implicit continuation when prior assistant or tool history is replayed
 - Runtime model catalog backed by the upstream Codex model list
 
 Important notes:
 
 - `/v1/chat/completions` also accepts a Responses-shaped body when `messages` is omitted.
+- `/v1/responses/compact` follows the public OpenAI contract and returns `object: "response.compaction"` instead of raw Codex JSON.
+- `/v1/responses/compact` supports explicit `previous_response_id` by expanding locally stored continuation history before calling the private compact backend.
+- Compact requests currently support the same text, image, file, reasoning, tool-call, tool-output, and compaction input items used elsewhere in the proxy. Audio input parts are rejected with `unsupported_content_part`.
 - Continuations are pinned to the original account when possible.
 - When the proxy can derive a stable conversation key, it sets `prompt_cache_key` upstream automatically.
 - Some OpenAI compatibility fields are accepted and ignored. See [docs/TRANSLATION.md](docs/TRANSLATION.md) for exact behavior.
@@ -234,6 +261,7 @@ The diagram shows the per-request translation path, local account state, and the
 The proxy talks to:
 
 - `POST https://chatgpt.com/backend-api/codex/responses`
+- `POST https://chatgpt.com/backend-api/codex/responses/compact`
 - `GET https://chatgpt.com/backend-api/codex/usage`
 - `GET https://chatgpt.com/backend-api/codex/models`
 - `WSS https://chatgpt.com/backend-api/codex/responses`
