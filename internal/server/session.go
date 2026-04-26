@@ -58,9 +58,10 @@ func (a *App) resolveSession(normalized translate.NormalizedRequest) (sessionRes
 	}
 
 	if resolution.ConversationKey == "" {
-		return resolution, nil
+		return a.resolveImplicitResumeFallback(resolution, nil), nil
 	}
-	for _, record := range a.continuations.ListByConversation(resolution.ConversationKey) {
+	records := a.continuations.ListByConversation(resolution.ConversationKey)
+	for _, record := range records {
 		if !canImplicitlyResume(record, normalized) {
 			continue
 		}
@@ -78,7 +79,7 @@ func (a *App) resolveSession(normalized translate.NormalizedRequest) (sessionRes
 		resolution.ImplicitResume = true
 		return resolution, nil
 	}
-	return resolution, nil
+	return a.resolveImplicitResumeFallback(resolution, records), nil
 }
 
 func invalidPreviousResponseIDError() error {
@@ -128,6 +129,47 @@ func hasPriorAssistantOrToolHistory(input []codex.InputItem) bool {
 		}
 	}
 	return false
+}
+
+func (a *App) resolveImplicitResumeFallback(resolution sessionResolution, excluded []accounts.ContinuationRecord) sessionResolution {
+	if a == nil || a.continuations == nil || !hasPriorAssistantOrToolHistory(resolution.Request.Input) {
+		return resolution
+	}
+
+	excludedIDs := make(map[string]struct{}, len(excluded))
+	for _, record := range excluded {
+		if responseID := strings.TrimSpace(record.ResponseID); responseID != "" {
+			excludedIDs[responseID] = struct{}{}
+		}
+	}
+
+	for _, record := range a.continuations.ListAll() {
+		if _, skip := excludedIDs[record.ResponseID]; skip {
+			continue
+		}
+		if !canImplicitlyResume(record, resolution.Request) {
+			continue
+		}
+		trimmed, ok := trimmedContinuationInput(resolution.Request.Input, record)
+		if !ok {
+			continue
+		}
+
+		resolution.Request.Input = trimmed
+		resolution.Request.PreviousResponseID = record.ResponseID
+		resolution.Request.Model = record.Model
+		resolution.Original.Model = record.Model
+		resolution.PreferredAccountID = record.AccountID
+		resolution.TurnState = strings.TrimSpace(record.TurnState)
+		resolution.ImplicitResume = true
+		if key := strings.TrimSpace(record.ConversationKey); key != "" {
+			resolution.ConversationKey = key
+			resolution.Request.PromptCacheKey = key
+			resolution.Original.PromptCacheKey = key
+		}
+		return resolution
+	}
+	return resolution
 }
 
 func trimmedContinuationInput(input []codex.InputItem, record accounts.ContinuationRecord) ([]codex.InputItem, bool) {

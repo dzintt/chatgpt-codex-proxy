@@ -363,6 +363,12 @@ func appendResponsesInputItem(out *[]codex.InputItem, instructions *[]string, it
 	switch item.Type {
 	case "message":
 		return appendReplayMessageInput(out, item)
+	case "web_search_call":
+		*out = append(*out, codex.InputItem{
+			Type:   "web_search_call",
+			ID:     strings.TrimSpace(item.ID),
+			Status: strings.TrimSpace(item.Status),
+		})
 	case "function_call":
 		*out = append(*out, codex.InputItem{
 			Type:      "function_call",

@@ -181,6 +181,115 @@ func TestResolveSessionChoosesMatchingHistoryWithinConversationBucket(t *testing
 	}
 }
 
+func TestResolveSessionImplicitResumeFallsBackForHostedToolReplayWithoutConversationKeyMatch(t *testing.T) {
+	t.Parallel()
+
+	app := &App{
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+	firstTurn := translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:        "gpt-5.4",
+			Instructions: "Be concise.",
+			Input: []codex.InputItem{
+				userText("hello"),
+			},
+		},
+	}
+	app.continuations.Put(accounts.ContinuationRecord{
+		ResponseID:      "resp_hosted",
+		AccountID:       "acct_hosted",
+		ConversationKey: resolutionConversationKey(firstTurn),
+		TurnState:       "turn_hosted",
+		Instructions:    firstTurn.Instructions,
+		Model:           firstTurn.Model,
+		InputHistory: continuationHistoryPrefix([]codex.InputItem{
+			userText("hello"),
+			{
+				Type:             "reasoning",
+				ID:               "rs_1",
+				EncryptedContent: "encrypted-reasoning",
+			},
+			{
+				Type:   "web_search_call",
+				ID:     "ws_1",
+				Status: "completed",
+			},
+			{
+				Type:      "function_call",
+				ID:        "fc_1",
+				CallID:    "call_1",
+				Name:      "check_candidate_duplicates",
+				Arguments: `{"requested_count":3}`,
+				Status:    "completed",
+			},
+		}),
+		FunctionCallIDs: []string{"call_1"},
+	})
+
+	secondTurn := translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:        "gpt-5.4",
+			Instructions: "Be concise.",
+			Input: []codex.InputItem{
+				userText("hello"),
+				{
+					Type:             "reasoning",
+					ID:               "rs_1",
+					EncryptedContent: "encrypted-reasoning",
+				},
+				{
+					Type:   "web_search_call",
+					ID:     "ws_1",
+					Status: "completed",
+				},
+				{
+					Type:      "function_call",
+					ID:        "fc_1",
+					CallID:    "call_1",
+					Name:      "check_candidate_duplicates",
+					Arguments: `{"requested_count":3}`,
+					Status:    "completed",
+				},
+				{
+					Type:       "function_call_output",
+					CallID:     "call_1",
+					OutputText: `{"remaining_needed":0}`,
+				},
+			},
+		},
+	}
+
+	if resolutionConversationKey(secondTurn) == resolutionConversationKey(firstTurn) {
+		t.Fatal("expected second-turn replay transcript to derive a different conversation key")
+	}
+
+	resolution, err := app.resolveSession(secondTurn)
+	if err != nil {
+		t.Fatalf("resolveSession() error = %v", err)
+	}
+	if !resolution.ImplicitResume {
+		t.Fatal("ImplicitResume = false, want true")
+	}
+	if resolution.Request.PreviousResponseID != "resp_hosted" {
+		t.Fatalf("PreviousResponseID = %q, want resp_hosted", resolution.Request.PreviousResponseID)
+	}
+	if resolution.PreferredAccountID != "acct_hosted" {
+		t.Fatalf("PreferredAccountID = %q, want acct_hosted", resolution.PreferredAccountID)
+	}
+	if resolution.TurnState != "turn_hosted" {
+		t.Fatalf("TurnState = %q, want turn_hosted", resolution.TurnState)
+	}
+	if len(resolution.Request.Input) != 1 {
+		t.Fatalf("len(trimmed input) = %d, want 1", len(resolution.Request.Input))
+	}
+	if resolution.Request.Input[0].Type != "function_call_output" {
+		t.Fatalf("trimmed input[0].Type = %q, want function_call_output", resolution.Request.Input[0].Type)
+	}
+}
+
 func TestAcquireAccountForResolutionOmittedModelUsesRouteScopedDefault(t *testing.T) {
 	t.Parallel()
 

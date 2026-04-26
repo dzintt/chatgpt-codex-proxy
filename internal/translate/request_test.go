@@ -694,6 +694,48 @@ func TestResponsesTranslationNormalizesEmptyMessageReplayForAssistantOutput(t *t
 	}
 }
 
+func TestResponsesTranslationPreservesWebSearchCallReplayIdentity(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model: "gpt-5.4",
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{
+				{
+					Role: "user",
+					Content: openai.MessageContent{{
+						Type: "text",
+						Text: "hello",
+					}},
+				},
+				{
+					Type:   "web_search_call",
+					ID:     "ws_1",
+					Status: "completed",
+				},
+			},
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if len(normalized.Input) != 2 {
+		t.Fatalf("input len = %d, want 2", len(normalized.Input))
+	}
+	if normalized.Input[1].Type != "web_search_call" {
+		t.Fatalf("input[1].Type = %q, want web_search_call", normalized.Input[1].Type)
+	}
+	if normalized.Input[1].ID != "ws_1" {
+		t.Fatalf("input[1].ID = %q, want ws_1", normalized.Input[1].ID)
+	}
+	if normalized.Input[1].Status != "completed" {
+		t.Fatalf("input[1].Status = %q, want completed", normalized.Input[1].Status)
+	}
+}
+
 func TestResponsesTranslationPreservesToolOutputContentTypes(t *testing.T) {
 	t.Parallel()
 
