@@ -955,9 +955,13 @@ func normalizeResponsesBody(body []byte, defaultModel string, catalog *models.Ca
 }
 
 func prepareStreamResponse(c *gin.Context) {
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
+	headers := c.Writer.Header()
+	headers.Set("Content-Type", "text/event-stream")
+	headers.Set("Cache-Control", "no-cache, no-transform")
+	headers.Set("Connection", "keep-alive")
+	headers.Set("X-Accel-Buffering", "no")
+	headers.Del("Content-Encoding")
+	headers.Del("Content-Length")
 	c.Status(http.StatusOK)
 }
 

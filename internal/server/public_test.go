@@ -971,6 +971,38 @@ func TestRequestUsesHostedWebSearch(t *testing.T) {
 	}
 }
 
+func TestPrepareStreamResponseDisablesTransformAndBuffering(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Writer.Header().Set("Content-Encoding", "gzip")
+	ctx.Writer.Header().Set("Content-Length", "123")
+
+	prepareStreamResponse(ctx)
+
+	headers := recorder.Header()
+	if got := headers.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	if got := headers.Get("Cache-Control"); got != "no-cache, no-transform" {
+		t.Fatalf("Cache-Control = %q, want no-cache, no-transform", got)
+	}
+	if got := headers.Get("Connection"); got != "keep-alive" {
+		t.Fatalf("Connection = %q, want keep-alive", got)
+	}
+	if got := headers.Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering = %q, want no", got)
+	}
+	if got := headers.Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want empty", got)
+	}
+	if got := headers.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want empty", got)
+	}
+}
+
 func TestContinuationInputHistoryIncludesAssistantReplay(t *testing.T) {
 	t.Parallel()
 
