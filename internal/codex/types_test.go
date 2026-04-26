@@ -139,3 +139,29 @@ func TestInputItemMarshalJSONKeepsEmptyToolOutput(t *testing.T) {
 		t.Fatalf("output = %#v, want empty string", value)
 	}
 }
+
+func TestInputItemMarshalJSONIncludesEmptyReasoningSummary(t *testing.T) {
+	t.Parallel()
+
+	payload, err := json.Marshal(InputItem{
+		Type:             "reasoning",
+		ID:               "rs_1",
+		EncryptedContent: "encrypted-reasoning",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	summary, ok := decoded["summary"].([]any)
+	if !ok {
+		t.Fatalf("summary = %#v, want empty array", decoded["summary"])
+	}
+	if len(summary) != 0 {
+		t.Fatalf("summary len = %d, want 0", len(summary))
+	}
+}

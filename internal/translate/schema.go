@@ -24,7 +24,11 @@ func NormalizeSchema(schema map[string]any) map[string]any {
 	if cloned == nil {
 		return schema
 	}
-	return normalizeObjectProperties(cloned)
+	defs := schemaDefinitions(cloned)
+	resolved := resolveLocalRefs(cloned, defs, nil)
+	delete(resolved, "$defs")
+	delete(resolved, "definitions")
+	return injectAdditionalProperties(resolved)
 }
 
 func injectAdditionalProperties(node map[string]any) map[string]any {
@@ -69,6 +73,112 @@ func cloneJSONMap(value map[string]any) map[string]any {
 	var cloned map[string]any
 	if err := json.Unmarshal(payload, &cloned); err != nil {
 		return nil
+	}
+	return cloned
+}
+
+func schemaDefinitions(schema map[string]any) map[string]map[string]any {
+	defs := make(map[string]map[string]any)
+	for _, key := range []string{"$defs", "definitions"} {
+		rawDefs, ok := schema[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, raw := range rawDefs {
+			definition, ok := raw.(map[string]any)
+			if ok {
+				defs["#/"+key+"/"+name] = definition
+			}
+		}
+	}
+	return defs
+}
+
+func resolveLocalRefs(node map[string]any, defs map[string]map[string]any, resolving map[string]bool) map[string]any {
+	if node == nil {
+		return nil
+	}
+	ref, _ := node["$ref"].(string)
+	if ref != "" {
+		if resolving[ref] {
+			return node
+		}
+		definition, ok := defs[ref]
+		if !ok {
+			return node
+		}
+		nextResolving := cloneBoolMap(resolving)
+		nextResolving[ref] = true
+		resolved := cloneJSONMap(definition)
+		if resolved == nil {
+			return node
+		}
+		resolved = resolveLocalRefs(resolved, defs, nextResolving)
+		for key, value := range node {
+			if key != "$ref" {
+				resolved[key] = value
+			}
+		}
+		node = resolved
+	}
+
+	resolveLocalRefChildren(node, defs, resolving)
+
+	return node
+}
+
+func resolveLocalRefChildren(node map[string]any, defs map[string]map[string]any, resolving map[string]bool) {
+	if node == nil {
+		return
+	}
+
+	for _, key := range []string{"properties", "patternProperties", "$defs", "definitions"} {
+		children, ok := node[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, raw := range children {
+			if child, ok := raw.(map[string]any); ok {
+				children[name] = resolveLocalRefs(child, defs, resolving)
+			}
+		}
+	}
+
+	if child, ok := node["items"].(map[string]any); ok {
+		node["items"] = resolveLocalRefs(child, defs, resolving)
+	}
+
+	if prefixItems, ok := node["prefixItems"].([]any); ok {
+		for index, raw := range prefixItems {
+			if child, ok := raw.(map[string]any); ok {
+				prefixItems[index] = resolveLocalRefs(child, defs, resolving)
+			}
+		}
+	}
+
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		entries, ok := node[key].([]any)
+		if !ok {
+			continue
+		}
+		for index, raw := range entries {
+			if child, ok := raw.(map[string]any); ok {
+				entries[index] = resolveLocalRefs(child, defs, resolving)
+			}
+		}
+	}
+
+	for _, key := range []string{"if", "then", "else", "not"} {
+		if child, ok := node[key].(map[string]any); ok {
+			node[key] = resolveLocalRefs(child, defs, resolving)
+		}
+	}
+}
+
+func cloneBoolMap(value map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(value)+1)
+	for key, item := range value {
+		cloned[key] = item
 	}
 	return cloned
 }

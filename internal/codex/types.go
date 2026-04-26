@@ -98,7 +98,9 @@ func (i InputItem) MarshalJSON() ([]byte, error) {
 	if i.Status != "" {
 		payload["status"] = i.Status
 	}
-	if len(i.Summary) > 0 {
+	if i.Type == "reasoning" {
+		payload["summary"] = append(make([]openai.ReasoningPart, 0, len(i.Summary)), i.Summary...)
+	} else if len(i.Summary) > 0 {
 		payload["summary"] = i.Summary
 	}
 	if i.EncryptedContent != "" {

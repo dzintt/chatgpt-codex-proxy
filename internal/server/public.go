@@ -1024,16 +1024,26 @@ func (a *App) respondOpenAIUpstreamStreamError(c *gin.Context, endpoint, account
 }
 
 func (a *App) respondClassifiedStreamError(c *gin.Context, endpoint, accountID, responseID, eventName string, err error) {
-	_, _, message := a.classifyUpstreamError(accountID, err)
+	_, code, message := a.classifyUpstreamError(accountID, err)
 	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
-	writeSSE(c.Writer, eventName, translate.MustJSON(gin.H{"error": message}))
+	writeSSE(c.Writer, eventName, translate.MustJSON(streamErrorPayload(message, code)))
 	c.Writer.Flush()
 }
 
 func (a *App) respondStreamError(c *gin.Context, endpoint, accountID, responseID, eventName string, err error) {
 	a.logUpstreamStreamFailure(c, endpoint, accountID, responseID, err)
-	writeSSE(c.Writer, eventName, translate.MustJSON(gin.H{"error": err.Error()}))
+	writeSSE(c.Writer, eventName, translate.MustJSON(streamErrorPayload(err.Error(), "api_error")))
 	c.Writer.Flush()
+}
+
+func streamErrorPayload(message string, code string) gin.H {
+	return gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "api_error",
+			"code":    code,
+		},
+	}
 }
 
 func (a *App) acquireReadyAccount(ctx context.Context, preferredID, modelID string) (accounts.Record, error) {

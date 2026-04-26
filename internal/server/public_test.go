@@ -520,6 +520,22 @@ func TestStreamResponsesClassifiesStructuredUnauthorizedFailure(t *testing.T) {
 	}
 }
 
+func TestStreamErrorPayloadUsesOpenAIErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	payload := streamErrorPayload("codex stream failed", "upstream_error")
+	errorValue, ok := payload["error"].(gin.H)
+	if !ok {
+		t.Fatalf("error = %#v, want object", payload["error"])
+	}
+	if errorValue["message"] != "codex stream failed" {
+		t.Fatalf("error.message = %#v", errorValue["message"])
+	}
+	if errorValue["code"] != "upstream_error" {
+		t.Fatalf("error.code = %#v", errorValue["code"])
+	}
+}
+
 func TestStreamResponsesSynthesizesFunctionCallLifecycle(t *testing.T) {
 	t.Parallel()
 
