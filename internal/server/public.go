@@ -164,7 +164,19 @@ func (a *App) openStream(c *gin.Context, ctx context.Context, endpoint string, r
 		fallback.ImplicitResume = false
 		return a.openHTTPStream(c, ctx, endpoint, &fallback)
 	}
+	if requestUsesHostedWebSearch(resolution.Request) {
+		return a.openWSStream(c, ctx, endpoint, resolution)
+	}
 	return a.openHTTPStream(c, ctx, endpoint, resolution)
+}
+
+func requestUsesHostedWebSearch(request translate.NormalizedRequest) bool {
+	for _, tool := range request.Tools {
+		if strings.TrimSpace(tool.Type) == "web_search" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) openHTTPStream(c *gin.Context, ctx context.Context, endpoint string, resolution *sessionResolution) (accounts.Record, eventStream, *accounts.QuotaSnapshot, error) {

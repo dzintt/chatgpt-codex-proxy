@@ -797,6 +797,180 @@ func TestStreamResponsesTextOnlyPassthroughRemainsUnchanged(t *testing.T) {
 	}
 }
 
+func TestStreamResponsesWebSearchPassthroughAndCompletedOutput(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Set(middleware.RequestIDKey, "req-test")
+
+	now := time.Now().UTC()
+	accountsSvc := newServerAccounts(t, &accounts.Record{
+		ID:        "acct_stream_web_search",
+		AccountID: "upstream_stream_web_search",
+		Status:    accounts.StatusActive,
+		Token: accounts.OAuthToken{
+			AccessToken: "token",
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app := &App{
+		cfg:           config.Config{ContinuationTTL: time.Minute},
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		accounts:      accountsSvc,
+		continuations: accounts.NewContinuationManager(time.Minute),
+	}
+
+	record := mustGetAccount(t, accountsSvc, "acct_stream_web_search")
+	stream := &fakeEventStream{
+		events: []*codex.StreamEvent{
+			{
+				Type: "response.output_item.added",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 0,
+					"item": map[string]any{
+						"id":     "ws_1",
+						"type":   "web_search_call",
+						"status": "in_progress",
+					},
+				},
+			},
+			{
+				Type: "response.web_search_call.in_progress",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 0,
+					"item_id":      "ws_1",
+				},
+			},
+			{
+				Type: "response.web_search_call.searching",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 0,
+					"item_id":      "ws_1",
+				},
+			},
+			{
+				Type: "response.web_search_call.completed",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 0,
+					"item_id":      "ws_1",
+				},
+			},
+			{
+				Type: "response.output_item.done",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 0,
+					"item": map[string]any{
+						"id":     "ws_1",
+						"type":   "web_search_call",
+						"status": "completed",
+						"action": map[string]any{
+							"type":  "search",
+							"query": "longevity clinic San Francisco",
+						},
+					},
+				},
+			},
+			{
+				Type: "response.output_item.done",
+				Raw: map[string]any{
+					"response_id":  "resp_search",
+					"output_index": 1,
+					"item": map[string]any{
+						"id":     "msg_1",
+						"type":   "message",
+						"role":   "assistant",
+						"status": "completed",
+						"content": []any{
+							map[string]any{
+								"type": "output_text",
+								"text": `{"leads":[]}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Type: "response.completed",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_search",
+						"model":  "gpt-5.5",
+						"status": "completed",
+						"output": []any{},
+					},
+				},
+			},
+		},
+	}
+
+	app.streamResponses(ctx, record, translate.NormalizedRequest{
+		Endpoint: translate.EndpointResponses,
+		Request: codex.Request{
+			Model:  "gpt-5.5",
+			Stream: true,
+		},
+	}, stream)
+
+	events := parseSSEEvents(t, recorder.Body.String())
+	assertEventTypes(t, events,
+		"response.output_item.added",
+		"response.web_search_call.in_progress",
+		"response.web_search_call.searching",
+		"response.web_search_call.completed",
+		"response.output_item.done",
+		"response.output_item.done",
+		"response.completed",
+		"done",
+	)
+
+	completed := events[6].Data
+	response := nestedMapFromAny(completed["response"])
+	output := sliceOfMapsFromAny(response["output"])
+	if len(output) != 2 {
+		t.Fatalf("completed response.output len = %d, want 2", len(output))
+	}
+	if output[0]["type"] != "web_search_call" {
+		t.Fatalf("completed output[0].type = %#v, want web_search_call", output[0]["type"])
+	}
+	if output[1]["type"] != "message" {
+		t.Fatalf("completed output[1].type = %#v, want message", output[1]["type"])
+	}
+	if response["output_text"] != `{"leads":[]}` {
+		t.Fatalf("completed response.output_text = %#v, want structured text", response["output_text"])
+	}
+}
+
+func TestRequestUsesHostedWebSearch(t *testing.T) {
+	t.Parallel()
+
+	if !requestUsesHostedWebSearch(translate.NormalizedRequest{
+		Request: codex.Request{
+			Tools: []codex.Tool{{Type: "web_search"}},
+		},
+	}) {
+		t.Fatal("requestUsesHostedWebSearch = false, want true")
+	}
+
+	if requestUsesHostedWebSearch(translate.NormalizedRequest{
+		Request: codex.Request{
+			Tools: []codex.Tool{{Type: "function", Name: "lookup"}},
+		},
+	}) {
+		t.Fatal("requestUsesHostedWebSearch = true for function tool, want false")
+	}
+}
+
 func TestContinuationInputHistoryIncludesAssistantReplay(t *testing.T) {
 	t.Parallel()
 

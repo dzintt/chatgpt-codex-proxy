@@ -202,7 +202,6 @@ func (c *HTTPClient) sessionFor(accountID string) *httpcloak.Client {
 	session := httpcloak.NewSession(
 		"chrome-latest",
 		httpcloak.WithTimeout(c.cfg.RequestTimeout),
-		httpcloak.WithForceHTTP2(),
 		httpcloak.WithoutRetry(),
 	)
 	c.sessions[accountID] = session
