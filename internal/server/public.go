@@ -758,8 +758,20 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 	out.Summary = continuationSummaryPartsFromMaps(jsonutil.SliceOfMaps(item["summary"]))
 	out.Content = continuationContentPartsFromMaps(jsonutil.SliceOfMaps(item["content"]))
 	out.OutputContent = continuationContentPartsFromMaps(jsonutil.SliceOfMaps(item["output"]))
-	if out.Role == "" && out.Type == "message" {
-		out.Role = "assistant"
+	if out.Type == "message" {
+		if out.Role == "" {
+			out.Role = "assistant"
+		}
+		if strings.TrimSpace(out.Phase) == "" && out.Role == "assistant" {
+			out.Phase = "output"
+		}
+		out.Type = ""
+		if len(out.Content) == 0 {
+			out.Content = []accounts.ContinuationContentPart{{
+				Type: "output_text",
+				Text: "",
+			}}
+		}
 	}
 	if out.Role == "" && out.Type == "" && len(out.Content) == 0 && len(out.OutputContent) == 0 && out.CallID == "" && out.ID == "" {
 		return accounts.ContinuationInputItem{}, false

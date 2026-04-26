@@ -361,6 +361,8 @@ func appendResponsesInputItem(out *[]codex.InputItem, instructions *[]string, it
 	}
 
 	switch item.Type {
+	case "message":
+		return appendReplayMessageInput(out, item)
 	case "function_call":
 		*out = append(*out, codex.InputItem{
 			Type:      "function_call",
@@ -408,6 +410,48 @@ func appendResponsesInputItem(out *[]codex.InputItem, instructions *[]string, it
 		return appendRoleContentInput(out, role, item.Phase, item.Content)
 	}
 	return nil
+}
+
+func appendReplayMessageInput(out *[]codex.InputItem, item openai.ResponsesInputItem) error {
+	role := item.Role
+	if role == "" {
+		role = "user"
+	}
+	phase := replayMessagePhase(role, item.Phase)
+	parts, err := normalizeContentPartsChecked(item.Content)
+	if err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		parts = []codex.ContentPart{{
+			Type: replayMessageTextPartType(role, phase),
+			Text: "",
+		}}
+	}
+	*out = append(*out, codex.InputItem{
+		Role:    role,
+		Phase:   phase,
+		Content: parts,
+	})
+	return nil
+}
+
+func replayMessagePhase(role, phase string) string {
+	trimmedPhase := strings.TrimSpace(phase)
+	if trimmedPhase != "" {
+		return trimmedPhase
+	}
+	if strings.TrimSpace(role) == "assistant" {
+		return "output"
+	}
+	return ""
+}
+
+func replayMessageTextPartType(role, phase string) string {
+	if strings.TrimSpace(phase) == "output" || strings.TrimSpace(role) == "assistant" {
+		return "output_text"
+	}
+	return "input_text"
 }
 
 func appendInstructionText(instructions *[]string, content openai.MessageContent) error {

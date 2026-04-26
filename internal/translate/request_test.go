@@ -652,6 +652,48 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 	}
 }
 
+func TestResponsesTranslationNormalizesEmptyMessageReplayForAssistantOutput(t *testing.T) {
+	t.Parallel()
+
+	request := openai.ResponsesRequest{
+		Model: "gpt-5.4",
+		Input: openai.ResponsesInput{
+			Items: []openai.ResponsesInputItem{
+				{
+					Type: "message",
+					Role: "assistant",
+				},
+				{
+					Type:       "function_call_output",
+					CallID:     "call_1",
+					OutputText: `{"ok":true}`,
+				},
+			},
+		},
+	}
+
+	normalized, err := Responses(request, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("Responses() error = %v", err)
+	}
+
+	if len(normalized.Input) != 2 {
+		t.Fatalf("input len = %d, want 2", len(normalized.Input))
+	}
+	if normalized.Input[0].Role != "assistant" {
+		t.Fatalf("input[0].Role = %q, want assistant", normalized.Input[0].Role)
+	}
+	if normalized.Input[0].Phase != "output" {
+		t.Fatalf("input[0].Phase = %q, want output", normalized.Input[0].Phase)
+	}
+	if len(normalized.Input[0].Content) != 1 {
+		t.Fatalf("input[0].Content = %#v, want one empty output_text part", normalized.Input[0].Content)
+	}
+	if normalized.Input[0].Content[0].Type != "output_text" || normalized.Input[0].Content[0].Text != "" {
+		t.Fatalf("input[0].Content[0] = %#v, want empty output_text", normalized.Input[0].Content[0])
+	}
+}
+
 func TestResponsesTranslationPreservesToolOutputContentTypes(t *testing.T) {
 	t.Parallel()
 
