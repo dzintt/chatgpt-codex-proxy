@@ -762,16 +762,7 @@ func continuationInputItemFromResponseOutput(item map[string]any) (accounts.Cont
 		if out.Role == "" {
 			out.Role = "assistant"
 		}
-		if strings.TrimSpace(out.Phase) == "" && out.Role == "assistant" {
-			out.Phase = "output"
-		}
 		out.Type = ""
-		if len(out.Content) == 0 {
-			out.Content = []accounts.ContinuationContentPart{{
-				Type: "output_text",
-				Text: "",
-			}}
-		}
 	}
 	if out.Role == "" && out.Type == "" && len(out.Content) == 0 && len(out.OutputContent) == 0 && out.CallID == "" && out.ID == "" {
 		return accounts.ContinuationInputItem{}, false
