@@ -14,6 +14,7 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	request := openai.ChatCompletionsRequest{
 		Model:              "gpt-5.4",
 		ReasoningEffort:    "high",
+		ServiceTier:        "fast",
 		PreviousResponseID: "resp_prev_chat",
 		Messages: []openai.ChatMessage{
 			{
@@ -68,6 +69,9 @@ func TestChatCompletionsTranslation(t *testing.T) {
 	if normalized.Reasoning == nil || normalized.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning = %#v, want explicit effort override", normalized.Reasoning)
 	}
+	if normalized.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want priority", normalized.ServiceTier)
+	}
 	if normalized.PreviousResponseID != "resp_prev_chat" {
 		t.Fatalf("previous_response_id = %q, want resp_prev_chat", normalized.PreviousResponseID)
 	}
@@ -104,6 +108,7 @@ func TestResponsesTranslation(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model:              "gpt-5.4",
 		PreviousResponseID: "resp_prev",
+		ServiceTier:        "priority",
 		Instructions:       "Be terse",
 		Input: openai.ResponsesInput{
 			Items: []openai.ResponsesInputItem{
@@ -138,6 +143,9 @@ func TestResponsesTranslation(t *testing.T) {
 
 	if normalized.Model != "gpt-5.4" {
 		t.Fatalf("model = %q", normalized.Model)
+	}
+	if normalized.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want priority", normalized.ServiceTier)
 	}
 	if normalized.PreviousResponseID != "resp_prev" {
 		t.Fatalf("previous_response_id = %q", normalized.PreviousResponseID)

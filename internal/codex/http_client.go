@@ -297,7 +297,6 @@ func StreamRequestPayload(req Request) Request {
 	bodyReq.Stream = true
 	bodyReq.Store = false
 	bodyReq.PreviousResponseID = ""
-	bodyReq.ServiceTier = ""
 	return bodyReq
 }
 

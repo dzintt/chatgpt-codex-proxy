@@ -47,6 +47,38 @@ func TestCompactRequestMarshalOmitsStreamingOnlyFields(t *testing.T) {
 	}
 }
 
+func TestStreamRequestPayloadPreservesServiceTier(t *testing.T) {
+	t.Parallel()
+
+	payload := StreamRequestPayload(Request{
+		Model:              "gpt-5.4",
+		Stream:             false,
+		Store:              true,
+		PreviousResponseID: "resp_previous",
+		ServiceTier:        "priority",
+		Input: []InputItem{{
+			Role: "user",
+			Content: []ContentPart{{
+				Type: "input_text",
+				Text: "hello",
+			}},
+		}},
+	})
+
+	if !payload.Stream {
+		t.Fatal("Stream = false, want true")
+	}
+	if payload.Store {
+		t.Fatal("Store = true, want false")
+	}
+	if payload.PreviousResponseID != "" {
+		t.Fatalf("PreviousResponseID = %q, want empty", payload.PreviousResponseID)
+	}
+	if payload.ServiceTier != "priority" {
+		t.Fatalf("ServiceTier = %q, want priority", payload.ServiceTier)
+	}
+}
+
 func TestParseCompactResponse(t *testing.T) {
 	t.Parallel()
 

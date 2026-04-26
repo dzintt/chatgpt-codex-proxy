@@ -257,7 +257,6 @@ Chat Completions ignored fields:
 - `user`
 - `parallel_tool_calls`
 - `stream_options`
-- `service_tier` is parsed into the normalized request but not transmitted upstream
 
 Responses ignored fields:
 
@@ -270,7 +269,8 @@ Responses ignored fields:
 - `user`
 - `metadata`
 - `stream_options`
-- `service_tier` is parsed into the normalized request but not transmitted upstream
+
+`service_tier` is transmitted upstream for Chat Completions and Responses requests. The compatibility alias `fast` is normalized to Codex's `priority` wire value.
 
 ## Continuation Translation
 
@@ -348,7 +348,6 @@ That forced HTTP payload does all of the following:
 - `stream = true`
 - `store = false`
 - `previous_response_id = ""`
-- `service_tier = ""`
 
 So even if the public request was non-streaming, the proxy still uses the streaming Codex endpoint and reconstructs the final JSON object locally.
 

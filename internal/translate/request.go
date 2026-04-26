@@ -723,7 +723,16 @@ func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string,
 	if effort != "" {
 		reasoning = &codex.Reasoning{Effort: effort, Summary: "auto"}
 	}
-	return model, modelExplicit, reasoning, strings.TrimSpace(serviceTier), nil
+	return model, modelExplicit, reasoning, normalizeServiceTier(serviceTier), nil
+}
+
+func normalizeServiceTier(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fast":
+		return "priority"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func firstCatalog(catalogs ...*models.Catalog) *models.Catalog {
