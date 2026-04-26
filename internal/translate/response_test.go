@@ -7,53 +7,6 @@ import (
 	"chatgpt-codex-proxy/internal/jsonutil"
 )
 
-func TestResponsesObjectIncludesFunctionCalls(t *testing.T) {
-	t.Parallel()
-
-	accumulator := NewAccumulator(NormalizedRequest{
-		Endpoint: EndpointResponses,
-		Request: codex.Request{
-			Model: "gpt-5.4",
-		},
-	})
-	accumulator.ResponseID = "resp_test"
-	accumulator.ToolCalls = []*ToolCallState{{
-		ItemID:      "fc_123",
-		CallID:      "call_123",
-		Name:        "ping_tool",
-		Arguments:   `{"message":"hello"}`,
-		OutputIndex: 0,
-		Status:      "completed",
-	}}
-
-	response := accumulator.ResponsesObject()
-	output, ok := response["output"].([]map[string]any)
-	if !ok {
-		t.Fatalf("output = %#v", response["output"])
-	}
-	if len(output) != 1 {
-		t.Fatalf("output len = %d, want 1", len(output))
-	}
-	if output[0]["type"] != "function_call" {
-		t.Fatalf("output[0].type = %#v, want function_call", output[0]["type"])
-	}
-	if output[0]["status"] != "completed" {
-		t.Fatalf("output[0].status = %#v, want completed", output[0]["status"])
-	}
-	if output[0]["id"] != "fc_123" {
-		t.Fatalf("output[0].id = %#v, want fc_123", output[0]["id"])
-	}
-	if output[0]["call_id"] != "call_123" {
-		t.Fatalf("output[0].call_id = %#v, want call_123", output[0]["call_id"])
-	}
-	if output[0]["name"] != "ping_tool" {
-		t.Fatalf("output[0].name = %#v, want ping_tool", output[0]["name"])
-	}
-	if output[0]["arguments"] != `{"message":"hello"}` {
-		t.Fatalf("output[0].arguments = %#v", output[0]["arguments"])
-	}
-}
-
 func TestPatchChatCompletionObjectForTuple(t *testing.T) {
 	t.Parallel()
 
@@ -222,7 +175,7 @@ func TestApplyUpgradesPlaceholderToolCallIDWhenOutputItemProvidesCallID(t *testi
 	}
 }
 
-func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.T) {
+func TestResponsesObjectMergesFunctionCallsWithExistingOutputInOrder(t *testing.T) {
 	t.Parallel()
 
 	accumulator := NewAccumulator(NormalizedRequest{
@@ -232,51 +185,6 @@ func TestResponsesObjectMergesFunctionCallsWithExistingMessageOutput(t *testing.
 		},
 	})
 	accumulator.ResponseID = "resp_merge"
-	accumulator.ToolCalls = []*ToolCallState{{
-		ItemID:      "fc_123",
-		CallID:      "call_123",
-		Name:        "ping_tool",
-		Arguments:   `{"message":"hello"}`,
-		OutputIndex: 0,
-		Status:      "completed",
-	}}
-	accumulator.OutputItems = []*outputItemState{{
-		Key:         "id:msg_123",
-		OutputIndex: 1,
-		Item: map[string]any{
-			"id":     "msg_123",
-			"type":   "message",
-			"role":   "assistant",
-			"status": "completed",
-			"content": []map[string]any{{
-				"type": "output_text",
-				"text": "done",
-			}},
-		},
-	}}
-
-	response := accumulator.ResponsesObject()
-	output := response["output"].([]map[string]any)
-	if len(output) != 2 {
-		t.Fatalf("output len = %d, want 2", len(output))
-	}
-	if output[0]["type"] != "function_call" {
-		t.Fatalf("output[0].type = %#v, want function_call", output[0]["type"])
-	}
-	if output[1]["type"] != "message" {
-		t.Fatalf("output[1].type = %#v, want message", output[1]["type"])
-	}
-}
-
-func TestResponsesObjectPreservesToolCallOrderByOutputIndex(t *testing.T) {
-	t.Parallel()
-
-	accumulator := NewAccumulator(NormalizedRequest{
-		Endpoint: EndpointResponses,
-		Request: codex.Request{
-			Model: "gpt-5.4",
-		},
-	})
 	accumulator.ToolCalls = []*ToolCallState{
 		{
 			ItemID:      "fc_late",
@@ -295,14 +203,49 @@ func TestResponsesObjectPreservesToolCallOrderByOutputIndex(t *testing.T) {
 			Status:      "completed",
 		},
 	}
+	accumulator.OutputItems = []*outputItemState{{
+		Key:         "id:msg_123",
+		OutputIndex: 2,
+		Item: map[string]any{
+			"id":     "msg_123",
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": "done",
+			}},
+		},
+	}}
 
 	response := accumulator.ResponsesObject()
 	output := response["output"].([]map[string]any)
+	if len(output) != 3 {
+		t.Fatalf("output len = %d, want 3", len(output))
+	}
+	if output[0]["type"] != "function_call" {
+		t.Fatalf("output[0].type = %#v, want function_call", output[0]["type"])
+	}
 	if output[0]["call_id"] != "call_early" {
 		t.Fatalf("output[0].call_id = %#v, want call_early", output[0]["call_id"])
 	}
+	if output[0]["status"] != "completed" {
+		t.Fatalf("output[0].status = %#v, want completed", output[0]["status"])
+	}
+	if output[0]["id"] != "fc_early" {
+		t.Fatalf("output[0].id = %#v, want fc_early", output[0]["id"])
+	}
+	if output[0]["name"] != "early_tool" {
+		t.Fatalf("output[0].name = %#v, want early_tool", output[0]["name"])
+	}
+	if output[0]["arguments"] != `{"value":1}` {
+		t.Fatalf("output[0].arguments = %#v", output[0]["arguments"])
+	}
 	if output[1]["call_id"] != "call_late" {
 		t.Fatalf("output[1].call_id = %#v, want call_late", output[1]["call_id"])
+	}
+	if output[2]["type"] != "message" {
+		t.Fatalf("output[2].type = %#v, want message", output[2]["type"])
 	}
 }
 
