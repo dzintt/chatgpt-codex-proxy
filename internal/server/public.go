@@ -959,8 +959,8 @@ func prepareStreamResponse(c *gin.Context) {
 	headers.Set("Content-Type", "text/event-stream")
 	headers.Set("Cache-Control", "no-cache, no-transform")
 	headers.Set("Connection", "keep-alive")
+	headers.Set("Content-Encoding", "identity")
 	headers.Set("X-Accel-Buffering", "no")
-	headers.Del("Content-Encoding")
 	headers.Del("Content-Length")
 	c.Status(http.StatusOK)
 }

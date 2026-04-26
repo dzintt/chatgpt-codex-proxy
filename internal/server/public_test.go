@@ -995,8 +995,8 @@ func TestPrepareStreamResponseDisablesTransformAndBuffering(t *testing.T) {
 	if got := headers.Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("X-Accel-Buffering = %q, want no", got)
 	}
-	if got := headers.Get("Content-Encoding"); got != "" {
-		t.Fatalf("Content-Encoding = %q, want empty", got)
+	if got := headers.Get("Content-Encoding"); got != "identity" {
+		t.Fatalf("Content-Encoding = %q, want identity", got)
 	}
 	if got := headers.Get("Content-Length"); got != "" {
 		t.Fatalf("Content-Length = %q, want empty", got)
