@@ -25,7 +25,7 @@ const (
 	defaultClientID              = "app_EMoamEEZ73f0CkXaXp7hrann"
 	defaultLoginTimeoutSeconds   = 900
 	defaultContinuationTTLMinute = 60
-	defaultRequestTimeoutSecond  = 120
+	defaultRequestTimeoutSecond  = 1800
 )
 
 type Config struct {
