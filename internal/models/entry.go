@@ -1,7 +1,5 @@
 package models
 
-import "time"
-
 type Source string
 
 const (
@@ -23,10 +21,4 @@ type Entry struct {
 	DefaultReasoningEffort    string            `json:"default_reasoning_effort,omitempty"`
 	SupportedReasoningEfforts []ReasoningEffort `json:"supported_reasoning_efforts,omitempty"`
 	Source                    Source            `json:"source"`
-}
-
-type CacheSnapshot struct {
-	FetchedAt time.Time           `json:"fetched_at"`
-	Models    []Entry             `json:"models"`
-	Support   map[string][]string `json:"support"`
 }

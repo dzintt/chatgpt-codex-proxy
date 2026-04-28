@@ -15,6 +15,14 @@ const (
 	DefaultQuotaFallback     = 5 * time.Minute
 )
 
+type RotationStrategy string
+
+const (
+	RotationLeastUsed  RotationStrategy = "least_used"
+	RotationRoundRobin RotationStrategy = "round_robin"
+	RotationSticky     RotationStrategy = "sticky"
+)
+
 type Service struct {
 	mu               sync.RWMutex
 	store            Store

@@ -5,7 +5,44 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"chatgpt-codex-proxy/internal/conversation"
 )
+
+type ContinuationInputItem struct {
+	Role             string                    `json:"role,omitempty"`
+	Type             string                    `json:"type,omitempty"`
+	Phase            string                    `json:"phase,omitempty"`
+	Content          []ContinuationContentPart `json:"content,omitempty"`
+	CallID           string                    `json:"call_id,omitempty"`
+	Name             string                    `json:"name,omitempty"`
+	Input            string                    `json:"input,omitempty"`
+	Arguments        string                    `json:"arguments,omitempty"`
+	OutputText       string                    `json:"output,omitempty"`
+	OutputContent    []ContinuationContentPart `json:"output_content,omitempty"`
+	ID               string                    `json:"id,omitempty"`
+	Status           string                    `json:"status,omitempty"`
+	Summary          []ContinuationSummaryPart `json:"summary,omitempty"`
+	EncryptedContent string                    `json:"encrypted_content,omitempty"`
+}
+
+type ContinuationContentPart = conversation.ContentPart
+
+type ContinuationSummaryPart = conversation.ReasoningPart
+
+type ContinuationRecord struct {
+	ResponseID      string
+	AccountID       string
+	UpstreamID      string
+	ConversationKey string
+	TurnState       string
+	Instructions    string
+	Model           string
+	InputHistory    []ContinuationInputItem
+	FunctionCallIDs []string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+}
 
 type ContinuationManager struct {
 	ttl     time.Duration

@@ -5,9 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const cacheFilename = "models-cache.json"
+
+type CacheSnapshot struct {
+	FetchedAt time.Time           `json:"fetched_at"`
+	Models    []Entry             `json:"models"`
+	Support   map[string][]string `json:"support"`
+}
 
 func LoadCache(dataDir string) (CacheSnapshot, error) {
 	path := filepath.Join(dataDir, cacheFilename)

@@ -12,8 +12,8 @@ It is based on the current implementation, not an external specification. The co
 - `internal/translate/schema.go`
 - `internal/translate/tuple.go`
 - `internal/codex/http_client.go`
+- `internal/codex/request.go`
 - `internal/codex/ws_client.go`
-- `internal/codex/types.go`
 - `internal/openai/types.go`
 
 ## Overview
