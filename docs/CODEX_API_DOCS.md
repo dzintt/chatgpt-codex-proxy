@@ -113,7 +113,7 @@ This is the canonical request shape the proxy sends to the HTTP Codex responses 
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "instructions": "You are a helpful assistant.",
   "input": [],
   "stream": true,
@@ -168,7 +168,7 @@ This is the canonical request shape the proxy sends to the JSON compact endpoint
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "instructions": "Summarize the thread state.",
   "input": [
     {
@@ -454,7 +454,7 @@ Example:
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "instructions": "Be concise.",
   "input": [
     {
@@ -471,7 +471,7 @@ Example with tool calls:
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "instructions": "Be concise.",
   "input": [
     {
@@ -515,7 +515,7 @@ curl -sS -N "${CODEX_BASE_URL}/codex/responses" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "instructions": "Be concise.",
     "input": [
       {
@@ -772,7 +772,7 @@ Observed payload:
   "type": "response.completed",
   "response": {
     "id": "resp_123",
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "status": "completed",
     "output": [],
     "output_text": "final text",
@@ -912,7 +912,7 @@ Example:
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [
     {
       "role": "assistant",
@@ -936,7 +936,7 @@ Example with an existing compaction artifact:
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [
     {
       "type": "compaction",
@@ -959,7 +959,7 @@ curl -sS "${CODEX_BASE_URL}/codex/responses/compact" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "input": [
       {
         "role": "assistant",
@@ -1029,7 +1029,7 @@ The proxy sends one JSON message immediately after connecting:
 ```json
 {
   "type": "response.create",
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [],
   "instructions": "Be concise.",
   "tools": [],
@@ -1195,8 +1195,8 @@ The proxy now accepts only the Codex-specific top-level shape observed in live t
 {
   "models": [
     {
-      "slug": "gpt-5.4",
-      "display_name": "gpt-5.4",
+      "slug": "gpt-5.5",
+      "display_name": "gpt-5.5",
       "description": "Model description",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [

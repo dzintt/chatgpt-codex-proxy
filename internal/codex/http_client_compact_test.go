@@ -82,22 +82,43 @@ func TestStreamRequestPayloadPreservesServiceTier(t *testing.T) {
 func TestParseCompactResponse(t *testing.T) {
 	t.Parallel()
 
-	response, err := parseCompactResponse(`{"output":[{"type":"compaction","id":"cmp_123","encrypted_content":"enc"}]}`)
-	if err != nil {
-		t.Fatalf("parseCompactResponse() error = %v", err)
+	tests := []struct {
+		name    string
+		payload string
+		wantErr bool
+	}{
+		{
+			name:    "valid compaction output",
+			payload: `{"output":[{"type":"compaction","id":"cmp_123","encrypted_content":"enc"}]}`,
+		},
+		{
+			name:    "invalid JSON",
+			payload: `{"output":`,
+			wantErr: true,
+		},
 	}
-	if len(response.Output) != 1 {
-		t.Fatalf("len(output) = %d, want 1", len(response.Output))
-	}
-	if got := response.Output[0]["type"]; got != "compaction" {
-		t.Fatalf("output[0][type] = %#v, want compaction", got)
-	}
-}
 
-func TestParseCompactResponseRejectsInvalidJSON(t *testing.T) {
-	t.Parallel()
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	if _, err := parseCompactResponse(`{"output":`); err == nil {
-		t.Fatal("parseCompactResponse() error = nil, want JSON decode error")
+			response, err := parseCompactResponse(tc.payload)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("parseCompactResponse() error = nil, want JSON decode error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCompactResponse() error = %v", err)
+			}
+			if len(response.Output) != 1 {
+				t.Fatalf("len(output) = %d, want 1", len(response.Output))
+			}
+			if got := response.Output[0]["type"]; got != "compaction" {
+				t.Fatalf("output[0][type] = %#v, want compaction", got)
+			}
+		})
 	}
 }

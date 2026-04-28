@@ -92,7 +92,7 @@ curl -sS "${PROXY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${PROXY_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "messages": [
       { "role": "system", "content": "Be concise." },
       { "role": "user", "content": "Explain what this repository does." }
@@ -107,7 +107,7 @@ curl -sS "${PROXY_URL}/v1/responses" \
   -H "Authorization: Bearer ${PROXY_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "input": "Summarize this project in three bullet points."
   }'
 ```
@@ -119,7 +119,7 @@ curl -sS "${PROXY_URL}/v1/responses/compact" \
   -H "Authorization: Bearer ${PROXY_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "input": [
       {
         "role": "assistant",
@@ -280,7 +280,7 @@ Live compatibility tests against a running local proxy:
 
 ```bash
 OPENAI_API_KEY=change-me-to-a-long-random-string \
-OPENAI_MODEL=gpt-5.2 \
+OPENAI_MODEL=gpt-5.5 \
 OPENAI_BASE_URL="${PROXY_URL}/v1" \
 go test -tags=live ./internal/integration -v -count=1
 ```

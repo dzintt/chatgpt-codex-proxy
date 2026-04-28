@@ -14,7 +14,7 @@ import (
 const (
 	defaultListenPort            = 8080
 	defaultDataDir               = "data"
-	defaultDefaultModel          = "gpt-5.4"
+	defaultDefaultModel          = "gpt-5.5"
 	defaultClientVersion         = "26.409.61251"
 	defaultOriginator            = "Codex Desktop"
 	defaultOpenAIBeta            = "responses_websockets=2026-02-06"

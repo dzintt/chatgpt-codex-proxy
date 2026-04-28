@@ -83,27 +83,37 @@ func TestLoadRejectsInvalidPort(t *testing.T) {
 }
 
 func TestLoadParsesDebugLogPayloads(t *testing.T) {
-	t.Setenv("PROXY_API_KEY", "test-key")
-	t.Setenv("DEBUG_LOG_PAYLOADS", "true")
-	t.Chdir(t.TempDir())
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	tests := []struct {
+		name      string
+		value     string
+		wantDebug bool
+		wantErr   bool
+	}{
+		{name: "true", value: "true", wantDebug: true},
+		{name: "invalid", value: "definitely-not-bool", wantErr: true},
 	}
-	if !cfg.DebugLogPayloads {
-		t.Fatal("Load() debug log payloads = false, want true")
-	}
-}
 
-func TestLoadRejectsInvalidDebugLogPayloads(t *testing.T) {
-	t.Setenv("PROXY_API_KEY", "test-key")
-	t.Setenv("DEBUG_LOG_PAYLOADS", "definitely-not-bool")
-	t.Chdir(t.TempDir())
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PROXY_API_KEY", "test-key")
+			t.Setenv("DEBUG_LOG_PAYLOADS", tc.value)
+			t.Chdir(t.TempDir())
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("Load() error = nil, want invalid DEBUG_LOG_PAYLOADS error")
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() error = nil, want invalid DEBUG_LOG_PAYLOADS error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DebugLogPayloads != tc.wantDebug {
+				t.Fatalf("Load() debug log payloads = %v, want %v", cfg.DebugLogPayloads, tc.wantDebug)
+			}
+		})
 	}
 }
 

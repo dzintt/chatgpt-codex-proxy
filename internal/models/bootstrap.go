@@ -2,10 +2,23 @@ package models
 
 var bootstrapEntries = []Entry{
 	{
+		ID:                     "gpt-5.5",
+		DisplayName:            "gpt-5.5",
+		Description:            "Bootstrap fallback model catalog entry",
+		IsDefault:              true,
+		DefaultReasoningEffort: "medium",
+		SupportedReasoningEfforts: []ReasoningEffort{
+			{ReasoningEffort: "low", Description: "Fastest responses"},
+			{ReasoningEffort: "medium", Description: "Balanced"},
+			{ReasoningEffort: "high", Description: "Greater reasoning depth"},
+			{ReasoningEffort: "xhigh", Description: "Extra high reasoning depth"},
+		},
+		Source: SourceBootstrap,
+	},
+	{
 		ID:                     "gpt-5.4",
 		DisplayName:            "gpt-5.4",
 		Description:            "Bootstrap fallback model catalog entry",
-		IsDefault:              true,
 		DefaultReasoningEffort: "medium",
 		SupportedReasoningEfforts: []ReasoningEffort{
 			{ReasoningEffort: "low", Description: "Fastest responses"},

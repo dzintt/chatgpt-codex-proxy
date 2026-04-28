@@ -2,20 +2,33 @@ package server
 
 import "testing"
 
-func TestFormatPayloadForLogCompactsJSONBytes(t *testing.T) {
+func TestFormatPayloadForLog(t *testing.T) {
 	t.Parallel()
 
-	got := formatPayloadForLog([]byte("{\n  \"hello\": \"world\"\n}\n"))
-	if got != "{\"hello\":\"world\"}" {
-		t.Fatalf("formatPayloadForLog() = %q, want compact JSON", got)
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name:  "JSON bytes",
+			value: []byte("{\n  \"hello\": \"world\"\n}\n"),
+			want:  "{\"hello\":\"world\"}",
+		},
+		{
+			name:  "map value",
+			value: map[string]any{"stream": true, "model": "gpt-5.4"},
+			want:  "{\"model\":\"gpt-5.4\",\"stream\":true}",
+		},
 	}
-}
 
-func TestFormatPayloadForLogMarshalsStructs(t *testing.T) {
-	t.Parallel()
-
-	got := formatPayloadForLog(map[string]any{"stream": true, "model": "gpt-5.4"})
-	if got != "{\"model\":\"gpt-5.4\",\"stream\":true}" && got != "{\"stream\":true,\"model\":\"gpt-5.4\"}" {
-		t.Fatalf("formatPayloadForLog() = %q, want marshaled JSON object", got)
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatPayloadForLog(tc.value); got != tc.want {
+				t.Fatalf("formatPayloadForLog() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
