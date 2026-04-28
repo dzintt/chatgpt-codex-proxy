@@ -25,7 +25,7 @@ func (a *App) handleResponsesCompact(c *gin.Context) {
 	}
 	a.logIncomingPayload(c, "responses_compact", body)
 
-	normalized, err := normalizeResponsesCompactBody(body, a.cfg.DefaultModel, a.modelCatalog())
+	normalized, err := normalizeResponsesCompactBody(body, a.modelCatalog())
 	if err != nil {
 		a.respondOpenAINormalizeError(c, err)
 		return
@@ -71,12 +71,12 @@ func (a *App) handleResponsesCompact(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-func normalizeResponsesCompactBody(body []byte, defaultModel string, catalog *models.Catalog) (translate.NormalizedCompactRequest, error) {
+func normalizeResponsesCompactBody(body []byte, catalog *models.Catalog) (translate.NormalizedCompactRequest, error) {
 	var req openai.ResponsesCompactRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return translate.NormalizedCompactRequest{}, err
 	}
-	return translate.Compact(req, defaultModel, catalog)
+	return translate.Compact(req, catalog)
 }
 
 func (a *App) resolveCompactRequest(normalized translate.NormalizedCompactRequest) (translate.NormalizedCompactRequest, string, error) {

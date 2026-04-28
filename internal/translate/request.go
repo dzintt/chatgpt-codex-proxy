@@ -30,8 +30,8 @@ func (e *UnsupportedContentPartError) Error() string {
 	return fmt.Sprintf("unsupported_content_part: %s", e.PartType)
 }
 
-func ChatCompletions(req openai.ChatCompletionsRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedRequest, error) {
-	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, req.ReasoningEffort, req.ServiceTier, catalog...)
+func ChatCompletions(req openai.ChatCompletionsRequest, catalog ...*models.Catalog) (NormalizedRequest, error) {
+	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, req.ReasoningEffort, req.ServiceTier, catalog...)
 	if err != nil {
 		return NormalizedRequest{}, err
 	}
@@ -118,8 +118,8 @@ func customToolInputFromFunctionArguments(arguments string) string {
 	return arguments
 }
 
-func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedRequest, error) {
-	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, defaultModel, "", req.ServiceTier, catalog...)
+func Responses(req openai.ResponsesRequest, catalog ...*models.Catalog) (NormalizedRequest, error) {
+	model, modelExplicit, reasoning, serviceTier, err := normalizeModel(req.Model, "", req.ServiceTier, catalog...)
 	if err != nil {
 		return NormalizedRequest{}, err
 	}
@@ -173,8 +173,8 @@ func Responses(req openai.ResponsesRequest, defaultModel string, catalog ...*mod
 	return out, nil
 }
 
-func Compact(req openai.ResponsesCompactRequest, defaultModel string, catalog ...*models.Catalog) (NormalizedCompactRequest, error) {
-	model, modelExplicit, reasoning, _, err := normalizeModel(req.Model, defaultModel, "", "", catalog...)
+func Compact(req openai.ResponsesCompactRequest, catalog ...*models.Catalog) (NormalizedCompactRequest, error) {
+	model, modelExplicit, reasoning, _, err := normalizeModel(req.Model, "", "", catalog...)
 	if err != nil {
 		return NormalizedCompactRequest{}, err
 	}
@@ -710,7 +710,7 @@ func unsupportedContentPartError(partType string) error {
 	return &UnsupportedContentPartError{PartType: partType}
 }
 
-func normalizeModel(rawModel, defaultModel, reasoningEffort, serviceTier string, catalogs ...*models.Catalog) (string, bool, *codex.Reasoning, string, error) {
+func normalizeModel(rawModel, reasoningEffort, serviceTier string, catalogs ...*models.Catalog) (string, bool, *codex.Reasoning, string, error) {
 	catalog := firstCatalog(catalogs...)
 	model := strings.TrimSpace(rawModel)
 	modelExplicit := model != ""

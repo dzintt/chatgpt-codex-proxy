@@ -55,14 +55,6 @@ func (m *ContinuationManager) Sweep() {
 	}
 }
 
-func (m *ContinuationManager) GetLatestByConversation(key string) (ContinuationRecord, bool) {
-	records := m.ListByConversation(key)
-	if len(records) == 0 {
-		return ContinuationRecord{}, false
-	}
-	return records[0], true
-}
-
 func (m *ContinuationManager) ListByConversation(key string) []ContinuationRecord {
 	key = strings.TrimSpace(key)
 	if key == "" {

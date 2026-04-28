@@ -58,7 +58,7 @@ func TestChatCompletionsTranslation(t *testing.T) {
 		}},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResponsesTranslation(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -174,7 +174,7 @@ func TestResponsesTranslationUsesReasoningObject(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -229,7 +229,7 @@ func TestCompactTranslation(t *testing.T) {
 		},
 	}
 
-	normalized, err := Compact(request, "gpt-5.4")
+	normalized, err := Compact(request)
 	if err != nil {
 		t.Fatalf("Compact() error = %v", err)
 	}
@@ -266,7 +266,8 @@ func TestCompactTranslationRejectsUnsupportedContentPart(t *testing.T) {
 				}},
 			}},
 		},
-	}, "gpt-5.4")
+	})
+
 	if err == nil {
 		t.Fatal("Compact() error = nil, want unsupported content part error")
 	}
@@ -313,7 +314,7 @@ func TestResponsesTranslationExtractsInstructionRolesFromInput(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -357,7 +358,7 @@ func TestResponsesTranslationAcceptsModernFunctionToolShape(t *testing.T) {
 		}},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -397,7 +398,7 @@ func TestChatCompletionsTranslationPreservesCustomToolShape(t *testing.T) {
 		ToolChoice: json.RawMessage(`{"type":"custom","name":"ApplyPatch"}`),
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -451,7 +452,7 @@ func TestChatCompletionsTranslationPreservesCustomToolCallsAndOutputs(t *testing
 		},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -507,7 +508,7 @@ func TestChatCompletionsTranslationMapsFunctionShapedReplayBackToCustomTool(t *t
 		}},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -594,7 +595,7 @@ func TestChatCompletionsTranslationSupportsWebSearchVariants(t *testing.T) {
 				ToolChoice: tc.toolChoice,
 			}
 
-			normalized, err := ChatCompletions(request, "gpt-5.4")
+			normalized, err := ChatCompletions(request)
 			if err != nil {
 				t.Fatalf("ChatCompletions() error = %v", err)
 			}
@@ -635,7 +636,7 @@ func TestResponsesTranslationAcceptsAssistantOutputTextReplay(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -675,7 +676,7 @@ func TestResponsesTranslationPreservesWebSearchCallReplayIdentity(t *testing.T) 
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -721,7 +722,7 @@ func TestResponsesTranslationPreservesToolOutputContentTypes(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -754,7 +755,7 @@ func TestResponsesTranslationAcceptsInputFilePart(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -797,7 +798,7 @@ func TestResponsesTranslationAcceptsReasoningItemReplay(t *testing.T) {
 		},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -837,7 +838,8 @@ func TestUnsupportedContentPartRejected(t *testing.T) {
 				Type: "audio",
 			}},
 		}},
-	}, "gpt-5.4")
+	})
+
 	if err == nil {
 		t.Fatal("expected unsupported content part error")
 	}
@@ -862,7 +864,8 @@ func TestChatCompletionsTranslationRejectsInvalidToolCallContent(t *testing.T) {
 				},
 			}},
 		}},
-	}, "gpt-5.4")
+	})
+
 	if err == nil {
 		t.Fatal("expected invalid tool call content error")
 	}
@@ -880,7 +883,8 @@ func TestUnsupportedModelRejected(t *testing.T) {
 			Role:    "user",
 			Content: openai.MessageContent{{Type: "text", Text: "hello"}},
 		}},
-	}, "gpt-5.4")
+	})
+
 	if err == nil {
 		t.Fatal("expected unsupported model error")
 	}
@@ -893,7 +897,8 @@ func TestResponsesTranslationLeavesModelEmptyWhenOmitted(t *testing.T) {
 		Input: openai.ResponsesInput{
 			String: "hello",
 		},
-	}, "gpt-5.4")
+	})
+
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -922,7 +927,7 @@ func TestChatCompletionsTranslationAcceptsLegacyFunctionsAndChoice(t *testing.T)
 		FunctionCall: &openai.LegacyFunctionCallChoice{Name: "lookup_weather"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -969,7 +974,7 @@ func TestChatCompletionsTranslationPrefersModernToolsAndToolChoice(t *testing.T)
 		FunctionCall: &openai.LegacyFunctionCallChoice{Name: "legacy_tool"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -997,7 +1002,7 @@ func TestChatCompletionsTranslationSupportsJSONObject(t *testing.T) {
 		ResponseFormat: &openai.ResponseFormat{Type: "json_object"},
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -1042,7 +1047,7 @@ func TestChatCompletionsTranslationPreparesSchemaAndWarnings(t *testing.T) {
 		StreamOptions: json.RawMessage(`{"include_usage":true}`),
 	}
 
-	normalized, err := ChatCompletions(request, "gpt-5.4")
+	normalized, err := ChatCompletions(request)
 	if err != nil {
 		t.Fatalf("ChatCompletions() error = %v", err)
 	}
@@ -1106,7 +1111,7 @@ func TestResponsesTranslationPreparesSchemaAndWarnings(t *testing.T) {
 		Metadata:          map[string]any{"request_id": "abc"},
 	}
 
-	normalized, err := Responses(request, "gpt-5.4")
+	normalized, err := Responses(request)
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}

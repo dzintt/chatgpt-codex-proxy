@@ -54,7 +54,7 @@ func (a *App) handleChatCompletions(c *gin.Context) {
 		c,
 		"chat_completions",
 		func(body []byte) (translate.NormalizedRequest, error) {
-			return normalizeChatCompletionsBody(body, a.cfg.DefaultModel, a.modelCatalog())
+			return normalizeChatCompletionsBody(body, a.modelCatalog())
 		},
 		a.streamChatCompletion,
 		func(accumulator *translate.Accumulator) map[string]any {
@@ -69,7 +69,7 @@ func (a *App) handleResponses(c *gin.Context) {
 		c,
 		"responses",
 		func(body []byte) (translate.NormalizedRequest, error) {
-			return normalizeResponsesBody(body, a.cfg.DefaultModel, a.modelCatalog())
+			return normalizeResponsesBody(body, a.modelCatalog())
 		},
 		a.streamResponses,
 		func(accumulator *translate.Accumulator) map[string]any {
@@ -907,14 +907,14 @@ func captureRequestBody(c *gin.Context) ([]byte, error) {
 	return body, nil
 }
 
-func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *models.Catalog) (translate.NormalizedRequest, error) {
+func normalizeChatCompletionsBody(body []byte, catalog *models.Catalog) (translate.NormalizedRequest, error) {
 	var chatReq openai.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		return translate.NormalizedRequest{}, err
 	}
 
 	if len(chatReq.Messages) > 0 {
-		return translate.ChatCompletions(chatReq, defaultModel, catalog)
+		return translate.ChatCompletions(chatReq, catalog)
 	}
 
 	var envelope struct {
@@ -941,7 +941,7 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *mod
 		return translate.NormalizedRequest{}, err
 	}
 
-	normalized, err := translate.Responses(responsesReq, defaultModel, catalog)
+	normalized, err := translate.Responses(responsesReq, catalog)
 	if err != nil {
 		return translate.NormalizedRequest{}, err
 	}
@@ -949,12 +949,12 @@ func normalizeChatCompletionsBody(body []byte, defaultModel string, catalog *mod
 	return normalized, nil
 }
 
-func normalizeResponsesBody(body []byte, defaultModel string, catalog *models.Catalog) (translate.NormalizedRequest, error) {
+func normalizeResponsesBody(body []byte, catalog *models.Catalog) (translate.NormalizedRequest, error) {
 	var req openai.ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return translate.NormalizedRequest{}, err
 	}
-	return translate.Responses(req, defaultModel, catalog)
+	return translate.Responses(req, catalog)
 }
 
 func prepareStreamResponse(c *gin.Context) {
