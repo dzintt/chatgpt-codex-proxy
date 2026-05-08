@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-ARG GO_VERSION=1.26.0
+ARG GO_VERSION=1.26.3
 
-FROM golang:${GO_VERSION}-alpine AS build
+FROM golang:${GO_VERSION}-alpine3.23 AS build
 WORKDIR /src
 
 RUN apk add --no-cache ca-certificates git
@@ -15,7 +15,7 @@ COPY internal ./internal
 
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/chatgpt-codex-proxy ./cmd/api
 
-FROM alpine:3.22
+FROM alpine:3.23
 WORKDIR /app
 
 RUN apk add --no-cache ca-certificates && \
