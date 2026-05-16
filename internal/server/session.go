@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
-	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -225,11 +224,16 @@ func functionCallIDs(accumulator *translate.Accumulator) []string {
 		return nil
 	}
 	ids := make([]string, 0, len(accumulator.ToolCalls))
+	seen := make(map[string]struct{}, len(accumulator.ToolCalls))
 	for _, call := range accumulator.ToolCalls {
 		callID := strings.TrimSpace(call.CallID)
-		if callID == "" || slices.Contains(ids, callID) {
+		if callID == "" {
 			continue
 		}
+		if _, ok := seen[callID]; ok {
+			continue
+		}
+		seen[callID] = struct{}{}
 		ids = append(ids, callID)
 	}
 	return ids

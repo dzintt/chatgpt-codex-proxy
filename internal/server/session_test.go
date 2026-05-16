@@ -354,6 +354,30 @@ func TestAcquireAccountForResolutionOmittedModelUsesRouteScopedDefault(t *testin
 	}
 }
 
+func TestFunctionCallIDsDedupesAndPreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	got := functionCallIDs(&translate.Accumulator{
+		ToolCalls: []*translate.ToolCallState{
+			{CallID: " call_1 "},
+			{CallID: "call_2"},
+			{CallID: "call_1"},
+			{CallID: " "},
+			{CallID: "call_3"},
+			{CallID: "call_2"},
+		},
+	})
+	want := []string{"call_1", "call_2", "call_3"}
+	if len(got) != len(want) {
+		t.Fatalf("functionCallIDs() = %#v, want %#v", got, want)
+	}
+	for idx := range want {
+		if got[idx] != want[idx] {
+			t.Fatalf("functionCallIDs()[%d] = %q, want %q; full result %#v", idx, got[idx], want[idx], got)
+		}
+	}
+}
+
 func userText(text string) codex.InputItem {
 	return codex.InputItem{
 		Role: "user",
