@@ -241,11 +241,12 @@ func (r *StreamReader) NextEvent() (*StreamEvent, error) {
 			}
 			return parseStreamEvent(eventName, strings.Join(dataLines, "\n"))
 		}
-		if strings.HasPrefix(strings.ToLower(line), "event:") {
+		lowerLine := strings.ToLower(line)
+		if strings.HasPrefix(lowerLine, "event:") {
 			eventName = strings.TrimSpace(line[6:])
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(line), "data:") {
+		if strings.HasPrefix(lowerLine, "data:") {
 			dataLines = append(dataLines, strings.TrimSpace(line[5:]))
 		}
 	}
